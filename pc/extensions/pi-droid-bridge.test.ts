@@ -33,6 +33,7 @@ import {
   installBridge,
   isActiveMode,
   normalizeAssistantEvent,
+  normalizeMessageEnd,
   projectHistory,
   readEndpoint,
 } from './pi-droid-bridge.ts';
@@ -44,6 +45,7 @@ import type {
   BridgeHandler,
   BridgePi,
   BridgeSocket,
+  MessageEndEvent,
 } from './pi-droid-bridge.ts';
 
 // ---------------------------------------------------------------------------
@@ -366,6 +368,71 @@ test('an oversized done message is truncated and flagged, staying under the shar
     Buffer.byteLength(encoded) <= MAX_RELAY_BYTES,
     'a truncated done event must fit the shared byte cap',
   );
+});
+
+// ---------------------------------------------------------------------------
+// message_end — real pi's assistant-completion signal
+// ---------------------------------------------------------------------------
+
+test('a message_end carrying an assistant message emits exactly one message payload', () => {
+  const message = { role: 'assistant', content: [{ type: 'text', text: 'hi' }] };
+  const event: MessageEndEvent = { type: 'message_end', message };
+  const result = normalizeMessageEnd(event);
+  assert.deepEqual(result, {
+    kind: 'emit',
+    payload: { kind: 'message', message, truncated: false },
+  });
+});
+
+test('a message_end carrying a user message is ignored with a stated reason', () => {
+  const result = normalizeMessageEnd({ type: 'message_end', message: { role: 'user', content: 'hi' } });
+  assert.equal(result.kind, 'ignore');
+  if (result.kind !== 'ignore') return;
+  assert.ok(result.reason.length > 0, 'the ignore must state a reason, not be undefined');
+  assert.match(result.reason, /user/);
+});
+
+test('a message_end carrying a system message is ignored with a stated reason', () => {
+  const result = normalizeMessageEnd({ type: 'message_end', message: { role: 'system', content: 'prompt' } });
+  assert.equal(result.kind, 'ignore');
+  if (result.kind !== 'ignore') return;
+  assert.match(result.reason, /system/);
+});
+
+test('an oversized assistant message_end is truncated and flagged, staying under the shared cap', () => {
+  const huge = { role: 'assistant', content: [{ type: 'text', text: 'x'.repeat(MAX_RELAY_BYTES + 1) }] };
+  const result = normalizeMessageEnd({ type: 'message_end', message: huge });
+  assert.equal(result.kind, 'emit');
+  if (result.kind !== 'emit') return;
+  assert.equal(result.payload.kind, 'message');
+  assert.equal((result.payload as { truncated?: boolean }).truncated, true);
+  const encoded = JSON.stringify({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'event',
+    payload: result.payload,
+  });
+  assert.ok(
+    Buffer.byteLength(encoded) <= MAX_RELAY_BYTES,
+    'a truncated message_end must fit the shared byte cap',
+  );
+});
+
+test('the message_end handler relays an assistant message and ignores other roles', () => {
+  const harness = makeHarness();
+  harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  const before = socket.sent.length;
+  const handler = harness.pi.handlers.get('message_end')!;
+  const assistant = { role: 'assistant', content: [{ type: 'text', text: 'done' }] };
+  handler({ type: 'message_end', message: assistant }, harness.startCtx);
+  handler({ type: 'message_end', message: { role: 'user', content: 'hi' } }, harness.startCtx);
+  handler({ type: 'message_end', message: { role: 'system', content: 'prompt' } }, harness.startCtx);
+  const emitted = parsed(socket)
+    .slice(before)
+    .filter((m) => (m.payload as { kind?: string })?.kind === 'message');
+  assert.equal(emitted.length, 1, 'exactly one assistant message must be relayed');
+  assert.deepEqual(emitted[0]!.payload, { kind: 'message', message: assistant, truncated: false });
 });
 
 test('consecutive text deltas get strictly increasing stream seqs', () => {

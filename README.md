@@ -10,12 +10,13 @@ This file is orientation, setup and status.
 
 ## Status
 
-Both sides are built and tested; **nothing has yet been run end to end**. Eight of
-ten milestones in the attach-protocol plan are done.
+Both sides are built and tested. The bridge has now met a real `pi`; **the app
+has still only ever talked to a fake socket**, so nothing has run end to end.
+Nine of ten milestones in the attach-protocol plan are done.
 
 | | `pc/` (Node + TypeScript) | `app/` (Flutter + Dart) |
 |---|---|---|
-| Suite | 262 tests passing | 109 tests passing |
+| Suite | 270 tests passing | 108 tests passing |
 | Static gate | `tsc --noEmit` clean | `flutter analyze` clean |
 | Product code | hub, protocol codec, pi bridge | protocol codec, client, UI |
 
@@ -23,17 +24,17 @@ ten milestones in the attach-protocol plan are done.
 pairing token, the discovery file and the lock that makes `serve` exclusive, the
 hub (two listeners, listener-bound capabilities, relay, backpressure, and the
 session-registry push), the pi bridge extension, shared golden fixtures with a
-pure Dart codec, and the app — client, pairing, session list and transcript.
+pure Dart codec, the app — client, pairing, session list and transcript — and the
+bridge driven inside a real `pi` against a faux provider, including its silence
+as a process.
 
-**Next up, in order:**
+**Next up:** end to end — hub, a real pi, and the app on the emulator, including
+the restart-without-re-pairing check.
 
-1. **The bridge inside a real pi** — a faux provider, so there is no network and
-   no spend.
-2. **End to end** — hub, a real pi, and the app on the emulator.
-
-The gap that matters: none of this has met a live `pi`. The bridge's handlers are
-unit-tested against a stub, and the app has only ever talked to a fake socket.
-Both are exercised for real only by the two remaining milestones.
+The gap that matters: the app has never spoken to a hub with a real `pi` behind
+it. Two faults were found only when the bridge met a live `pi` — one of them cost
+every assistant reply — and both were invisible to a green suite. Treat the app's
+fake-socket tests with the same suspicion.
 
 ## Repo layout
 
@@ -194,6 +195,23 @@ fish_add_path $HOME/Android/Sdk/emulator
   re-parses every completed markdown message on every rebuild, which at the 16 ms
   frame interval is the exact cost the spike measured. `RepaintBoundary` isolates
   painting only — not rebuild, layout or markdown parse.
+- **pi signals assistant completion with `message_end`, not a `done` frame.** The
+  bridge's normalizer has a `done` branch because `done` is in pi-ai's transcribed
+  event union, but real pi never forwards it on `message_update`: it emits
+  `text_start`/`text_delta`/`text_end` and then a separate `message_end` extension
+  event carrying the finalized message. `message_end` fires for every role —
+  system, user, assistant, tool result — so the bridge relays only `assistant`.
+  Getting this wrong is not a no-op: the app commits streamed text to the
+  transcript on the `message` payload and clears the streaming buffer on settle, so
+  a missing final message means every reply streams in and then vanishes. A green
+  stub-tested suite did not catch it; the first run against a real `pi` did.
+- **The faux provider is registered by an extension, not by pi.** pi has no
+  selectable faux provider — `--provider faux` is unknown out of the box — so the
+  M9 test loads a second extension that calls `pi.registerProvider(faux.provider)`.
+  An extension can `import` from `@earendil-works/pi-ai` because pi loads extensions
+  through jiti and resolves it from pi's own tree, but `tsc` cannot, so the import
+  is backed by a deliberately minimal hand-declared ambient slice. That is a real
+  drift window: a change to the faux API compiles green and fails at runtime.
 
 ## Further reading
 
