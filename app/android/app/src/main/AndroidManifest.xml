@@ -1,4 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- The app opens a WebSocket to the hub, so INTERNET must be in the MAIN
+         manifest. It also appears in the debug/profile manifests, but those are
+         merged only into their own build types; release merges main alone. Do
+         not "deduplicate" this into the debug/profile manifests — that silently
+         strips networking from release builds. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <application
         android:label="pi_droid"
         android:name="${applicationName}"
