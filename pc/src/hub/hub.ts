@@ -8,10 +8,11 @@
  * only agent-side messages, the viewer port only viewer-side ones. There is no
  * `role` field — the listener *is* the role.
  *
- * Authentication happens on `hello`, and only on `hello`. Unauthenticated
- * traffic is never processed; a wrong credential is charged against a
- * per-connection cap, and the connection is closed once the cap is reached.
- * Closing is delayed briefly so a socket cannot be used as a fast token oracle.
+ * Authentication happens on `hello`, and only on `hello`. A wrong credential is
+ * charged against a per-connection cap, and the connection is closed once the
+ * cap is reached; any non-`hello` message before authentication is a protocol
+ * violation and closes immediately. Closing is delayed briefly for the attempt
+ * cap so a socket cannot be used as a fast token oracle.
  *
  * The hub is a registry + relay. It never interprets the normalized payload
  * beyond what resync requires (`lastSeq` and `agentState`); everything else is
@@ -30,7 +31,10 @@ import type { RawData } from 'ws';
 
 import {
   EVENT_PAYLOAD_KINDS,
+  MAX_RELAY_BYTES,
   PROTOCOL_VERSION,
+  asObject,
+  asString,
   decode,
   isAgentMessageType,
   isViewerMessageType,
@@ -58,7 +62,6 @@ export const CLOSE_RATE_LIMITED = 4008;
 
 const DEFAULT_MAX_AUTH_ATTEMPTS = 3;
 const DEFAULT_AUTH_CLOSE_DELAY_MS = 250;
-const DEFAULT_MAX_VIEWER_BYTES = 256 * 1024;
 /** Cap on a single inbound frame; `ws` defaults to 100 MB, far too generous. */
 const DEFAULT_MAX_PAYLOAD = 1024 * 1024;
 
@@ -209,16 +212,6 @@ function closeWith(connection: Connection, code: number, reason?: string): void 
   connection.socket.close(code, reason);
 }
 
-function asString(value: unknown): string | null {
-  return typeof value === 'string' && value.length > 0 ? value : null;
-}
-
-function asObject(value: unknown): Record<string, unknown> | null {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
 function failAuth(connection: Connection, config: State['config']): void {
   connection.authAttempts += 1;
   if (connection.authAttempts < config.maxAuthAttempts) return;
@@ -274,9 +267,14 @@ function handleMessage(state: State, connection: Connection, data: RawData): voi
   const message = parsed as Record<string, unknown>;
   const type = message.type;
   if (!connection.authenticated) {
-    // Only `hello` is ever processed before authentication; anything else is
-    // ignored so a pipelined message cannot slip through behind a bad token.
-    if (type === 'hello') authenticate(connection, text, state);
+    // Only `hello` is ever processed before authentication. Any other message
+    // while unauthenticated is a protocol violation: silently ignoring it would
+    // leave a stale-token bridge "connected" forever, streaming into the void.
+    if (type === 'hello') {
+      authenticate(connection, text, state);
+    } else {
+      closeWith(connection, CLOSE_PROTOCOL);
+    }
     return;
   }
   const permitted =
@@ -619,7 +617,7 @@ export async function createHub(options: HubOptions): Promise<Hub> {
       tickets: options.tickets,
       maxAuthAttempts: options.maxAuthAttempts ?? DEFAULT_MAX_AUTH_ATTEMPTS,
       authCloseDelayMs: options.authCloseDelayMs ?? DEFAULT_AUTH_CLOSE_DELAY_MS,
-      maxViewerBytes: options.maxViewerBytes ?? DEFAULT_MAX_VIEWER_BYTES,
+      maxViewerBytes: options.maxViewerBytes ?? MAX_RELAY_BYTES,
     },
     sessions: new Map(),
   };

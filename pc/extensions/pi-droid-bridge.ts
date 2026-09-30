@@ -1,0 +1,706 @@
+/**
+ * pi-droid bridge — a pi extension that attaches the running session to the hub.
+ *
+ * The bridge is a *client*: it discovers the hub's ephemeral loopback port in
+ * the discovery file, authenticates with the persisted token, registers its
+ * session, and relays normalized events. It never exposes pi's own event shapes
+ * to the wire and it never dials in the factory — the socket is opened in
+ * `session_start` and closed in an idempotent `session_shutdown`.
+ *
+ * Transport is Node's native `WebSocket` global (client only). `ws` is a server
+ * dependency of the hub and is deliberately not imported here. The socket
+ * factory, the clock, the RNG, the endpoint resolver and the debug sink are all
+ * injectable so the tests never dial and never sleep.
+ *
+ * # Why the types are structural
+ *
+ * A type-only import of `@earendil-works/pi-coding-agent` would make `pc/`
+ * depend on the host package just to typecheck, and `pc/` is a standalone
+ * package. Instead the bridge declares the small slice of `ExtensionAPI`,
+ * `ExtensionContext` and `AssistantMessageEvent` it actually touches. The
+ * `AssistantMessageEvent` union below is transcribed from
+ * `pi-ai/dist/types.d.ts`. The `never` assignment in `normalizeAssistantEvent`'s
+ * exhaustive switch only guards that *local transcription*: a variant added or
+ * removed there is a compile error, but a 13th variant in real pi compiles green
+ * because the live event is cast into this local union. The production
+ * protection is the runtime `default`, which turns any unknown variant into an
+ * explicit ignore rather than a silent `undefined`.
+ */
+
+import { loadOrCreateToken, resolveConfigDir } from '../src/hub/auth.ts';
+import { readDiscovery, resolveRuntimeDir } from '../src/hub/discovery.ts';
+import {
+  MAX_RELAY_BYTES,
+  PROTOCOL_VERSION,
+  asObject,
+  asString,
+  encode,
+} from '../src/protocol/protocol.ts';
+import type {
+  AgentState,
+  AgentToHubMessage,
+  CommandMessage,
+  CommandResultMessage,
+  EventMessage,
+  EventPayload,
+  HistoryMessage,
+  RegisterMessage,
+} from '../src/protocol/protocol.ts';
+
+// ---------------------------------------------------------------------------
+// The slice of the pi extension API the bridge uses
+// ---------------------------------------------------------------------------
+
+/** A registered pi event handler. Pi passes `(event, ctx)`. */
+export type BridgeHandler = (event: any, ctx: BridgeCtx) => unknown;
+
+/** The read-only session manager methods the bridge reads identity from. */
+export interface BridgeSessionManager {
+  getSessionId(): string;
+  getSessionFile(): string | undefined;
+  getEntries(): unknown[];
+}
+
+/** The extension context, narrowed to what the bridge reads. */
+export interface BridgeCtx {
+  mode: string;
+  cwd: string;
+  model?: { id: string } | undefined;
+  thinkingLevel?: string | undefined;
+  sessionManager: BridgeSessionManager;
+  abort(): void;
+  compact(options?: unknown): void;
+}
+
+/** The extension API, narrowed to what the bridge calls. */
+export interface BridgePi {
+  on(event: string, handler: BridgeHandler): () => void;
+  sendUserMessage(
+    content: string,
+    options?: { deliverAs?: 'steer' | 'followUp'; expandPromptTemplates?: boolean },
+  ): void;
+  setModel(model: unknown): Promise<boolean>;
+  setThinkingLevel(level: string): void;
+  setSessionName(name: string): void;
+  getSessionName?(): string | undefined;
+}
+
+// ---------------------------------------------------------------------------
+// AssistantMessageEvent (transcribed from pi-ai/dist/types.d.ts)
+// ---------------------------------------------------------------------------
+
+/** The real `AssistantMessageEvent` variants, with payloads narrowed to `unknown`. */
+export type AssistantMessageEvent =
+  | { type: 'start'; partial: unknown }
+  | { type: 'text_start'; contentIndex: number; partial: unknown }
+  | { type: 'text_delta'; contentIndex: number; delta: string; partial: unknown }
+  | { type: 'text_end'; contentIndex: number; content: string; partial: unknown }
+  | { type: 'thinking_start'; contentIndex: number; partial: unknown }
+  | { type: 'thinking_delta'; contentIndex: number; delta: string; partial: unknown }
+  | { type: 'thinking_end'; contentIndex: number; content: string; partial: unknown }
+  | { type: 'toolcall_start'; contentIndex: number; partial: unknown }
+  | { type: 'toolcall_delta'; contentIndex: number; delta: string; partial: unknown }
+  | { type: 'toolcall_end'; contentIndex: number; toolCall: unknown; partial: unknown }
+  | { type: 'done'; reason: string; message: unknown }
+  | { type: 'error'; reason: string; error: unknown };
+
+/** Either a normalized payload to send, or a stated reason for dropping it. */
+export type NormalizedEvent =
+  | { kind: 'emit'; payload: EventPayload }
+  | { kind: 'ignore'; reason: string };
+
+function errorText(error: unknown): string {
+  if (typeof error === 'object' && error !== null) {
+    const message = (error as { errorMessage?: unknown }).errorMessage;
+    if (typeof message === 'string' && message.length > 0) return message;
+  }
+  return 'error';
+}
+
+/**
+ * Bounds an agent-supplied `message` to the shared relay cap. A message that
+ * fits is returned untouched; an oversized one (e.g. a `done` carrying base64
+ * images) is replaced by a small marker, so it cannot exceed the hub's frame
+ * cap and cost the transcript a message.
+ */
+function boundMessage(
+  message: unknown,
+  maxBytes: number,
+): { message: unknown; truncated: boolean } {
+  const serialized = JSON.stringify(message) ?? 'null';
+  const bytes = Buffer.byteLength(serialized);
+  if (bytes <= maxBytes) return { message, truncated: false };
+  return { message: { truncated: true, bytes }, truncated: true };
+}
+
+/**
+ * Maps one pi assistant-stream event to at most one normalized protocol
+ * payload. Total and explicit: every variant either emits or states why it is
+ * ignored, and an unrecognized variant is *also* an explicit ignore.
+ *
+ * Only text deltas stream to the app; the final `done` message and `error`
+ * status are forwarded so the transcript can settle. Thinking and tool-call
+ * deltas are deliberately not streamed in this milestone.
+ */
+export function normalizeAssistantEvent(
+  event: AssistantMessageEvent,
+  seq: number,
+): NormalizedEvent {
+  switch (event.type) {
+    case 'text_delta':
+      return { kind: 'emit', payload: { kind: 'stream', seq, text: event.delta } };
+    case 'done': {
+      const bounded = boundMessage(event.message, MAX_RELAY_BYTES);
+      return {
+        kind: 'emit',
+        payload: { kind: 'message', message: bounded.message, truncated: bounded.truncated },
+      };
+    }
+    case 'error':
+      return {
+        kind: 'emit',
+        payload: { kind: 'status', event: 'error', message: errorText(event.error) },
+      };
+    case 'start':
+    case 'text_start':
+    case 'text_end':
+      return { kind: 'ignore', reason: `block-${event.type}` };
+    case 'thinking_start':
+    case 'thinking_delta':
+    case 'thinking_end':
+      return { kind: 'ignore', reason: 'thinking-not-streamed' };
+    case 'toolcall_start':
+    case 'toolcall_delta':
+    case 'toolcall_end':
+      return { kind: 'ignore', reason: 'tool-calls-not-streamed' };
+    default: {
+      // Compile-time exhaustiveness: a new variant lands here as a type error.
+      const unreachable: never = event;
+      void unreachable;
+      const type = (event as { type?: string }).type ?? 'unknown';
+      return { kind: 'ignore', reason: `unknown-assistant-event:${type}` };
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Pure helpers
+// ---------------------------------------------------------------------------
+
+/** The modes in which the bridge is active; `json`/`print` stay inert. */
+const ACTIVE_MODES = new Set(['tui', 'rpc']);
+
+export function isActiveMode(mode: string): boolean {
+  return ACTIVE_MODES.has(mode);
+}
+
+/** The bridge's command allowlist. Anything else — including a case- or
+ * whitespace-variant of an entry — is refused, because the match is exact. */
+const COMMAND_ALLOWLIST = new Set([
+  'prompt',
+  'steer',
+  'followup',
+  'abort',
+  'setModel',
+  'setThinkingLevel',
+  'compact',
+  'fetchHistory',
+  'setSessionName',
+]);
+
+const BACKOFF_BASE_MS = 500;
+const BACKOFF_CAP_MS = 30_000;
+/**
+ * The fixed wait after a `4008` (rate-limited) close: the hub deliberately
+ * delays that close, so retrying sooner would only add load. Longer than the
+ * first backoff step by construction.
+ */
+export const RATE_LIMITED_RECONNECT_MS = 30_000;
+
+export interface BackoffOptions {
+  rng?: () => number;
+}
+
+/** Exponential backoff with full jitter, capped. `attempt` is 0-based. */
+export function computeBackoff(attempt: number, options: BackoffOptions = {}): number {
+  const rng = options.rng ?? Math.random;
+  const ceiling = Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** Math.max(0, attempt));
+  return Math.floor(rng() * ceiling);
+}
+
+export interface HistoryProjection {
+  entries: unknown[];
+  truncated: boolean;
+}
+
+/**
+ * Prefix-projects transcript entries to a byte cap. Stops at the first entry
+ * that would overflow and flags the result, so a viewer can tell it is partial
+ * rather than silently short.
+ */
+export function projectHistory(entries: readonly unknown[], maxBytes: number): HistoryProjection {
+  const kept: unknown[] = [];
+  let bytes = 2; // the enclosing `[]`
+  for (const entry of entries) {
+    const serialized = JSON.stringify(entry) ?? 'null';
+    const size = Buffer.byteLength(serialized) + (kept.length > 0 ? 1 : 0);
+    if (bytes + size > maxBytes) {
+      return { entries: kept, truncated: true };
+    }
+    bytes += size;
+    kept.push(entry);
+  }
+  return { entries: kept, truncated: false };
+}
+
+export interface BridgeEndpoint {
+  url: string;
+  token: string;
+}
+
+export interface EndpointDirs {
+  runtimeDir?: string;
+  configDir?: string;
+}
+
+/** Resolves the hub's loopback URL from discovery and the token from config. */
+export function readEndpoint(dirs: EndpointDirs = {}): BridgeEndpoint | null {
+  const record = readDiscovery(dirs.runtimeDir ?? resolveRuntimeDir());
+  if (record === null) return null;
+  let token: string;
+  try {
+    token = loadOrCreateToken(dirs.configDir ?? resolveConfigDir()).token;
+  } catch {
+    return null;
+  }
+  return { url: `ws://127.0.0.1:${record.agentPort}`, token };
+}
+
+// ---------------------------------------------------------------------------
+// Injectable seams
+// ---------------------------------------------------------------------------
+
+/** The `close` event fields the bridge reads; the code drives reconnect policy. */
+export interface BridgeCloseEvent {
+  readonly code?: number;
+  readonly reason?: string;
+}
+
+/** The slice of the WHATWG WebSocket the bridge uses. */
+export interface BridgeSocket {
+  readonly readyState: number;
+  send(data: string): void;
+  close(code?: number, reason?: string): void;
+  addEventListener(type: 'close', handler: (event: BridgeCloseEvent) => void): void;
+  addEventListener(type: string, handler: (event: unknown) => void): void;
+}
+
+export type SocketFactory = (url: string) => BridgeSocket;
+
+export interface BridgeDeps {
+  env?: NodeJS.ProcessEnv;
+  socketFactory?: SocketFactory;
+  resolveEndpoint?: () => BridgeEndpoint | null;
+  write?: (stream: 'stderr', text: string) => void;
+  rng?: () => number;
+  setTimeout?: (fn: () => void, ms: number) => unknown;
+  clearTimeout?: (handle: unknown) => void;
+}
+
+interface ResolvedDeps {
+  env: NodeJS.ProcessEnv;
+  socketFactory: SocketFactory;
+  resolveEndpoint: () => BridgeEndpoint | null;
+  write: (stream: 'stderr', text: string) => void;
+  rng: () => number;
+  setTimeout: (fn: () => void, ms: number) => unknown;
+  clearTimeout: (handle: unknown) => void;
+}
+
+const SOCKET_OPEN = 1;
+
+function resolveDeps(deps: BridgeDeps): ResolvedDeps {
+  return {
+    env: deps.env ?? process.env,
+    // Native WebSocket only — no `ws` in the extension.
+    socketFactory: deps.socketFactory ?? ((url) => new WebSocket(url) as unknown as BridgeSocket),
+    resolveEndpoint: deps.resolveEndpoint ?? (() => readEndpoint()),
+    write: deps.write ?? ((_stream, text) => process.stderr.write(text)),
+    rng: deps.rng ?? Math.random,
+    setTimeout: deps.setTimeout ?? ((fn, ms) => setTimeout(fn, ms)),
+    clearTimeout: deps.clearTimeout ?? ((handle) => clearTimeout(handle as NodeJS.Timeout)),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Wire helpers
+// ---------------------------------------------------------------------------
+
+function encodeAgentMessage(message: AgentToHubMessage): string {
+  // `encode` is the protocol module's single-object encoder for the message
+  // types it fully owns (hello/event); the rest are typed by protocol.ts too.
+  if (message.type === 'hello' || message.type === 'event') return encode(message);
+  return JSON.stringify(message);
+}
+
+function parseCommand(message: Record<string, unknown>): CommandMessage | null {
+  const id = asString(message.id);
+  const sessionId = asString(message.sessionId);
+  const name = asString(message.name);
+  if (id === null || sessionId === null || name === null) return null;
+  const command: CommandMessage = {
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'command',
+    id,
+    sessionId,
+    name,
+  };
+  if ('args' in message) command.args = message.args;
+  return command;
+}
+
+// ---------------------------------------------------------------------------
+// The bridge
+// ---------------------------------------------------------------------------
+
+interface CommandOutcome {
+  ok: boolean;
+  error?: string;
+}
+
+class Bridge {
+  private readonly pi: BridgePi;
+  private readonly deps: ResolvedDeps;
+  private readonly debug: (stream: 'stderr', text: string) => void;
+  private socket: BridgeSocket | null = null;
+  private ctx: BridgeCtx | null = null;
+  private seq = 0;
+  private state: AgentState = 'idle';
+  private attempt = 0;
+  private reconnectTimer: unknown = null;
+  private closed = false;
+
+  constructor(pi: BridgePi, deps: ResolvedDeps) {
+    this.pi = pi;
+    this.deps = deps;
+    this.debug = (stream, text) => {
+      if (deps.env.PI_DROID_DEBUG === '1') deps.write(stream, text);
+    };
+  }
+
+  install(): void {
+    // The socket is opened here, in the handler, never in the factory. Every
+    // pi callback is guarded so an exception cannot escape into pi (which would
+    // print to stderr and take the session down).
+    this.pi.on('session_start', (_event, ctx) => this.guard(() => this.onSessionStart(ctx)));
+    this.pi.on('session_shutdown', () => this.guard(() => this.onSessionShutdown()));
+    this.pi.on('message_update', (event) => this.guard(() => this.onMessageUpdate(event)));
+    this.pi.on('agent_start', () => this.guard(() => this.setAgentState('running')));
+    // Terminal state is `agent_settled`, deliberately not `agent_end`.
+    this.pi.on('agent_settled', () => this.guard(() => this.setAgentState('settled')));
+  }
+
+  /**
+   * Runs a callback so nothing can escape into pi or the WebSocket event loop.
+   * A socket callback that throws is an uncaught exception: Node prints to
+   * stderr and pi dies, which breaks the absolute silence guarantee. Failures
+   * are surfaced only under debug.
+   */
+  private guard(run: () => void): void {
+    try {
+      run();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.debug('stderr', `pi-droid bridge: handler failed: ${message}\n`);
+    }
+  }
+
+  private onSessionStart(ctx: BridgeCtx): void {
+    // Session replacement invalidates the previous context: drop the old
+    // socket and every session-scoped value before binding the new context.
+    this.closeSocket('session replaced');
+    this.cancelReconnect();
+    this.ctx = ctx;
+    this.closed = false;
+    this.seq = 0;
+    this.state = 'idle';
+    this.attempt = 0;
+    if (!isActiveMode(ctx.mode)) {
+      this.debug('stderr', `pi-droid bridge: inert in ${ctx.mode} mode\n`);
+      return;
+    }
+    this.openSocket();
+  }
+
+  private onSessionShutdown(): void {
+    this.closed = true;
+    this.ctx = null;
+    this.cancelReconnect();
+    this.closeSocket('shutdown');
+  }
+
+  private closeSocket(reason: string): void {
+    const socket = this.socket;
+    this.socket = null;
+    if (socket === null) return;
+    try {
+      socket.close(1000, reason);
+    } catch {
+      // Already closed; nothing to do.
+    }
+  }
+
+  private cancelReconnect(): void {
+    if (this.reconnectTimer === null) return;
+    this.deps.clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+  }
+
+  private openSocket(): void {
+    const endpoint = this.deps.resolveEndpoint();
+    if (endpoint === null) {
+      this.debug('stderr', 'pi-droid bridge: no hub discovered\n');
+      this.scheduleReconnect();
+      return;
+    }
+    const socket = this.deps.socketFactory(endpoint.url);
+    this.socket = socket;
+    socket.addEventListener('open', () =>
+      this.guard(() => {
+        if (this.socket !== socket) return;
+        this.attempt = 0;
+        this.send({ protocolVersion: PROTOCOL_VERSION, type: 'hello', token: endpoint.token });
+        this.sendRegister();
+        this.sendAgentState();
+      }),
+    );
+    socket.addEventListener('message', (event) => this.guard(() => this.onMessage(event)));
+    socket.addEventListener('error', () =>
+      this.guard(() => this.debug('stderr', 'pi-droid bridge: socket error\n')),
+    );
+    socket.addEventListener('close', (event) => this.guard(() => this.onSocketClose(socket, event)));
+  }
+
+  private onSocketClose(socket: BridgeSocket, event: BridgeCloseEvent): void {
+    if (this.socket !== socket) return;
+    this.socket = null;
+    const code = event.code;
+    this.debug('stderr', `pi-droid bridge: socket closed (${String(code ?? 'transport')})\n`);
+    // 4003 is a capability violation: a bridge bug, not a transient failure.
+    // Retrying it at capped backoff would reconnect forever.
+    if (code === 4003) return;
+    // 4008 is rate-limited: the hub delayed the close deliberately, so wait a
+    // longer fixed span rather than an ordinary jittered backoff step.
+    if (code === 4008) {
+      this.scheduleReconnect(RATE_LIMITED_RECONNECT_MS);
+      return;
+    }
+    this.scheduleReconnect();
+  }
+
+  private scheduleReconnect(fixedDelayMs?: number): void {
+    if (this.closed) return;
+    // A pending timer already owns the next dial; scheduling a second would
+    // leak the first and double-connect.
+    if (this.reconnectTimer !== null) return;
+    const delay = fixedDelayMs ?? computeBackoff(this.attempt, { rng: this.deps.rng });
+    if (fixedDelayMs === undefined) this.attempt += 1;
+    this.reconnectTimer = this.deps.setTimeout(() => {
+      this.reconnectTimer = null;
+      this.openSocket();
+    }, delay);
+  }
+
+  private send(message: AgentToHubMessage): void {
+    if (this.socket === null || this.socket.readyState !== SOCKET_OPEN) return;
+    this.socket.send(encodeAgentMessage(message));
+  }
+
+  private sendEvent(payload: EventPayload): void {
+    const message: EventMessage = { protocolVersion: PROTOCOL_VERSION, type: 'event', payload };
+    this.send(message);
+  }
+
+  private sendRegister(): void {
+    const ctx = this.ctx;
+    if (ctx === null) return;
+    const manager = ctx.sessionManager;
+    const message: RegisterMessage = {
+      protocolVersion: PROTOCOL_VERSION,
+      type: 'register',
+      sessionId: manager.getSessionId(),
+      sessionFile: manager.getSessionFile(),
+      cwd: ctx.cwd,
+      mode: ctx.mode,
+      pid: process.pid,
+    };
+    if (ctx.model !== undefined) message.model = ctx.model.id;
+    if (ctx.thinkingLevel !== undefined) message.thinkingLevel = ctx.thinkingLevel;
+    const name = this.pi.getSessionName?.();
+    if (name !== undefined) message.name = name;
+    this.send(message);
+  }
+
+  private sendAgentState(): void {
+    this.sendEvent({ kind: 'agent', state: this.state });
+  }
+
+  private setAgentState(state: AgentState): void {
+    this.state = state;
+    this.sendEvent({ kind: 'agent', state });
+  }
+
+  private onMessageUpdate(event: unknown): void {
+    const assistantEvent = (event as { assistantMessageEvent?: AssistantMessageEvent })
+      .assistantMessageEvent;
+    if (assistantEvent === undefined) return;
+    const candidate = this.seq + 1;
+    const normalized = normalizeAssistantEvent(assistantEvent, candidate);
+    if (normalized.kind === 'ignore') return;
+    if (normalized.payload.kind === 'stream') this.seq = candidate;
+    this.sendEvent(normalized.payload);
+  }
+
+  private onMessage(event: unknown): void {
+    const data = (event as { data?: unknown }).data;
+    if (typeof data !== 'string') return;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(data);
+    } catch {
+      return;
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return;
+    const message = parsed as Record<string, unknown>;
+    if (message.protocolVersion !== PROTOCOL_VERSION) return;
+    if (message.type === 'command') this.onCommand(message);
+    else if (message.type === 'history-request') this.sendHistory();
+  }
+
+  private onCommand(message: Record<string, unknown>): void {
+    const command = parseCommand(message);
+    if (command === null) return;
+    void this.dispatch(command);
+  }
+
+  private async dispatch(command: CommandMessage): Promise<void> {
+    try {
+      if (!COMMAND_ALLOWLIST.has(command.name)) {
+        this.sendCommandResult(command.id, false, 'command not allowed');
+        return;
+      }
+      const ctx = this.ctx;
+      if (ctx === null) {
+        this.sendCommandResult(command.id, false, 'no active session');
+        return;
+      }
+      // Re-checked here so a future socket path cannot dispatch in an inert
+      // mode, and the session is verified rather than trusted to hub routing.
+      if (!isActiveMode(ctx.mode)) {
+        this.sendCommandResult(command.id, false, 'bridge inactive in this mode');
+        return;
+      }
+      if (command.sessionId !== ctx.sessionManager.getSessionId()) {
+        this.sendCommandResult(command.id, false, 'session mismatch');
+        return;
+      }
+      if (command.name === 'fetchHistory') {
+        this.sendHistory();
+        this.sendCommandResult(command.id, true);
+        return;
+      }
+      const outcome = await this.dispatchCommand(ctx, command.name, command.args);
+      this.sendCommandResult(command.id, outcome.ok, outcome.error);
+    } catch (error) {
+      this.sendCommandResult(
+        command.id,
+        false,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }
+
+  private async dispatchCommand(
+    ctx: BridgeCtx,
+    name: string,
+    args: unknown,
+  ): Promise<CommandOutcome> {
+    const fields = asObject(args) ?? {};
+    switch (name) {
+      case 'prompt':
+      case 'steer':
+      case 'followup': {
+        const text = asString(fields.text);
+        if (text === null) return { ok: false, error: 'missing text' };
+        // `prompt` is plain; `steer` and `followup` queue during streaming.
+        const deliverAs = name === 'steer' ? 'steer' : name === 'followup' ? 'followUp' : undefined;
+        this.pi.sendUserMessage(text, deliverAs === undefined ? {} : { deliverAs });
+        return { ok: true };
+      }
+      case 'abort':
+        ctx.abort();
+        return { ok: true };
+      case 'setModel': {
+        if (fields.model === undefined) return { ok: false, error: 'missing model' };
+        const accepted = await this.pi.setModel(fields.model);
+        return accepted ? { ok: true } : { ok: false, error: 'model not accepted' };
+      }
+      case 'setThinkingLevel': {
+        const level = asString(fields.level);
+        if (level === null) return { ok: false, error: 'missing level' };
+        this.pi.setThinkingLevel(level);
+        return { ok: true };
+      }
+      case 'compact':
+        ctx.compact();
+        return { ok: true };
+      case 'setSessionName': {
+        const sessionName = asString(fields.name);
+        if (sessionName === null) return { ok: false, error: 'missing name' };
+        this.pi.setSessionName(sessionName);
+        return { ok: true };
+      }
+      default:
+        return { ok: false, error: 'command not allowed' };
+    }
+  }
+
+  private sendHistory(): void {
+    const ctx = this.ctx;
+    if (ctx === null) return;
+    const projection = projectHistory(ctx.sessionManager.getEntries(), MAX_RELAY_BYTES);
+    const message: HistoryMessage = {
+      protocolVersion: PROTOCOL_VERSION,
+      type: 'history',
+      sessionId: ctx.sessionManager.getSessionId(),
+      entries: projection.entries,
+      truncated: projection.truncated,
+    };
+    this.send(message);
+  }
+
+  private sendCommandResult(id: string, ok: boolean, error?: string): void {
+    const message: CommandResultMessage = {
+      protocolVersion: PROTOCOL_VERSION,
+      type: 'command-result',
+      id,
+      ok,
+    };
+    if (error !== undefined) message.error = error;
+    this.send(message);
+  }
+}
+
+/**
+ * Installs the bridge on a pi `ExtensionAPI`. Side-effectful by design: it
+ * registers handlers and returns nothing. Tests call this directly with
+ * injected dependencies; pi calls the default export with its own API.
+ */
+export function installBridge(pi: BridgePi, deps: BridgeDeps = {}): void {
+  new Bridge(pi, resolveDeps(deps)).install();
+}
+
+/** The extension entry point pi loads. */
+export default function piDroidBridge(pi: BridgePi): void {
+  installBridge(pi);
+}
