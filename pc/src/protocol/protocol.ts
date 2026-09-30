@@ -93,12 +93,24 @@ export type AgentState = (typeof AGENT_STATES)[number];
 export const EVENT_PAYLOAD_KINDS = ['stream', 'message', 'agent', 'tool', 'status'] as const;
 export type EventPayloadKind = (typeof EVENT_PAYLOAD_KINDS)[number];
 
-/** A token-stream delta, ordered by `seq`. Carried inside an `event`. */
+/** A token-stream delta, ordered by `seq`. Carried inside an `event`. A frame
+ * carries `text` and/or `phase`; at least one is required. */
 export interface StreamPayload {
   kind: 'stream';
   seq: number;
-  text: string;
+  text?: string;
+  phase?: StreamPhase;
 }
+
+/**
+ * Lifecycle phases a `stream` frame may signal. `thinking` is emitted on
+ * `thinking_start` as a content-free liveness signal (the frame carries no
+ * `text`), before any reasoning delta. A frame may carry `text` and/or `phase`;
+ * at least one is required. Reasoning content is deliberately never streamed —
+ * it arrives in full in the committed `message`.
+ */
+export const STREAM_PHASES = ['thinking'] as const;
+export type StreamPhase = (typeof STREAM_PHASES)[number];
 
 /** The agent's lifecycle transition. Carried inside an `event`. */
 export interface AgentPayload {
@@ -442,8 +454,17 @@ export function decode(text: string): DecodeResult {
         if (typeof seq !== 'number' || !Number.isSafeInteger(seq) || seq < 1) {
           return fail('bad-seq', 'stream seq must be a positive safe integer');
         }
-        if (typeof body.text !== 'string') {
+        if (body.text !== undefined && typeof body.text !== 'string') {
           return fail('bad-text', 'stream text must be a string');
+        }
+        if (
+          body.phase !== undefined &&
+          !(STREAM_PHASES as readonly unknown[]).includes(body.phase)
+        ) {
+          return fail('bad-payload', `stream phase must be one of ${STREAM_PHASES.join(', ')}`);
+        }
+        if (body.text === undefined && body.phase === undefined) {
+          return fail('bad-text', 'stream frame must carry text and/or a phase');
         }
         return { ok: true, value: parsed as EventMessage };
       }

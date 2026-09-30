@@ -395,14 +395,16 @@ async function waitForSession(viewer: Viewer, timeoutMs: number): Promise<Sessio
 
 interface Collected {
   streams: Array<{ seq: number; text: string }>;
+  /** Content-free phase frames, in arrival order. */
+  phases: Array<{ seq: number; payload: Record<string, unknown> }>;
   running: boolean;
   settled: boolean;
-  /** The normalized `message` payload carrying the final assistant message. */
-  message: Record<string, unknown> | null;
-  /** How many `message`-kind payloads were relayed; must be exactly one. */
-  messageCount: number;
-  /** True when that message arrived before the terminal `settled` state. */
-  messageBeforeSettled: boolean;
+  /** Relayed `message` payloads, in arrival order, tagged by role. */
+  messages: Array<{ role: string; payload: Record<string, unknown> }>;
+  /** True when the assistant message arrived before the terminal `settled` state. */
+  assistantBeforeSettled: boolean;
+  /** True when a phase frame preceded the first assistant message. */
+  phaseBeforeAssistant: boolean;
   result: Record<string, unknown> | null;
 }
 
@@ -414,11 +416,12 @@ interface Collected {
 async function collectPrompt(viewer: Viewer, id: string, timeoutMs: number): Promise<Collected> {
   const collected: Collected = {
     streams: [],
+    phases: [],
     running: false,
     settled: false,
-    message: null,
-    messageCount: 0,
-    messageBeforeSettled: false,
+    messages: [],
+    assistantBeforeSettled: false,
+    phaseBeforeAssistant: false,
     result: null,
   };
   const deadline = Date.now() + timeoutMs;
@@ -434,11 +437,21 @@ async function collectPrompt(viewer: Viewer, id: string, timeoutMs: number): Pro
     const payload = message.payload as Record<string, unknown> | undefined;
     if (payload === undefined) continue;
     if (payload.kind === 'stream') {
-      collected.streams.push({ seq: payload.seq as number, text: payload.text as string });
+      if (payload.phase !== undefined) {
+        collected.phases.push({ seq: payload.seq as number, payload });
+        if (!collected.messages.some((entry) => entry.role === 'assistant')) {
+          collected.phaseBeforeAssistant = true;
+        }
+      } else {
+        collected.streams.push({ seq: payload.seq as number, text: payload.text as string });
+      }
     } else if (payload.kind === 'message') {
-      collected.message = payload;
-      collected.messageCount += 1;
-      collected.messageBeforeSettled = !collected.settled;
+      const body = payload.message as Record<string, unknown> | undefined;
+      const role = typeof body?.role === 'string' ? body.role : 'unknown';
+      collected.messages.push({ role, payload });
+      if (role === 'assistant' && !collected.settled) {
+        collected.assistantBeforeSettled = true;
+      }
     } else if (payload.kind === 'agent') {
       if (payload.state === 'running') collected.running = true;
       if (payload.state === 'settled') collected.settled = true;
@@ -447,16 +460,17 @@ async function collectPrompt(viewer: Viewer, id: string, timeoutMs: number): Pro
   return collected;
 }
 
-// ---------------------------------------------------------------------------
-// Step 16 — a real pi, driven through the hub
-// ---------------------------------------------------------------------------
-
-test('a real pi with the bridge registers and a hub prompt streams from the faux provider', async () => {
+/**
+ * Boots a hub, a real pi carrying the bridge and the faux harness, and drives
+ * one prompt end to end. Returns everything the hub relayed to the viewer.
+ * Children, hubs and viewers are torn down by `afterEach`.
+ */
+async function drivePrompt(extraEnv: Record<string, string> = {}): Promise<Collected> {
   const { token } = loadOrCreateToken(configDir);
   const hub = await startHub({ token });
   publishDiscovery(hub);
 
-  const run = spawnPi(
+  spawnPi(
     [
       '--mode',
       'rpc',
@@ -472,16 +486,13 @@ test('a real pi with the bridge registers and a hub prompt streams from the faux
       '--no-session',
       '-nc',
     ],
-    { PI_DROID_FAUX_TEXT: FAUX_TEXT },
+    { PI_DROID_FAUX_TEXT: FAUX_TEXT, ...extraEnv },
   );
 
   const viewer = await connectViewer(hub.viewerPort, token);
-
-  // The hub only lists a session after it received the bridge's `register`.
   const session = await waitForSession(viewer, BOOT_TIMEOUT_MS);
   assert.ok(session.sessionId.length > 0, 'the register must carry a session id');
   assert.ok(session.label.length > 0, 'the register must produce a viewer-safe label');
-
   viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'subscribe', sessionId: session.sessionId });
 
   const id = 'prompt-1';
@@ -494,7 +505,15 @@ test('a real pi with the bridge registers and a hub prompt streams from the faux
     args: { text: 'say the word' },
   });
 
-  const collected = await collectPrompt(viewer, id, STREAM_TIMEOUT_MS);
+  return collectPrompt(viewer, id, STREAM_TIMEOUT_MS);
+}
+
+// ---------------------------------------------------------------------------
+// Step 16 — a real pi, driven through the hub
+// ---------------------------------------------------------------------------
+
+test('a real pi with the bridge registers and a hub prompt streams from the faux provider', async () => {
+  const collected = await drivePrompt();
 
   // This is what M9 asks the hub to have received: the register (above), the
   // stream sequence, the final assistant message, the terminal agent state, and
@@ -509,27 +528,33 @@ test('a real pi with the bridge registers and a hub prompt streams from the faux
   assert.equal(collected.result.ok, true, `prompt was refused: ${String(collected.result.error)}`);
   assert.ok(collected.running, 'the agent never reported the running state');
   assert.ok(collected.settled, 'the agent never settled');
-  assert.ok(collected.message, 'no final assistant message arrived');
+
+  // Per-role counts, not a single total: M1 relays the user's own prompt too,
+  // and a double-emitted user (or a future toolResult) must not pass silently.
+  const userMessages = collected.messages.filter((entry) => entry.role === 'user');
+  const assistantMessages = collected.messages.filter((entry) => entry.role === 'assistant');
   assert.equal(
-    collected.messageCount,
+    userMessages.length,
     1,
-    'exactly one final assistant message payload must be relayed',
+    `exactly one user message must be relayed, got ${collected.messages.length} total`,
   );
-  assert.equal(
-    (collected.message!.message as { role?: string }).role,
-    'assistant',
-    'the relayed message must be the assistant message, not the user/system prompt',
-  );
+  assert.equal(assistantMessages.length, 1, 'exactly one assistant message must be relayed');
+  assert.equal(collected.messages.length, 2, 'no role other than user and assistant may be relayed');
+
+  const assistant = assistantMessages[0]!.payload.message as Record<string, unknown>;
   assert.match(
-    JSON.stringify(collected.message!.message),
+    JSON.stringify(assistant),
     new RegExp(FAUX_TEXT),
     'the final assistant message must carry the provider text',
   );
   assert.equal(
-    collected.messageBeforeSettled,
+    collected.assistantBeforeSettled,
     true,
     'the final assistant message must arrive before the terminal settled state',
   );
+  // The plain recipe emits no thinking, so it must emit no phase frame: a phase
+  // the model never entered would mislabel the status.
+  assert.deepEqual(collected.phases, [], 'a plain-text reply must not emit a phase frame');
   assert.equal(
     collected.streams.map((stream) => stream.text).join(''),
     FAUX_TEXT,
@@ -539,6 +564,45 @@ test('a real pi with the bridge registers and a hub prompt streams from the faux
     collected.streams.map((stream) => stream.seq),
     collected.streams.map((_, index) => index + 1),
     'stream seq must be contiguous and start at 1',
+  );
+});
+
+test('a thinking recipe emits a content-free phase frame before the assistant message', async () => {
+  const collected = await drivePrompt({
+    PI_DROID_FAUX_MODE: 'thinking',
+    PI_DROID_FAUX_THINKING: 'FAUX_REASONING',
+  });
+
+  assert.ok(collected.result, 'no command-result arrived for the prompt');
+  assert.equal(collected.result.ok, true, `prompt was refused: ${String(collected.result.error)}`);
+  assert.ok(collected.settled, 'the agent never settled');
+
+  assert.ok(collected.phases.length > 0, 'a thinking reply must emit a phase frame');
+  // The phase frame is content-free by construction: it carries no reasoning.
+  for (const phase of collected.phases) {
+    assert.deepEqual(Object.keys(phase.payload).sort(), ['kind', 'phase', 'seq']);
+    assert.equal(phase.payload.phase, 'thinking');
+    assert.equal(JSON.stringify(phase.payload).includes('FAUX_REASONING'), false);
+  }
+  assert.equal(
+    collected.phaseBeforeAssistant,
+    true,
+    'the phase frame must precede the assistant message it announces',
+  );
+
+  const assistantMessages = collected.messages.filter((entry) => entry.role === 'assistant');
+  assert.equal(assistantMessages.length, 1, 'exactly one assistant message must be relayed');
+  // The thinking content is not streamed; it arrives in full inside the
+  // committed message, which is where the transcript renders it from.
+  assert.match(
+    JSON.stringify(assistantMessages[0]!.payload.message),
+    /FAUX_REASONING/,
+    'the committed assistant message must carry the thinking body',
+  );
+  assert.equal(
+    collected.streams.map((stream) => stream.text).join(''),
+    FAUX_TEXT,
+    'phase frames must not pollute the streamed text',
   );
 });
 

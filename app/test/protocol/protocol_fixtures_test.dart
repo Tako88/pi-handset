@@ -228,6 +228,7 @@ void main() {
             as Map<String, dynamic>;
     expect(allMessageTypes.toSet(), (shared['messageTypes'] as List).toSet());
     expect(eventPayloadKinds.toSet(), (shared['eventPayloadKinds'] as List).toSet());
+    expect(streamPhases.toSet(), (shared['streamPhases'] as List).toSet());
     expect(agentMessageTypes.toSet(), (shared['agentMessageTypes'] as List).toSet());
     expect(viewerMessageTypes.toSet(), (shared['viewerMessageTypes'] as List).toSet());
     expect(

@@ -16,6 +16,7 @@
     "session-gone"
   ],
   "eventPayloadKinds": ["stream", "message", "agent", "tool", "status"],
+  "streamPhases": ["thinking"],
   "agentMessageTypes": ["register", "event", "history", "command-result"],
   "viewerMessageTypes": ["subscribe", "unsubscribe", "history-request", "command"],
   "hubToViewerMessageTypes": [

@@ -138,9 +138,11 @@ function boundMessage(
  * payload. Total and explicit: every variant either emits or states why it is
  * ignored, and an unrecognized variant is *also* an explicit ignore.
  *
- * Only text deltas stream to the app; the final `done` message and `error`
- * status are forwarded so the transcript can settle. Thinking and tool-call
- * deltas are deliberately not streamed in this milestone.
+ * Only text deltas stream content; the final `done` message and `error` status
+ * are forwarded so the transcript can settle, and `thinking_start` emits a
+ * content-free phase frame so the status indicator can say "Thinking…".
+ * Thinking and tool-call *deltas* are deliberately not streamed in this
+ * milestone.
  */
 export function normalizeAssistantEvent(
   event: AssistantMessageEvent,
@@ -172,6 +174,10 @@ export function normalizeAssistantEvent(
     case 'text_end':
       return { kind: 'ignore', reason: `block-${event.type}` };
     case 'thinking_start':
+      // A content-free liveness phase: the block is empty at `*_start` (pi-ai
+      // types.d.ts), and reasoning content is never streamed. Only the phase
+      // travels, so the app can label "Thinking…" without duplicated bytes.
+      return { kind: 'emit', payload: { kind: 'stream', seq, phase: 'thinking' } };
     case 'thinking_delta':
     case 'thinking_end':
       return { kind: 'ignore', reason: 'thinking-not-streamed' };
@@ -199,16 +205,21 @@ export interface MessageEndEvent {
   message: unknown;
 }
 
+/** The roles whose `message_end` is relayed. `user` carries the user's own
+ * prompt (M1: own messages in the transcript); `assistant` carries the
+ * committed reply. `toolResult` is deliberately absent — M2 adds it together
+ * with the tool renderer its unlabelled output requires. */
+const RELAYED_MESSAGE_ROLES = new Set(['user', 'assistant']);
+
 /**
  * Maps pi's `message_end` extension event to at most one normalized payload.
  *
  * This is the live producer of the `message` payload: real pi signals assistant
  * completion with `message_end`, not with a `done` assistantMessageEvent (see
  * the comment on the `done` branch above). `message_end` fires for *every*
- * role — the system prompt, the user's own prompt, tool results — so only an
- * assistant message is relayed; every other role is an explicit ignore, never a
- * silent drop, or the bridge would mirror the user's prompt back into the
- * transcript.
+ * role — the system prompt, the user's own prompt, tool results — so only a
+ * relayed role is sent; every other role is an explicit ignore, never a silent
+ * drop.
  */
 export function normalizeMessageEnd(event: MessageEndEvent): NormalizedEvent {
   const message = event.message;
@@ -216,9 +227,9 @@ export function normalizeMessageEnd(event: MessageEndEvent): NormalizedEvent {
     typeof message === 'object' && message !== null
       ? (message as { role?: unknown }).role
       : undefined;
-  if (role !== 'assistant') {
+  if (typeof role !== 'string' || !RELAYED_MESSAGE_ROLES.has(role)) {
     const label = typeof role === 'string' ? role : 'unknown';
-    return { kind: 'ignore', reason: `message-end-non-assistant:${label}` };
+    return { kind: 'ignore', reason: `message-end-unrelayed-role:${label}` };
   }
   const bounded = boundMessage(message, MAX_RELAY_BYTES);
   return {

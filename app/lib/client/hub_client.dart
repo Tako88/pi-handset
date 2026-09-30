@@ -39,6 +39,7 @@ import '../protocol/protocol.dart';
 import 'hub_socket.dart';
 import 'scheduler.dart';
 import 'token_store.dart';
+import 'transcript.dart';
 
 /// Where the connection is in its lifecycle.
 enum HubConnectionStatus { disconnected, connecting, authenticating, connected }
@@ -71,12 +72,20 @@ class SessionSummary {
 class SessionTranscript {
   final List<Object?> entries;
 
+  /// The ordered display blocks derived from [entries]. Recomputed only when
+  /// entries change — never per stream delta.
+  final List<TranscriptBlock> blocks;
+
   /// Text accumulated from `stream` deltas since the last baseline.
   final String streamingText;
 
   /// True while deltas are being appended; cleared on `agent_settled` (the
   /// protocol's terminal state), never on a message-level completion.
   final bool streaming;
+
+  /// True while the bridge has signalled the thinking phase and no text has
+  /// streamed yet. Set by a content-free `stream` phase frame.
+  final bool thinking;
 
   final String agentState;
   final int lastSeq;
@@ -85,8 +94,10 @@ class SessionTranscript {
 
   const SessionTranscript({
     this.entries = const [],
+    this.blocks = const [],
     this.streamingText = '',
     this.streaming = false,
+    this.thinking = false,
     this.agentState = 'idle',
     this.lastSeq = 0,
     this.historyLoaded = false,
@@ -95,16 +106,20 @@ class SessionTranscript {
 
   SessionTranscript copyWith({
     List<Object?>? entries,
+    List<TranscriptBlock>? blocks,
     String? streamingText,
     bool? streaming,
+    bool? thinking,
     String? agentState,
     int? lastSeq,
     bool? historyLoaded,
     bool? truncated,
   }) => SessionTranscript(
     entries: entries ?? this.entries,
+    blocks: blocks ?? this.blocks,
     streamingText: streamingText ?? this.streamingText,
     streaming: streaming ?? this.streaming,
+    thinking: thinking ?? this.thinking,
     agentState: agentState ?? this.agentState,
     lastSeq: lastSeq ?? this.lastSeq,
     historyLoaded: historyLoaded ?? this.historyLoaded,
@@ -716,15 +731,33 @@ class HubClient {
     switch (payload['kind']) {
       case 'stream':
         final seq = (payload['seq']! as num).toInt();
-        _putTranscript(
-          sessionId,
-          transcript.copyWith(
-            streamingText:
-                transcript.streamingText + (payload['text']! as String),
-            streaming: true,
-            lastSeq: seq > transcript.lastSeq ? seq : transcript.lastSeq,
-          ),
-        );
+        final lastSeq = seq > transcript.lastSeq ? seq : transcript.lastSeq;
+        final text = payload['text'];
+        if (text is String) {
+          _putTranscript(
+            sessionId,
+            transcript.copyWith(
+              streamingText: transcript.streamingText + text,
+              streaming: true,
+              // The first byte of text proves thinking is over.
+              thinking: false,
+              lastSeq: lastSeq,
+            ),
+          );
+        } else {
+          // A content-free phase frame (no `text`): a liveness signal, not a
+          // delta. It must not reset the in-flight buffer or crash on the
+          // missing text.
+          _putTranscript(
+            sessionId,
+            transcript.copyWith(
+              thinking: payload['phase'] == 'thinking'
+                  ? true
+                  : transcript.thinking,
+              lastSeq: lastSeq,
+            ),
+          );
+        }
       case 'agent':
         final agentState = payload['state']! as String;
         // Terminal state is `settled`, never a message-level end. Clearing the
@@ -737,22 +770,39 @@ class HubClient {
             agentState: agentState,
             streaming: running ? transcript.streaming : false,
             streamingText: running ? transcript.streamingText : '',
+            thinking: running ? transcript.thinking : false,
           ),
         );
       case 'message':
+        // Only an assistant message commits the reply: a relayed user message
+        // (a mid-stream steer) or a tool result appends without wiping the
+        // text still in flight.
+        final message = payload['message'];
+        // A truncated marker (`{truncated:true, bytes}`) replaces an oversized
+        // assistant message, so it carries no `role`; it still stands in for
+        // the reply and must clear the in-flight phase and buffer.
+        final isTruncated = message is Map && message['truncated'] == true;
+        final fromAssistant =
+            message is Map && (message['role'] == 'assistant' || isTruncated);
         _putTranscript(
           sessionId,
-          transcript.copyWith(
-            entries: [...transcript.entries, payload['message']],
-            streamingText: '',
-            streaming: false,
+          _withEntries(transcript, [...transcript.entries, message]).copyWith(
+            streamingText: fromAssistant ? '' : transcript.streamingText,
+            streaming: fromAssistant ? false : transcript.streaming,
+            thinking: fromAssistant ? false : transcript.thinking,
           ),
         );
       default:
-        // `status`/`tool` are relayed raw so the renderer can decide.
+        // `status`/`tool` are relayed raw so the renderer can decide. An error
+        // status ends the turn without a settle, so clear the thinking phase
+        // here or `Thinking…` would stick forever.
+        final isErrorStatus =
+            payload['kind'] == 'status' && payload['event'] == 'error';
         _putTranscript(
           sessionId,
-          transcript.copyWith(entries: [...transcript.entries, payload]),
+          _withEntries(transcript, [...transcript.entries, payload]).copyWith(
+            thinking: isErrorStatus ? false : transcript.thinking,
+          ),
         );
     }
     _scheduleNotify();
@@ -763,10 +813,12 @@ class HubClient {
     // A delivered baseline breaks any resync or gone streak.
     _resyncCounts.remove(sessionId);
     _sessionGoneCounts.remove(sessionId);
+    final entries = (message['entries']! as List).cast<Object?>();
     _putTranscript(
       sessionId,
       SessionTranscript(
-        entries: (message['entries']! as List).cast<Object?>(),
+        entries: entries,
+        blocks: deriveBlocks(entries),
         lastSeq: (message['lastSeq']! as num).toInt(),
         agentState: message['agentState']! as String,
         truncated: message['truncated']! as bool,
@@ -893,6 +945,13 @@ class HubClient {
     if (_state.transcripts.containsKey(sessionId)) return;
     _putTranscript(sessionId, const SessionTranscript());
   }
+
+  /// Replaces [transcript]'s entries and re-derives its blocks in one place, so
+  /// a new entry site cannot forget the block model.
+  SessionTranscript _withEntries(
+    SessionTranscript transcript,
+    List<Object?> entries,
+  ) => transcript.copyWith(entries: entries, blocks: deriveBlocks(entries));
 
   void _putTranscript(String sessionId, SessionTranscript transcript) {
     _state = _state.copyWith(

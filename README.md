@@ -12,13 +12,22 @@ This file is orientation, setup and status.
 
 Both sides are built and tested, and the whole path has been exercised for real:
 a real `pi`, a real hub, the **real** Dart client, and the app on an emulator
-driving a live model. All ten milestones are done.
+driving a live model. All ten attach-protocol milestones are done; transcript
+parity with the pi TUI is now in progress (M1 of three).
 
 | | `pc/` (Node + TypeScript) | `app/` (Flutter + Dart) |
 |---|---|---|
-| Suite | 275 tests passing | 120 tests passing |
+| Suite | 281 tests passing | 148 tests passing |
 | Static gate | `tsc --noEmit` clean | `flutter analyze` clean |
 | Product code | hub, protocol codec, pi bridge | protocol codec, client, UI |
+
+**Transcript parity, in progress.** The app now renders the user's own messages
+and the assistant's thinking from one ordered block model fed identically by the
+live relay and the snapshot history, and shows a live `Working…`/`Thinking…`/
+`Responding…` status above the composer. That status is precise rather than a
+guess: the bridge relays a **content-free** `thinking` phase frame, so a slow
+first token is never mislabelled as thinking. Still to come: tool calls and
+their results (M2), and stick-to-bottom scrolling (M3).
 
 **Done:** the wire protocol and codec, single-use pairing tickets, the persisted
 pairing token, the discovery file and the lock that makes `serve` exclusive, the

@@ -338,6 +338,18 @@ test('thinking_delta is explicitly ignored, not silently dropped', () => {
   assert.equal(result.kind, 'ignore');
 });
 
+test('thinking_start emits a content-free phase frame with no reasoning text', () => {
+  const result = normalizeAssistantEvent(sampleAssistantEvent('thinking_start'), 4);
+  assert.deepEqual(result, {
+    kind: 'emit',
+    payload: { kind: 'stream', seq: 4, phase: 'thinking' },
+  });
+  if (result.kind !== 'emit') return;
+  // The whole point of the phase frame: it signals liveness without carrying a
+  // single byte of reasoning. A `text` field of any value must fail this.
+  assert.equal('text' in (result.payload as Record<string, unknown>), false);
+});
+
 test('toolcall_delta is explicitly ignored, not silently dropped', () => {
   const result = normalizeAssistantEvent(sampleAssistantEvent('toolcall_delta'), 1);
   assert.equal(result.kind, 'ignore');
@@ -384,12 +396,20 @@ test('a message_end carrying an assistant message emits exactly one message payl
   });
 });
 
-test('a message_end carrying a user message is ignored with a stated reason', () => {
-  const result = normalizeMessageEnd({ type: 'message_end', message: { role: 'user', content: 'hi' } });
+test('a message_end carrying a user message is relayed as an own message', () => {
+  const message = { role: 'user', content: 'hi' };
+  const result = normalizeMessageEnd({ type: 'message_end', message });
+  assert.deepEqual(result, {
+    kind: 'emit',
+    payload: { kind: 'message', message, truncated: false },
+  });
+});
+
+test('a message_end carrying a custom message is ignored with a stated reason', () => {
+  const result = normalizeMessageEnd({ type: 'message_end', message: { role: 'custom', content: 'x' } });
   assert.equal(result.kind, 'ignore');
   if (result.kind !== 'ignore') return;
-  assert.ok(result.reason.length > 0, 'the ignore must state a reason, not be undefined');
-  assert.match(result.reason, /user/);
+  assert.match(result.reason, /custom/);
 });
 
 test('a message_end carrying a system message is ignored with a stated reason', () => {
@@ -417,7 +437,7 @@ test('an oversized assistant message_end is truncated and flagged, staying under
   );
 });
 
-test('the message_end handler relays an assistant message and ignores other roles', () => {
+test('the message_end handler relays assistant and user messages and ignores other roles', () => {
   const harness = makeHarness();
   harness.start();
   const socket = harness.sockets[0]!;
@@ -425,14 +445,20 @@ test('the message_end handler relays an assistant message and ignores other role
   const before = socket.sent.length;
   const handler = harness.pi.handlers.get('message_end')!;
   const assistant = { role: 'assistant', content: [{ type: 'text', text: 'done' }] };
+  const user = { role: 'user', content: 'hi' };
+  handler({ type: 'message_end', message: user }, harness.startCtx);
   handler({ type: 'message_end', message: assistant }, harness.startCtx);
-  handler({ type: 'message_end', message: { role: 'user', content: 'hi' } }, harness.startCtx);
   handler({ type: 'message_end', message: { role: 'system', content: 'prompt' } }, harness.startCtx);
   const emitted = parsed(socket)
     .slice(before)
     .filter((m) => (m.payload as { kind?: string })?.kind === 'message');
-  assert.equal(emitted.length, 1, 'exactly one assistant message must be relayed');
-  assert.deepEqual(emitted[0]!.payload, { kind: 'message', message: assistant, truncated: false });
+  // Per-role, not a single total: a double-emitted user would keep a
+  // one-assistant count green.
+  assert.equal(emitted.length, 2, 'exactly one user and one assistant message must be relayed');
+  const roles = emitted.map((m) => (m.payload as { message: { role: string } }).message.role);
+  assert.deepEqual(roles, ['user', 'assistant']);
+  assert.deepEqual(emitted[0]!.payload, { kind: 'message', message: user, truncated: false });
+  assert.deepEqual(emitted[1]!.payload, { kind: 'message', message: assistant, truncated: false });
 });
 
 test('consecutive text deltas get strictly increasing stream seqs', () => {
