@@ -409,6 +409,11 @@ fish_add_path $HOME/Android/Sdk/emulator
   transcript on the `message` payload and clears the streaming buffer on settle, so
   a missing final message means every reply streams in and then vanishes. A green
   stub-tested suite did not catch it; the first run against a real `pi` did.
+- **The phone's session label is the *last* user prompt, not the first.** pi's
+  own session selector titles a session `name ?? firstMessage`; the phone has no
+  search, so tracking the current topic is more useful. Precedence:
+  `pi.getSessionName()`, else the last user message, else the hub's basename of
+  the session file.
 - **The faux provider is registered by an extension, not by pi.** pi has no
   selectable faux provider — `--provider faux` is unknown out of the box — so the
   M9 test loads a second extension that calls `pi.registerProvider(faux.provider)`.

@@ -33,7 +33,7 @@ class SessionList extends StatelessWidget {
       itemBuilder: (context, index) {
         final session = sessions[index];
         return ListTile(
-          title: Text(session.label),
+          title: Text(session.label, maxLines: 1, overflow: TextOverflow.ellipsis),
           subtitle: Text(session.agentState),
           onTap: () => onOpen(session),
         );

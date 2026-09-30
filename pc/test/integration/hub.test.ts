@@ -1014,6 +1014,45 @@ test('registering an agent pushes an updated session list to every authenticated
   assert.deepEqual(await second.nextSessions(2000), expected);
 });
 
+test('a re-register with an unchanged label does not push the session list again', async () => {
+  const hub = await startHub();
+  const agent = await connect(hub.agentPort);
+  const viewer = await connect(hub.viewerPort);
+  await helloViewer(viewer);
+  await helloTokened(agent);
+
+  agent.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'register',
+    sessionId: 's1',
+    name: 'same',
+  });
+  assert.deepEqual((await viewer.nextSessions(2000)).sessions, [
+    { sessionId: 's1', label: 'same', agentState: 'idle' },
+  ]);
+
+  // The bridge re-registers on every reconnect and on every unchanged prompt;
+  // an identical label must not spend a broadcast that every viewer redraws.
+  agent.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'register',
+    sessionId: 's1',
+    name: 'same',
+  });
+  await barrier(agent);
+  assert.equal(await viewer.tryNextSessions(300), undefined);
+
+  agent.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'register',
+    sessionId: 's1',
+    name: 'changed',
+  });
+  assert.deepEqual((await viewer.nextSessions(2000)).sessions, [
+    { sessionId: 's1', label: 'changed', agentState: 'idle' },
+  ]);
+});
+
 test('stream events do not push the session list; an agent-state transition does', async () => {
   const hub = await startHub();
   const agent = await connect(hub.agentPort);
