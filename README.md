@@ -10,28 +10,34 @@ This file is orientation, setup and status.
 
 ## Status
 
-The PC side is a working relay; the app side is still a scaffold with only a
-protocol codec. Seven of ten milestones in the attach-protocol plan are done.
+Both sides are built and tested; **nothing has yet been run end to end**. Eight of
+ten milestones in the attach-protocol plan are done.
 
 | | `pc/` (Node + TypeScript) | `app/` (Flutter + Dart) |
 |---|---|---|
-| Suite | 240 tests passing | 15 tests passing |
+| Suite | 262 tests passing | 109 tests passing |
 | Static gate | `tsc --noEmit` clean | `flutter analyze` clean |
-| Product code | hub, protocol codec, pi bridge | protocol codec |
+| Product code | hub, protocol codec, pi bridge | protocol codec, client, UI |
 
 **Done:** the wire protocol and codec, single-use pairing tickets, the persisted
 pairing token, the discovery file and the lock that makes `serve` exclusive, the
-hub (two listeners, listener-bound capabilities, relay, backpressure), the pi
-bridge extension, and shared golden fixtures with a pure Dart codec.
+hub (two listeners, listener-bound capabilities, relay, backpressure, and the
+session-registry push), the pi bridge extension, shared golden fixtures with a
+pure Dart codec, and the app — client, pairing, session list and transcript.
 
 **Next up, in order:**
 
-1. **The app** — WebSocket client, pairing screen, session list, transcript.
-2. **The bridge inside a real pi** — a faux provider, no network, no spend.
-3. **End to end** — hub, a real pi, the app on the emulator.
+1. **The bridge inside a real pi** — a faux provider, so there is no network and
+   no spend.
+2. **End to end** — hub, a real pi, and the app on the emulator.
 
-The toolchain canaries (`pc/src/hello.ts`, `app/lib/toolchain_canary.dart`) have
-outlived their purpose now that real modules exist, and retire as the app UI lands.
+The gap that matters: none of this has met a live `pi`. The bridge's handlers are
+unit-tested against a stub, and the app has only ever talked to a fake socket.
+Both are exercised for real only by the two remaining milestones.
+
+The toolchain canaries (`pc/src/hello.ts`, `app/lib/toolchain_canary.dart`) are no
+longer referenced by production code and await removal — deleting files is a human
+step here.
 
 ## Repo layout
 
