@@ -10,7 +10,12 @@ import {
   isAgentMessageType,
   isViewerMessageType,
 } from './protocol.ts';
-import type { DecodeErrorCode, EventMessage, HelloMessage } from './protocol.ts';
+import type {
+  DecodeErrorCode,
+  EventMessage,
+  HelloMessage,
+  SessionsMessage,
+} from './protocol.ts';
 
 function expectReject(raw: string, code: DecodeErrorCode, errorPattern: RegExp): void {
   const result = decode(raw);
@@ -280,6 +285,103 @@ test('decode rejects an agent payload with an unknown state', () => {
       protocolVersion: PROTOCOL_VERSION,
       type: 'event',
       payload: { kind: 'agent', state: 'sleeping' },
+    }),
+    'bad-state',
+    /state/i,
+  );
+});
+
+test('a sessions message round-trips through encode and decode', () => {
+  const sessions: SessionsMessage = {
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'sessions',
+    sessions: [{ sessionId: 'sess-1', label: 'my session', agentState: 'settled' }],
+  };
+  assert.deepEqual(decode(encode(sessions)), { ok: true, value: sessions });
+});
+
+test('a decoded sessions summary carries no lastSeq watermark', () => {
+  const raw = JSON.stringify({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'sessions',
+    sessions: [{ sessionId: 'sess-1', label: 'my session', agentState: 'settled' }],
+  });
+  const result = decode(raw);
+  if (!result.ok) assert.fail('sessions must decode');
+  if (result.value.type !== 'sessions') assert.fail('expected a sessions message');
+  assert.deepEqual(Object.keys(result.value.sessions[0]).sort(), [
+    'agentState',
+    'label',
+    'sessionId',
+  ]);
+});
+
+test('decode accepts an empty sessions list', () => {
+  const raw = JSON.stringify({ protocolVersion: PROTOCOL_VERSION, type: 'sessions', sessions: [] });
+  assert.deepEqual(decode(raw), {
+    ok: true,
+    value: { protocolVersion: PROTOCOL_VERSION, type: 'sessions', sessions: [] },
+  });
+});
+
+test('decode rejects a sessions message whose sessions is not an array', () => {
+  expectReject(
+    JSON.stringify({ protocolVersion: PROTOCOL_VERSION, type: 'sessions', sessions: 'nope' }),
+    'bad-field',
+    /sessions/i,
+  );
+});
+
+test('decode rejects a sessions entry that is not an object', () => {
+  expectReject(
+    JSON.stringify({ protocolVersion: PROTOCOL_VERSION, type: 'sessions', sessions: [42] }),
+    'bad-field',
+    /entr|object/i,
+  );
+});
+
+test('decode rejects a sessions entry with a missing sessionId', () => {
+  expectReject(
+    JSON.stringify({
+      protocolVersion: PROTOCOL_VERSION,
+      type: 'sessions',
+      sessions: [{ label: 'one', agentState: 'idle' }],
+    }),
+    'bad-field',
+    /sessionId/i,
+  );
+});
+
+test('decode rejects a sessions entry with an empty sessionId', () => {
+  expectReject(
+    JSON.stringify({
+      protocolVersion: PROTOCOL_VERSION,
+      type: 'sessions',
+      sessions: [{ sessionId: '', label: 'one', agentState: 'idle' }],
+    }),
+    'bad-field',
+    /sessionId/i,
+  );
+});
+
+test('decode rejects a sessions entry with a non-string label', () => {
+  expectReject(
+    JSON.stringify({
+      protocolVersion: PROTOCOL_VERSION,
+      type: 'sessions',
+      sessions: [{ sessionId: 'sess-1', label: 42, agentState: 'idle' }],
+    }),
+    'bad-field',
+    /label/i,
+  );
+});
+
+test('decode rejects a sessions entry with an unknown agent state', () => {
+  expectReject(
+    JSON.stringify({
+      protocolVersion: PROTOCOL_VERSION,
+      type: 'sessions',
+      sessions: [{ sessionId: 'sess-1', label: 'one', agentState: 'done' }],
     }),
     'bad-state',
     /state/i,

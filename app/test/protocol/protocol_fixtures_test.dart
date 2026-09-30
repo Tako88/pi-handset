@@ -187,6 +187,11 @@ void main() {
         'name': 'prompt',
       },
       'paired': {'protocolVersion': 1, 'type': 'paired', 'token': 'tok'},
+      'sessions': {
+        'protocolVersion': 1,
+        'type': 'sessions',
+        'sessions': <Object?>[],
+      },
       'snapshot': {
         'protocolVersion': 1,
         'type': 'snapshot',

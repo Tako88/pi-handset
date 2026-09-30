@@ -25,6 +25,7 @@
  */
 
 import { once } from 'node:events';
+import { basename } from 'node:path';
 
 import { WebSocket, WebSocketServer } from 'ws';
 import type { RawData } from 'ws';
@@ -39,7 +40,7 @@ import {
   isAgentMessageType,
   isViewerMessageType,
 } from '../protocol/protocol.ts';
-import type { AgentState } from '../protocol/protocol.ts';
+import type { AgentState, SessionsMessage } from '../protocol/protocol.ts';
 import { compareToken } from './auth.ts';
 import { ByteBudget } from './backpressure.ts';
 import type { TicketStore } from './pairing.ts';
@@ -121,6 +122,8 @@ interface Connection {
 
 interface Session {
   readonly sessionId: string;
+  /** Derived once at register time; re-derived on a re-register/takeover. */
+  label: string;
   agent: Connection;
   lastSeq: number;
   agentState: AgentState;
@@ -139,6 +142,8 @@ interface State {
     maxViewerBytes: number;
   };
   readonly sessions: Map<string, Session>;
+  /** Authenticated viewer connections; the broadcast audience for `sessions`. */
+  readonly viewers: Set<Connection>;
 }
 
 async function listen(server: WebSocketServer): Promise<void> {
@@ -168,6 +173,58 @@ function addressPort(server: WebSocketServer): number {
 function send(connection: Connection, message: unknown): void {
   if (connection.socket.readyState !== WebSocket.OPEN) return;
   connection.socket.send(JSON.stringify(message));
+}
+
+/**
+ * A viewer-safe label: the session's `name` verbatim, otherwise the basename of
+ * its `sessionFile` or `cwd`, otherwise the opaque `sessionId`. A full
+ * filesystem path is never exposed as a label.
+ */
+function registerLabel(message: Record<string, unknown>, sessionId: string): string {
+  const name = asString(message.name);
+  if (name !== null) return name;
+  for (const candidate of [message.sessionFile, message.cwd]) {
+    const value = asString(candidate);
+    if (value === null) continue;
+    const base = basename(value);
+    if (base.length > 0 && base !== '/') return base;
+  }
+  return sessionId;
+}
+
+/**
+ * The registry as a summary list: one entry per registered session, in
+ * `sessionId` order. `label` is viewer-safe (a basename, never a full path);
+ * the register record's `pid`, `cwd`, `model` and `sessionFile` never travel
+ * to a viewer as fields. `lastSeq` is deliberately absent: it moves on every
+ * stream delta, so a list carrying it would either be stale or force a push
+ * per token; a viewer that needs a watermark asks for a `snapshot`.
+ */
+function sessionsMessage(state: State): SessionsMessage {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'sessions',
+    sessions: [...state.sessions.values()]
+      .sort((a, b) => (a.sessionId < b.sessionId ? -1 : a.sessionId > b.sessionId ? 1 : 0))
+      .map((session) => ({
+        sessionId: session.sessionId,
+        label: session.label,
+        agentState: session.agentState,
+      })),
+  };
+}
+
+/** Pushes the current list to one connection. Viewer-only by construction. */
+function pushSessions(state: State, connection: Connection): void {
+  if (connection.listener !== 'viewer') return;
+  sendToViewer(connection, sessionsMessage(state), null);
+}
+
+/** Pushes the current list to every authenticated viewer. */
+function broadcastSessions(state: State): void {
+  for (const viewer of state.viewers) {
+    if (viewer.authenticated) pushSessions(state, viewer);
+  }
 }
 
 /**
@@ -241,6 +298,7 @@ function authenticate(connection: Connection, text: string, state: State): void 
       type: 'paired',
       token: state.config.token,
     }, null);
+    pushSessions(state, connection);
     return;
   }
   if (!compareToken(hello.token, state.config.token)) {
@@ -248,6 +306,7 @@ function authenticate(connection: Connection, text: string, state: State): void 
     return;
   }
   connection.authenticated = true;
+  pushSessions(state, connection);
 }
 
 function handleMessage(state: State, connection: Connection, data: RawData): void {
@@ -317,6 +376,7 @@ function handleRegister(
     closeWith(connection, CLOSE_PROTOCOL);
     return;
   }
+  const label = registerLabel(message, sessionId);
   // Switch/fork: one connection owns at most one session; registering a new id
   // retires the old one and tells its subscribers it is gone.
   const previous = ownedSession(state, connection);
@@ -332,10 +392,13 @@ function handleRegister(
       closeWith(existing.agent, CLOSE_PROTOCOL, 'session taken over');
     }
     existing.agent = connection;
+    existing.label = label;
+    broadcastSessions(state);
     return;
   }
   state.sessions.set(sessionId, {
     sessionId,
+    label,
     agent: connection,
     lastSeq: 0,
     agentState: 'idle',
@@ -343,6 +406,7 @@ function handleRegister(
     pendingHistory: new Set(),
     pendingCommands: new Map(),
   });
+  broadcastSessions(state);
 }
 
 function handleEvent(
@@ -377,7 +441,12 @@ function handleEvent(
       closeWith(connection, CLOSE_PROTOCOL);
       return;
     }
-    session.agentState = payload.state;
+    // Broadcast on a transition only: a stream delta bumps `lastSeq` but does
+    // not change the list a viewer reads, and pushing per token would be noise.
+    if (payload.state !== session.agentState) {
+      session.agentState = payload.state;
+      broadcastSessions(state);
+    }
   } else if (!(EVENT_PAYLOAD_KINDS as readonly unknown[]).includes(kind)) {
     // `message`/`tool`/`status` are relayed untouched; only a genuinely
     // unknown kind is a protocol violation.
@@ -620,6 +689,7 @@ export async function createHub(options: HubOptions): Promise<Hub> {
       maxViewerBytes: options.maxViewerBytes ?? MAX_RELAY_BYTES,
     },
     sessions: new Map(),
+    viewers: new Set(),
   };
 
   const sockets = new Set<WebSocket>();
@@ -638,12 +708,19 @@ export async function createHub(options: HubOptions): Promise<Hub> {
         closing: false,
         resyncAnnounced: new Set(),
       };
+      if (listener === 'viewer') state.viewers.add(connection);
       socket.on('close', () => {
         sockets.delete(socket);
+        state.viewers.delete(connection);
         // A closing agent retires its session and tells subscribers; a closing
-        // viewer is dropped from every set it was in.
+        // viewer is dropped from every set it was in. A retired session changes
+        // the registry, so the remaining viewers are pushed the new list.
+        let retired = false;
         for (const [sessionId, session] of [...state.sessions]) {
-          if (session.agent === connection) retireSession(state, sessionId);
+          if (session.agent === connection) {
+            retireSession(state, sessionId);
+            retired = true;
+          }
           session.subscribers.delete(connection);
           session.pendingHistory.delete(connection);
           for (const [id, queue] of [...session.pendingCommands]) {
@@ -652,6 +729,7 @@ export async function createHub(options: HubOptions): Promise<Hub> {
             else session.pendingCommands.set(id, remaining);
           }
         }
+        if (retired) broadcastSessions(state);
       });
       // A socket error is followed by a close; the close handler is the one
       // that matters. Ignoring here keeps the process off the crash path.

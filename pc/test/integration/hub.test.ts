@@ -54,11 +54,65 @@ interface Client {
   readonly ws: WebSocket;
   readonly closed: Promise<{ code: number; reason: string }>;
   send(message: unknown): void;
-  /** Resolves with the next message, or rejects after `timeoutMs`. */
+  /** Resolves with the next reply message, or rejects after `timeoutMs`. */
   next(timeoutMs?: number): Promise<Record<string, unknown>>;
-  /** Resolves with the next message, or `undefined` after `timeoutMs`. */
+  /** Resolves with the next reply message, or `undefined` after `timeoutMs`. */
   tryNext(timeoutMs?: number): Promise<Record<string, unknown> | undefined>;
+  /** Resolves with the next unsolicited `sessions` push, or rejects after `timeoutMs`. */
+  nextSessions(timeoutMs?: number): Promise<Record<string, unknown>>;
+  /** Resolves with the next `sessions` push, or `undefined` after `timeoutMs`. */
+  tryNextSessions(timeoutMs?: number): Promise<Record<string, unknown> | undefined>;
   terminate(): void;
+}
+
+interface MessageQueue {
+  push(message: Record<string, unknown>): void;
+  next(timeoutMs: number): Promise<Record<string, unknown>>;
+  tryNext(timeoutMs: number): Promise<Record<string, unknown> | undefined>;
+}
+
+/**
+ * A FIFO with at most one pending waiter. `ws` delivers messages in order, so a
+ * promise-based reader is enough.
+ */
+function messageQueue(): MessageQueue {
+  const items: Record<string, unknown>[] = [];
+  let waiter: ((value: Record<string, unknown>) => void) | null = null;
+
+  function next(timeoutMs: number): Promise<Record<string, unknown>> {
+    const queued = items.shift();
+    if (queued !== undefined) return Promise.resolve(queued);
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        waiter = null;
+        reject(new Error('timed out waiting for a message'));
+      }, timeoutMs);
+      waiter = (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      };
+    });
+  }
+
+  return {
+    push(message) {
+      if (waiter !== null) {
+        const resolve = waiter;
+        waiter = null;
+        resolve(message);
+      } else {
+        items.push(message);
+      }
+    },
+    next,
+    async tryNext(timeoutMs) {
+      try {
+        return await next(timeoutMs);
+      } catch {
+        return undefined;
+      }
+    },
+  };
 }
 
 /**
@@ -98,38 +152,20 @@ function closed(
 
 function connect(port: number): Promise<Client> {
   const ws = new WebSocket(`ws://127.0.0.1:${port}`);
-  const queue: Record<string, unknown>[] = [];
-  let waiter: ((value: Record<string, unknown>) => void) | null = null;
+  const messages = messageQueue();
+  const sessions = messageQueue();
 
   ws.on('message', (data) => {
     const message = JSON.parse(String(data)) as Record<string, unknown>;
-    if (waiter !== null) {
-      const resolve = waiter;
-      waiter = null;
-      resolve(message);
-    } else {
-      queue.push(message);
-    }
+    // `sessions` is unsolicited registry traffic. Keeping it out of the reply
+    // queue lets a test read either stream without interleaving noise; the
+    // sessions-specific tests read it explicitly via `nextSessions`.
+    (message.type === 'sessions' ? sessions : messages).push(message);
   });
 
   const closed = new Promise<{ code: number; reason: string }>((resolve) => {
     ws.once('close', (code, reason) => resolve({ code, reason: String(reason) }));
   });
-
-  function next(timeoutMs: number): Promise<Record<string, unknown>> {
-    const queued = queue.shift();
-    if (queued !== undefined) return Promise.resolve(queued);
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        waiter = null;
-        reject(new Error('timed out waiting for a message'));
-      }, timeoutMs);
-      waiter = (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      };
-    });
-  }
 
   return new Promise((resolve, reject) => {
     ws.once('error', reject);
@@ -138,14 +174,10 @@ function connect(port: number): Promise<Client> {
         ws,
         closed,
         send: (message) => ws.send(JSON.stringify(message)),
-        next: (timeoutMs = 2000) => next(timeoutMs),
-        async tryNext(timeoutMs = 300) {
-          try {
-            return await next(timeoutMs);
-          } catch {
-            return undefined;
-          }
-        },
+        next: (timeoutMs = 2000) => messages.next(timeoutMs),
+        tryNext: (timeoutMs = 300) => messages.tryNext(timeoutMs),
+        nextSessions: (timeoutMs = 2000) => sessions.next(timeoutMs),
+        tryNextSessions: (timeoutMs = 300) => sessions.tryNext(timeoutMs),
         terminate: () => ws.terminate(),
       };
       clients.push(client);
@@ -223,6 +255,7 @@ test('with a valid token, an agent sending command is closed as a capability vio
   const hub = await startHub();
   const agent = await connect(hub.agentPort);
   agent.send({ protocolVersion: PROTOCOL_VERSION, type: 'hello', token: TOKEN });
+  await barrier(agent);
   agent.send({
     protocolVersion: PROTOCOL_VERSION,
     type: 'command',
@@ -236,15 +269,46 @@ test('with a valid token, an agent sending command is closed as a capability vio
   assert.equal(code, CLOSE_CAPABILITY);
 });
 
-test('a valid token authenticates without a reply', async () => {
+test('with a valid token, a viewer sending sessions is closed as a capability violation', async () => {
+  const hub = await startHub();
+  const viewer = await connect(hub.viewerPort);
+  await helloTokened(viewer);
+  viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'sessions', sessions: [] });
+
+  const { code } = await closed(viewer);
+  assert.equal(
+    code,
+    CLOSE_CAPABILITY,
+    'sessions is hub→viewer only; a viewer may not publish a registry',
+  );
+});
+
+test('with a valid token, an agent sending sessions is closed as a capability violation', async () => {
+  const hub = await startHub();
+  const agent = await connect(hub.agentPort);
+  await helloTokened(agent);
+  agent.send({ protocolVersion: PROTOCOL_VERSION, type: 'sessions', sessions: [] });
+
+  const { code } = await closed(agent);
+  assert.equal(
+    code,
+    CLOSE_CAPABILITY,
+    'sessions is hub→viewer only; an agent may not publish a registry',
+  );
+});
+
+test('a valid token authenticates with only the session list as an unsolicited reply', async () => {
   const hub = await startHub();
   const viewer = await connect(hub.viewerPort);
 
   viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'hello', token: TOKEN });
-  // Anchor the absence: the next message on this socket must be the reply to a
-  // *later* request, proving `hello` produced none (not merely none yet).
+  // `hello` has exactly one unsolicited reply now: the session list. Anchor it,
+  // then the next message must be the reply to a *later* request.
   viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'subscribe', sessionId: 'ghost' });
 
+  const first = await viewer.nextSessions(2000);
+  assert.equal(first.type, 'sessions');
+  assert.deepEqual(first.sessions, []);
   const gone = await viewer.next(2000);
   assert.equal(gone.type, 'session-gone');
   assert.equal(gone.sessionId, 'ghost');
@@ -264,7 +328,7 @@ test('a frame larger than maxPayload is rejected without taking the hub down', a
 
   // The hub is still serving: a fresh connection authenticates normally.
   const fresh = await connect(hub.viewerPort);
-  fresh.send({ protocolVersion: PROTOCOL_VERSION, type: 'hello', token: TOKEN });
+  await helloViewer(fresh);
   fresh.send({ protocolVersion: PROTOCOL_VERSION, type: 'subscribe', sessionId: 'ghost' });
   assert.equal((await fresh.next(2000)).type, 'session-gone');
 });
@@ -279,7 +343,7 @@ test("a registered agent's stream event reaches a subscribed viewer", async () =
   const agent = await connect(hub.agentPort);
   const viewer = await connect(hub.viewerPort);
   await helloTokened(agent);
-  await helloTokened(viewer);
+  await helloViewer(viewer);
 
   agent.send({ protocolVersion: PROTOCOL_VERSION, type: 'register', sessionId: 's1' });
   await barrier(agent);
@@ -302,7 +366,7 @@ test("a registered agent's message, tool and status events relay verbatim", asyn
   const agent = await connect(hub.agentPort);
   const viewer = await connect(hub.viewerPort);
   await helloTokened(agent);
-  await helloTokened(viewer);
+  await helloViewer(viewer);
 
   agent.send({ protocolVersion: PROTOCOL_VERSION, type: 'register', sessionId: 's1' });
   await barrier(agent);
@@ -330,7 +394,7 @@ test("a viewer's command reaches the registered agent and its command-result ret
   const agent = await connect(hub.agentPort);
   const viewer = await connect(hub.viewerPort);
   await helloTokened(agent);
-  await helloTokened(viewer);
+  await helloViewer(viewer);
 
   agent.send({ protocolVersion: PROTOCOL_VERSION, type: 'register', sessionId: 's1' });
   await barrier(agent);
@@ -367,8 +431,8 @@ test('two viewers issuing the same command id each get their own result', async 
   const first = await connect(hub.viewerPort);
   const second = await connect(hub.viewerPort);
   await helloTokened(agent);
-  await helloTokened(first);
-  await helloTokened(second);
+  await helloViewer(first);
+  await helloViewer(second);
   agent.send({ protocolVersion: PROTOCOL_VERSION, type: 'register', sessionId: 's1' });
   await barrier(agent);
 
@@ -407,7 +471,7 @@ test('a command-result from an agent that does not own the session is ignored', 
   const viewer = await connect(hub.viewerPort);
   await helloTokened(owner);
   await helloTokened(other);
-  await helloTokened(viewer);
+  await helloViewer(viewer);
   owner.send({ protocolVersion: PROTOCOL_VERSION, type: 'register', sessionId: 's1' });
   await barrier(owner);
   other.send({ protocolVersion: PROTOCOL_VERSION, type: 'register', sessionId: 's2' });
@@ -439,7 +503,7 @@ test('an unknown command is rejected without reaching the agent', async () => {
   const agent = await connect(hub.agentPort);
   const viewer = await connect(hub.viewerPort);
   await helloTokened(agent);
-  await helloTokened(viewer);
+  await helloViewer(viewer);
   agent.send({ protocolVersion: PROTOCOL_VERSION, type: 'register', sessionId: 's1' });
   await barrier(agent);
 
@@ -474,7 +538,7 @@ test('an unknown command is rejected without reaching the agent', async () => {
 test('a command for an unknown session is rejected', async () => {
   const hub = await startHub();
   const viewer = await connect(hub.viewerPort);
-  await helloTokened(viewer);
+  await helloViewer(viewer);
 
   viewer.send({
     protocolVersion: PROTOCOL_VERSION,
@@ -496,7 +560,7 @@ test('closing an agent socket removes its session and tells subscribers', async 
   const agent = await connect(hub.agentPort);
   const viewer = await connect(hub.viewerPort);
   await helloTokened(agent);
-  await helloTokened(viewer);
+  await helloViewer(viewer);
   agent.send({ protocolVersion: PROTOCOL_VERSION, type: 'register', sessionId: 's1' });
   await barrier(agent);
   viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'subscribe', sessionId: 's1' });
@@ -519,7 +583,7 @@ test('a re-register for the same session replaces the old agent', async () => {
   const viewer = await connect(hub.viewerPort);
   await helloTokened(first);
   await helloTokened(second);
-  await helloTokened(viewer);
+  await helloViewer(viewer);
 
   first.send({ protocolVersion: PROTOCOL_VERSION, type: 'register', sessionId: 's1' });
   await barrier(first);
@@ -562,7 +626,7 @@ test('unsubscribing stops delivery to that viewer', async () => {
   const agent = await connect(hub.agentPort);
   const viewer = await connect(hub.viewerPort);
   await helloTokened(agent);
-  await helloTokened(viewer);
+  await helloViewer(viewer);
   agent.send({ protocolVersion: PROTOCOL_VERSION, type: 'register', sessionId: 's1' });
   await barrier(agent);
   viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'subscribe', sessionId: 's1' });
@@ -615,7 +679,7 @@ test('exceeding the byte budget drops events, resyncs, and preserves agentState'
   const agent = await connect(hub.agentPort);
   const viewer = await connect(hub.viewerPort);
   await helloTokened(agent);
-  await helloTokened(viewer);
+  await helloViewer(viewer);
   agent.send({ protocolVersion: PROTOCOL_VERSION, type: 'register', sessionId: 's1' });
   await barrier(agent);
   viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'subscribe', sessionId: 's1' });
@@ -693,7 +757,7 @@ test('an oversized snapshot is dropped and the viewer is told to resync', async 
   const agent = await connect(hub.agentPort);
   const viewer = await connect(hub.viewerPort);
   await helloTokened(agent);
-  await helloTokened(viewer);
+  await helloViewer(viewer);
   agent.send({ protocolVersion: PROTOCOL_VERSION, type: 'register', sessionId: 's1' });
   await barrier(agent);
   viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'subscribe', sessionId: 's1' });
@@ -725,7 +789,7 @@ test('resync is announced per session, not once per viewer connection', async ()
   const viewer = await connect(hub.viewerPort);
   await helloTokened(agentA);
   await helloTokened(agentB);
-  await helloTokened(viewer);
+  await helloViewer(viewer);
   agentA.send({ protocolVersion: PROTOCOL_VERSION, type: 'register', sessionId: 's1' });
   await barrier(agentA);
   agentB.send({ protocolVersion: PROTOCOL_VERSION, type: 'register', sessionId: 's2' });
@@ -754,7 +818,7 @@ test('resync is announced per session, not once per viewer connection', async ()
 test('a history-request with an invalid sinceSeq is closed as a protocol violation', async () => {
   const hub = await startHub();
   const viewer = await connect(hub.viewerPort);
-  await helloTokened(viewer);
+  await helloViewer(viewer);
 
   viewer.send({
     protocolVersion: PROTOCOL_VERSION,
@@ -773,8 +837,8 @@ test('concurrent history requests for one session coalesce into one agent reques
   const first = await connect(hub.viewerPort);
   const second = await connect(hub.viewerPort);
   await helloTokened(agent);
-  await helloTokened(first);
-  await helloTokened(second);
+  await helloViewer(first);
+  await helloViewer(second);
   agent.send({ protocolVersion: PROTOCOL_VERSION, type: 'register', sessionId: 's1' });
   await barrier(agent);
   first.send({ protocolVersion: PROTOCOL_VERSION, type: 'subscribe', sessionId: 's1' });
@@ -818,4 +882,347 @@ test('concurrent history requests for one session coalesce into one agent reques
     assert.equal(snapshot.sessionId, 's1');
     assert.deepEqual(snapshot.entries, entries);
   }
+});
+
+/**
+ * Authenticates a viewer and asserts the session list it is pushed on
+ * authentication lands in the sessions queue.
+ */
+async function helloViewer(client: Client): Promise<void> {
+  await helloTokened(client);
+  const first = await client.nextSessions(2000);
+  assert.equal(first.type, 'sessions', 'a viewer is pushed the session list on auth');
+}
+
+test('a viewer is pushed the current session list — empty — on authentication', async () => {
+  const hub = await startHub();
+  const viewer = await connect(hub.viewerPort);
+
+  viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'hello', token: TOKEN });
+
+  assert.deepEqual(await viewer.nextSessions(2000), {
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'sessions',
+    sessions: [],
+  });
+});
+
+test('a viewer that pairs with a ticket is also pushed the session list', async () => {
+  const tickets = createTicketStore();
+  const ticket = tickets.issue();
+  const hub = await startHub({ tickets });
+  const agent = await connect(hub.agentPort);
+  await helloTokened(agent);
+  agent.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'register',
+    sessionId: 's1',
+    name: 'ticketed',
+  });
+  await barrier(agent);
+
+  // `authenticate` pushes the list on both branches; only the token branch was
+  // covered, so a regression that dropped the pair-branch push would slip by.
+  const viewer = await connect(hub.viewerPort);
+  viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'hello', ticket });
+  assert.equal((await viewer.next(2000)).type, 'paired');
+  assert.deepEqual((await viewer.nextSessions(2000)).sessions, [
+    { sessionId: 's1', label: 'ticketed', agentState: 'idle' },
+  ]);
+});
+
+test('a viewer that authenticates after a session registered is pushed it', async () => {
+  const hub = await startHub();
+  const agent = await connect(hub.agentPort);
+  await helloTokened(agent);
+  agent.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'register',
+    sessionId: 's1',
+    name: 'late',
+  });
+  await barrier(agent);
+
+  // Every other content assertion authenticates first; a late joiner must be
+  // handed the sessions that already exist, not an empty list.
+  const viewer = await connect(hub.viewerPort);
+  viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'hello', token: TOKEN });
+  assert.deepEqual((await viewer.nextSessions(2000)).sessions, [
+    { sessionId: 's1', label: 'late', agentState: 'idle' },
+  ]);
+});
+
+test('registering an agent pushes an updated session list to every authenticated viewer', async () => {
+  const hub = await startHub();
+  const agent = await connect(hub.agentPort);
+  const first = await connect(hub.viewerPort);
+  const second = await connect(hub.viewerPort);
+  await helloViewer(first);
+  await helloViewer(second);
+  await helloTokened(agent);
+
+  agent.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'register',
+    sessionId: 's1',
+    name: 'my session',
+  });
+
+  const expected = {
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'sessions',
+    sessions: [{ sessionId: 's1', label: 'my session', agentState: 'idle' }],
+  };
+  assert.deepEqual(await first.nextSessions(2000), expected);
+  assert.deepEqual(await second.nextSessions(2000), expected);
+});
+
+test('stream events do not push the session list; an agent-state transition does', async () => {
+  const hub = await startHub();
+  const agent = await connect(hub.agentPort);
+  const viewer = await connect(hub.viewerPort);
+  await helloViewer(viewer);
+  await helloTokened(agent);
+  agent.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'register',
+    sessionId: 's1',
+    name: 'streamer',
+  });
+  // The registration push is the anchor that the viewer is receiving registry
+  // traffic at all.
+  assert.deepEqual((await viewer.nextSessions(2000)).sessions, [
+    { sessionId: 's1', label: 'streamer', agentState: 'idle' },
+  ]);
+
+  // A burst of stream deltas bumps `lastSeq` but is not a registry change: no
+  // push may follow, or the session list would broadcast once per token.
+  for (let seq = 1; seq <= 5; seq++) {
+    agent.send({
+      protocolVersion: PROTOCOL_VERSION,
+      type: 'event',
+      payload: { kind: 'stream', seq, text: 'x' },
+    });
+  }
+  await barrier(agent);
+
+  // The transition idle -> running is the one thing a session list exists to
+  // show. If the stream burst above pushed too, this read would get that push
+  // (still `idle`) rather than the transition.
+  agent.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'event',
+    payload: { kind: 'agent', state: 'running' },
+  });
+  assert.deepEqual((await viewer.nextSessions(2000)).sessions, [
+    { sessionId: 's1', label: 'streamer', agentState: 'running' },
+  ]);
+
+  // A second transition pushes again, so the first push was not a one-off.
+  agent.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'event',
+    payload: { kind: 'agent', state: 'settled' },
+  });
+  assert.deepEqual((await viewer.nextSessions(2000)).sessions, [
+    { sessionId: 's1', label: 'streamer', agentState: 'settled' },
+  ]);
+});
+
+test('losing an agent pushes an updated, now-empty session list', async () => {
+  const hub = await startHub();
+  const agent = await connect(hub.agentPort);
+  const viewer = await connect(hub.viewerPort);
+  await helloViewer(viewer);
+  await helloTokened(agent);
+
+  agent.send({ protocolVersion: PROTOCOL_VERSION, type: 'register', sessionId: 's1' });
+  assert.equal(((await viewer.nextSessions(2000)).sessions as unknown[]).length, 1);
+
+  agent.terminate();
+
+  const update = await viewer.nextSessions(2000);
+  assert.equal(update.type, 'sessions');
+  assert.deepEqual(update.sessions, []);
+});
+
+test('a takeover replaces the label but preserves the tracked session state', async () => {
+  const hub = await startHub();
+  const firstAgent = await connect(hub.agentPort);
+  const secondAgent = await connect(hub.agentPort);
+  const viewer = await connect(hub.viewerPort);
+  await helloViewer(viewer);
+  await helloTokened(firstAgent);
+  await helloTokened(secondAgent);
+
+  firstAgent.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'register',
+    sessionId: 's1',
+    name: 'first',
+  });
+  assert.deepEqual((await viewer.nextSessions(2000)).sessions, [
+    { sessionId: 's1', label: 'first', agentState: 'idle' },
+  ]);
+
+  // A distinct, non-default state before the takeover: with both sides `idle`
+  // the test could not tell "preserved" from "reset to the register default".
+  firstAgent.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'event',
+    payload: { kind: 'agent', state: 'running' },
+  });
+  assert.deepEqual((await viewer.nextSessions(2000)).sessions, [
+    { sessionId: 's1', label: 'first', agentState: 'running' },
+  ]);
+
+  secondAgent.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'register',
+    sessionId: 's1',
+    name: 'second',
+  });
+  assert.deepEqual((await viewer.nextSessions(2000)).sessions, [
+    { sessionId: 's1', label: 'second', agentState: 'running' },
+  ]);
+});
+
+test('the agent listener never receives a sessions message', async () => {
+  const hub = await startHub();
+  const agent = await connect(hub.agentPort);
+  const viewer = await connect(hub.viewerPort);
+  await helloTokened(agent);
+  await helloViewer(viewer);
+
+  agent.send({ protocolVersion: PROTOCOL_VERSION, type: 'register', sessionId: 's1' });
+  await barrier(agent);
+
+  assert.equal(
+    await agent.tryNextSessions(200),
+    undefined,
+    'the sessions push is viewer-only; the agent listener is never sent one',
+  );
+});
+
+test('the session list is delivered when it fits and dropped whole when it does not', async () => {
+  // Control: with room to spare the registration push arrives, on the same
+  // `pushSessions` -> `sendToViewer` path the over-budget case uses. Without
+  // this, the `undefined` below would also pass if no push were attempted.
+  const roomy = await startHub({ maxViewerBytes: 1024 });
+  const roomyAgent = await connect(roomy.agentPort);
+  const roomyViewer = await connect(roomy.viewerPort);
+  await helloViewer(roomyViewer);
+  await helloTokened(roomyAgent);
+  roomyAgent.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'register',
+    sessionId: 's1',
+    name: 'budgeted',
+  });
+  assert.deepEqual((await roomyViewer.nextSessions(2000)).sessions, [
+    { sessionId: 's1', label: 'budgeted', agentState: 'idle' },
+  ]);
+
+  // The identical push under a budget too small for it is dropped whole, not
+  // sent raw. Auth's own (also over-budget) push is why this does not use
+  // `helloViewer`, which would wait for a push that is deliberately dropped.
+  const tiny = await startHub({ maxViewerBytes: 8 });
+  const tinyAgent = await connect(tiny.agentPort);
+  const tinyViewer = await connect(tiny.viewerPort);
+  await helloTokened(tinyAgent);
+  tinyViewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'hello', token: TOKEN });
+  await barrier(tinyViewer);
+  tinyAgent.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'register',
+    sessionId: 's1',
+    name: 'budgeted',
+  });
+  await barrier(tinyAgent);
+
+  assert.equal(
+    await tinyViewer.tryNextSessions(200),
+    undefined,
+    'an over-budget sessions push must be dropped whole, not sent raw',
+  );
+});
+
+test('the session list is every registered session, in sessionId order, with no register-only fields', async () => {
+  const hub = await startHub();
+  const agentB = await connect(hub.agentPort);
+  const agentA = await connect(hub.agentPort);
+  const viewer = await connect(hub.viewerPort);
+  await helloViewer(viewer);
+  await helloTokened(agentB);
+  await helloTokened(agentA);
+
+  // Registered out of id order, and carrying fields the summary must not leak.
+  agentB.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'register',
+    sessionId: 's2',
+    name: 'beta',
+    cwd: '/home/user/beta',
+    model: 'claude-sonnet-4',
+    pid: 4242,
+  });
+  assert.deepEqual((await viewer.nextSessions(2000)).sessions, [
+    { sessionId: 's2', label: 'beta', agentState: 'idle' },
+  ]);
+
+  agentA.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'register',
+    sessionId: 's1',
+    sessionFile: '/home/user/.pi/sessions/1.jsonl',
+  });
+  const update = await viewer.nextSessions(2000);
+  const summaries = update.sessions as Array<{ sessionId: string }>;
+  assert.deepEqual(summaries.map((session) => session.sessionId), ['s1', 's2']);
+  assert.deepEqual(update.sessions, [
+    {
+      sessionId: 's1',
+      label: '1.jsonl',
+      agentState: 'idle',
+    },
+    { sessionId: 's2', label: 'beta', agentState: 'idle' },
+  ]);
+});
+
+test('a label derived from a path is a basename, never a full path', async () => {
+  const hub = await startHub();
+  const agentFile = await connect(hub.agentPort);
+  const agentCwd = await connect(hub.agentPort);
+  const viewer = await connect(hub.viewerPort);
+  await helloViewer(viewer);
+  await helloTokened(agentFile);
+  await helloTokened(agentCwd);
+
+  // A session registered with no `name` must not publish an absolute path to a
+  // viewer; the last path component is the useful, leakage-free part.
+  agentFile.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'register',
+    sessionId: 's1',
+    sessionFile: '/home/user/.pi/sessions/1.jsonl',
+  });
+  const fromFile = ((await viewer.nextSessions(2000)).sessions as Array<{
+    sessionId: string;
+    label: string;
+  }>).find((session) => session.sessionId === 's1')!;
+  assert.equal(fromFile.label, '1.jsonl');
+  assert.ok(!fromFile.label.includes('/'), 'a sessionFile label must carry no path separator');
+
+  agentCwd.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'register',
+    sessionId: 's2',
+    cwd: '/home/user/beta',
+  });
+  const fromCwd = ((await viewer.nextSessions(2000)).sessions as Array<{
+    sessionId: string;
+    label: string;
+  }>).find((session) => session.sessionId === 's2')!;
+  assert.equal(fromCwd.label, 'beta');
+  assert.ok(!fromCwd.label.includes('/'), 'a cwd label must carry no path separator');
 });

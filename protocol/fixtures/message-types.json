@@ -10,6 +10,7 @@
     "history-request",
     "command",
     "paired",
+    "sessions",
     "snapshot",
     "resync-required",
     "session-gone"
@@ -19,6 +20,7 @@
   "viewerMessageTypes": ["subscribe", "unsubscribe", "history-request", "command"],
   "hubToViewerMessageTypes": [
     "paired",
+    "sessions",
     "event",
     "snapshot",
     "command-result",

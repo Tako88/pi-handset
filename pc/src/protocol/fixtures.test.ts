@@ -199,6 +199,7 @@ test('every message type in the canonical lists decodes from a minimal body', ()
     'history-request': { protocolVersion: 1, type: 'history-request', sessionId: 'sess' },
     command: { protocolVersion: 1, type: 'command', id: 'id', sessionId: 'sess', name: 'prompt' },
     paired: { protocolVersion: 1, type: 'paired', token: 'tok' },
+    sessions: { protocolVersion: 1, type: 'sessions', sessions: [] },
     snapshot: {
       protocolVersion: 1,
       type: 'snapshot',
