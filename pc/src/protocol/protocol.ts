@@ -12,11 +12,22 @@
 export const PROTOCOL_VERSION = 1;
 
 /**
- * The shared byte cap for agent-supplied bulk payloads: the bridge truncates
- * projected history and the final `done` message to this, and the hub uses it
- * as the default per-viewer relay budget. One number, one home.
+ * The shared byte cap for one agent-supplied bulk payload: the bridge bounds the
+ * final `done`/`message_end` message to this, and the hub uses it as the default
+ * per-viewer relay budget. History uses `HISTORY_MAX_BYTES` instead — depth and
+ * per-frame safety are different jobs that must not share a number.
  */
 export const MAX_RELAY_BYTES = 256 * 1024;
+
+/**
+ * The bridge's history window. A `snapshot` answering a `history-request` is a
+ * control *response* the viewer asked for, delivered unbudgeted, so its only
+ * hard ceiling is the hub's 1 MiB frame cap. Deliberately larger than
+ * `MAX_RELAY_BYTES`: that one sizes a single relayed message, this one sizes
+ * depth, and sharing one number between the two jobs hid everything but the
+ * oldest 256 KB of a long session.
+ */
+export const HISTORY_MAX_BYTES = 768 * 1024;
 
 /**
  * The wire protocol, in one place.

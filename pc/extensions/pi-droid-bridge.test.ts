@@ -1219,6 +1219,61 @@ test('the bridge does not import the ws package', () => {
 // History projection
 // ---------------------------------------------------------------------------
 
+test('projectHistory keeps the newest entries when it truncates', () => {
+  const entries = Array.from({ length: 100 }, (_value, index) => ({ id: index, text: 'x'.repeat(200) }));
+  const projection = projectHistory(entries, 1024);
+  assert.equal(projection.truncated, true);
+  assert.ok(Buffer.byteLength(JSON.stringify(projection.entries)) <= 1024);
+  assert.deepEqual(
+    projection.entries.at(-1),
+    entries.at(-1),
+    'the newest entry must survive: a re-subscribe replays this window',
+  );
+  assert.ok(
+    !projection.entries.includes(entries[0]),
+    'the oldest entry is the one to drop',
+  );
+  // Order is chronological: the app appends these as later rows.
+  const ids = projection.entries.map((entry) => (entry as { id: number }).id);
+  assert.deepEqual(ids, [...ids].sort((a, b) => a - b));
+});
+
+test('projectHistory collapses an entry too large to ever fit, and keeps walking', () => {
+  const huge = { id: 'huge', text: 'x'.repeat(4096) };
+  const entries = [{ id: 'old' }, huge, { id: 'new' }];
+  const projection = projectHistory(entries, 2048);
+  assert.equal(
+    projection.truncated,
+    false,
+    'the giant is collapsed, not dropped, so no older entry is omitted',
+  );
+  assert.deepEqual(projection.entries[0], { id: 'old' });
+  assert.deepEqual(projection.entries[1], {
+    truncated: true,
+    bytes: Buffer.byteLength(JSON.stringify(huge)),
+  });
+  assert.deepEqual(projection.entries[2], { id: 'new' });
+  assert.ok(Buffer.byteLength(JSON.stringify(projection.entries)) <= 2048);
+});
+
+test('projectHistory collapses a giant even when it is the newest entry', () => {
+  const huge = { id: 'huge', text: 'x'.repeat(4096) };
+  const projection = projectHistory([{ id: 'old' }, huge], 2048);
+  assert.equal(projection.truncated, false);
+  assert.deepEqual(projection.entries, [
+    { id: 'old' },
+    { truncated: true, bytes: Buffer.byteLength(JSON.stringify(huge)) },
+  ]);
+
+  // Only the giant: the window may then hold exactly one marker, and the
+  // comma term must not be charged for it.
+  const alone = projectHistory([huge], 2048);
+  assert.deepEqual(alone, {
+    entries: [{ truncated: true, bytes: Buffer.byteLength(JSON.stringify(huge)) }],
+    truncated: false,
+  });
+});
+
 test('projectHistory truncates at the byte cap and flags it', () => {
   const entries = Array.from({ length: 100 }, (_value, index) => ({ id: index, text: 'x'.repeat(200) }));
   const projection = projectHistory(entries, 1024);

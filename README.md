@@ -69,6 +69,12 @@ what it would cost, so it can be picked up cold.
 
 **Product gaps**
 
+- **History is a fixed window, not a paged log.** A `snapshot` carries at most
+  `HISTORY_MAX_BYTES` (768 KiB) of the *newest* entries; older ones are simply not
+  sent, and the app says so above the oldest row it has. A single entry larger than
+  the whole window is collapsed to a byte-count notice rather than becoming a wall.
+  The real fix is paging — a `fetchOlder` cursor on `history-request` — which is why
+  the window is described as a stopgap, not a design.
 - **Thinking content is not streamed live.** Only the content-free `thinking` phase
   frame is relayed; the text arrives when the assistant message commits. Streaming it
   would double the bytes already relayed.
@@ -79,8 +85,10 @@ what it would cost, so it can be picked up cold.
 - **No discovery.** The address is typed by hand. Tailscale needs none — its MagicDNS
   name is typed once — but there is no LAN beacon or mDNS path. The emulator can only
   reach the host as `10.0.2.2`, because its NAT hides the LAN entirely.
-- **Reinstalling a rebuilt APK drops the pairing**, because the keystore-wrapped
-  credential can no longer be decrypted. A normal reboot does not.
+- **Reinstalling a rebuilt APK *may* drop the pairing**, if the keystore-wrapped
+  credential can no longer be decrypted. Observed once, then not reproduced on a
+  2026-09-30 reinstall — treat it as unconfirmed rather than a rule. A normal reboot
+  does not affect it.
 
 **Known residuals, accepted at the time**
 

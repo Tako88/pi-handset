@@ -30,6 +30,7 @@
 import { loadOrCreateToken, resolveConfigDir } from '../src/hub/auth.ts';
 import { readDiscovery, resolveRuntimeDir } from '../src/hub/discovery.ts';
 import {
+  HISTORY_MAX_BYTES,
   MAX_RELAY_BYTES,
   PROTOCOL_VERSION,
   asObject,
@@ -287,23 +288,39 @@ export interface HistoryProjection {
 }
 
 /**
- * Prefix-projects transcript entries to a byte cap. Stops at the first entry
- * that would overflow and flags the result, so a viewer can tell it is partial
- * rather than silently short.
+ * The most recent entries that fit in `maxBytes`, in chronological order.
+ *
+ * A *suffix* window, not a prefix. This frame is replayed to a viewer on every
+ * subscribe/reconnect, so the newest entries are the ones that must survive:
+ * a prefix window drops exactly the recent turns the viewer is looking for,
+ * which reads on the phone as "the session ends at some old message" even
+ * though live events keep arriving. Walking backwards and reversing keeps the
+ * kept run contiguous and chronological. `truncated` means the *older* entries
+ * were omitted.
  */
 export function projectHistory(entries: readonly unknown[], maxBytes: number): HistoryProjection {
   const kept: unknown[] = [];
   let bytes = 2; // the enclosing `[]`
-  for (const entry of entries) {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
     const serialized = JSON.stringify(entry) ?? 'null';
-    const size = Buffer.byteLength(serialized) + (kept.length > 0 ? 1 : 0);
-    if (bytes + size > maxBytes) {
-      return { entries: kept, truncated: true };
+    let size = Buffer.byteLength(serialized) + (kept.length > 0 ? 1 : 0);
+    let value = entry;
+    if (size > maxBytes) {
+      // An entry no window could ever hold (a 1.4 MB tool result is real here)
+      // would otherwise be a hard wall: it stops the walk and leaves most of
+      // the budget unspent, so everything older becomes unreachable. Collapse
+      // it to the marker the app already renders as a notice, which keeps the
+      // walk honest — a named gap, not a silent one.
+      value = { truncated: true, bytes: Buffer.byteLength(serialized) };
+      size = Buffer.byteLength(JSON.stringify(value)) + (kept.length > 0 ? 1 : 0);
     }
+    if (bytes + size > maxBytes) break;
     bytes += size;
-    kept.push(entry);
+    kept.push(value);
   }
-  return { entries: kept, truncated: false };
+  kept.reverse();
+  return { entries: kept, truncated: kept.length < entries.length };
 }
 
 // ---------------------------------------------------------------------------
@@ -840,7 +857,7 @@ class Bridge {
   private sendHistory(): void {
     const ctx = this.ctx;
     if (ctx === null) return;
-    const projection = projectHistory(ctx.sessionManager.getEntries(), MAX_RELAY_BYTES);
+    const projection = projectHistory(ctx.sessionManager.getEntries(), HISTORY_MAX_BYTES);
     const message: HistoryMessage = {
       protocolVersion: PROTOCOL_VERSION,
       type: 'history',
