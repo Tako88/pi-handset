@@ -150,6 +150,12 @@ export function normalizeAssistantEvent(
     case 'text_delta':
       return { kind: 'emit', payload: { kind: 'stream', seq, text: event.delta } };
     case 'done': {
+      // Real pi does NOT forward a `done` assistantMessageEvent on
+      // `message_update`; assistant completion arrives as the `message_end`
+      // extension event, handled by `normalizeMessageEnd` (the live producer).
+      // This branch is retained because `done` is part of the transcribed pi-ai
+      // union and the exhaustive switch below depends on it — not because it
+      // fires. Do not "fix" it back to being the producer.
       const bounded = boundMessage(event.message, MAX_RELAY_BYTES);
       return {
         kind: 'emit',
@@ -186,6 +192,40 @@ export function normalizeAssistantEvent(
 // ---------------------------------------------------------------------------
 // Pure helpers
 // ---------------------------------------------------------------------------
+
+/** The pi `message_end` extension event: the authoritative final message. */
+export interface MessageEndEvent {
+  type: 'message_end';
+  message: unknown;
+}
+
+/**
+ * Maps pi's `message_end` extension event to at most one normalized payload.
+ *
+ * This is the live producer of the `message` payload: real pi signals assistant
+ * completion with `message_end`, not with a `done` assistantMessageEvent (see
+ * the comment on the `done` branch above). `message_end` fires for *every*
+ * role — the system prompt, the user's own prompt, tool results — so only an
+ * assistant message is relayed; every other role is an explicit ignore, never a
+ * silent drop, or the bridge would mirror the user's prompt back into the
+ * transcript.
+ */
+export function normalizeMessageEnd(event: MessageEndEvent): NormalizedEvent {
+  const message = event.message;
+  const role =
+    typeof message === 'object' && message !== null
+      ? (message as { role?: unknown }).role
+      : undefined;
+  if (role !== 'assistant') {
+    const label = typeof role === 'string' ? role : 'unknown';
+    return { kind: 'ignore', reason: `message-end-non-assistant:${label}` };
+  }
+  const bounded = boundMessage(message, MAX_RELAY_BYTES);
+  return {
+    kind: 'emit',
+    payload: { kind: 'message', message: bounded.message, truncated: bounded.truncated },
+  };
+}
 
 /** The modes in which the bridge is active; `json`/`print` stay inert. */
 const ACTIVE_MODES = new Set(['tui', 'rpc']);
@@ -395,6 +435,9 @@ class Bridge {
     this.pi.on('session_start', (_event, ctx) => this.guard(() => this.onSessionStart(ctx)));
     this.pi.on('session_shutdown', () => this.guard(() => this.onSessionShutdown()));
     this.pi.on('message_update', (event) => this.guard(() => this.onMessageUpdate(event)));
+    // Real pi's assistant-completion signal. `message_update` never carries a
+    // `done`, so this is the only live source of the `message` payload.
+    this.pi.on('message_end', (event) => this.guard(() => this.onMessageEnd(event)));
     this.pi.on('agent_start', () => this.guard(() => this.setAgentState('running')));
     // Terminal state is `agent_settled`, deliberately not `agent_end`.
     this.pi.on('agent_settled', () => this.guard(() => this.setAgentState('settled')));
@@ -558,6 +601,12 @@ class Bridge {
     const normalized = normalizeAssistantEvent(assistantEvent, candidate);
     if (normalized.kind === 'ignore') return;
     if (normalized.payload.kind === 'stream') this.seq = candidate;
+    this.sendEvent(normalized.payload);
+  }
+
+  private onMessageEnd(event: unknown): void {
+    const normalized = normalizeMessageEnd(event as MessageEndEvent);
+    if (normalized.kind === 'ignore') return;
     this.sendEvent(normalized.payload);
   }
 
