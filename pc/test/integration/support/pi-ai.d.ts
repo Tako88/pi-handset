@@ -34,4 +34,9 @@ declare module '@earendil-works/pi-ai' {
   ): unknown;
   export function fauxText(text: string): unknown;
   export function fauxThinking(thinking: string): unknown;
+  export function fauxToolCall(
+    name: string,
+    arguments_: Record<string, unknown>,
+    options?: { id?: string },
+  ): unknown;
 }

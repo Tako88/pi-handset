@@ -405,6 +405,21 @@ test('a message_end carrying a user message is relayed as an own message', () =>
   });
 });
 
+test('a message_end carrying a toolResult message is relayed', () => {
+  const message = {
+    role: 'toolResult',
+    toolCallId: 'call-1',
+    toolName: 'read',
+    content: [{ type: 'text', text: 'file body' }],
+    isError: false,
+  };
+  const result = normalizeMessageEnd({ type: 'message_end', message });
+  assert.deepEqual(result, {
+    kind: 'emit',
+    payload: { kind: 'message', message, truncated: false },
+  });
+});
+
 test('a message_end carrying a custom message is ignored with a stated reason', () => {
   const result = normalizeMessageEnd({ type: 'message_end', message: { role: 'custom', content: 'x' } });
   assert.equal(result.kind, 'ignore');
@@ -437,7 +452,25 @@ test('an oversized assistant message_end is truncated and flagged, staying under
   );
 });
 
-test('the message_end handler relays assistant and user messages and ignores other roles', () => {
+test('an oversized toolResult message_end is replaced by a byte-count marker', () => {
+  const huge = {
+    role: 'toolResult',
+    toolCallId: 'call-1',
+    toolName: 'read',
+    content: [{ type: 'text', text: 'x'.repeat(MAX_RELAY_BYTES + 1) }],
+    isError: false,
+  };
+  const result = normalizeMessageEnd({ type: 'message_end', message: huge });
+  assert.equal(result.kind, 'emit');
+  if (result.kind !== 'emit') return;
+  assert.equal((result.payload as { truncated?: boolean }).truncated, true);
+  assert.deepEqual((result.payload as { message?: unknown }).message, {
+    truncated: true,
+    bytes: Buffer.byteLength(JSON.stringify(huge)),
+  });
+});
+
+test('the message_end handler relays assistant, user and toolResult messages and ignores other roles', () => {
   const harness = makeHarness();
   harness.start();
   const socket = harness.sockets[0]!;
@@ -446,19 +479,27 @@ test('the message_end handler relays assistant and user messages and ignores oth
   const handler = harness.pi.handlers.get('message_end')!;
   const assistant = { role: 'assistant', content: [{ type: 'text', text: 'done' }] };
   const user = { role: 'user', content: 'hi' };
+  const toolResult = {
+    role: 'toolResult',
+    toolCallId: 'call-1',
+    toolName: 'read',
+    content: [{ type: 'text', text: 'file body' }],
+    isError: false,
+  };
   handler({ type: 'message_end', message: user }, harness.startCtx);
   handler({ type: 'message_end', message: assistant }, harness.startCtx);
+  handler({ type: 'message_end', message: toolResult }, harness.startCtx);
   handler({ type: 'message_end', message: { role: 'system', content: 'prompt' } }, harness.startCtx);
   const emitted = parsed(socket)
     .slice(before)
     .filter((m) => (m.payload as { kind?: string })?.kind === 'message');
-  // Per-role, not a single total: a double-emitted user would keep a
-  // one-assistant count green.
-  assert.equal(emitted.length, 2, 'exactly one user and one assistant message must be relayed');
+  // Per-role, not a single total: each relayed role must appear exactly once.
+  assert.equal(emitted.length, 3, 'exactly one user, assistant and toolResult message must be relayed');
   const roles = emitted.map((m) => (m.payload as { message: { role: string } }).message.role);
-  assert.deepEqual(roles, ['user', 'assistant']);
+  assert.deepEqual(roles, ['user', 'assistant', 'toolResult']);
   assert.deepEqual(emitted[0]!.payload, { kind: 'message', message: user, truncated: false });
   assert.deepEqual(emitted[1]!.payload, { kind: 'message', message: assistant, truncated: false });
+  assert.deepEqual(emitted[2]!.payload, { kind: 'message', message: toolResult, truncated: false });
 });
 
 test('consecutive text deltas get strictly increasing stream seqs', () => {

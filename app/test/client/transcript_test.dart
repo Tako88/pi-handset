@@ -16,6 +16,33 @@ Map<String, Object?> thinkingBlock(String thinking, {bool redacted = false}) => 
   'thinking': thinking,
   if (redacted) 'redacted': true,
 };
+Map<String, Object?> toolCallBlock({
+  required String id,
+  String name = 'read',
+  Map<String, Object?> arguments = const {'path': '/etc/hostname'},
+}) => {
+  'type': 'toolCall',
+  'id': id,
+  'name': name,
+  'arguments': arguments,
+};
+Map<String, Object?> toolResultMessage({
+  required String toolCallId,
+  String toolName = 'read',
+  Object? content,
+  bool isError = false,
+}) => {
+  'role': 'toolResult',
+  'toolCallId': toolCallId,
+  'toolName': toolName,
+  'content': content ?? [textBlock('file body')],
+  'isError': isError,
+};
+
+Map<String, Object?> assistantWith(Object? content) => {
+  'role': 'assistant',
+  'content': content,
+};
 
 void main() {
   test('a bare user message with string content is one own-message block', () {
@@ -218,6 +245,34 @@ void main() {
     expect(blocks.single.text, contains('123456'));
   });
 
+  test('an oversize toolResult marker becomes a notice, never a paired result', () {
+    // `boundMessage` replaces a >256 KB toolResult whole with `{truncated,bytes}`.
+    // The call still relayed, so its block stays unresolved; the marker is an
+    // honest notice, not a tool block carrying the raw output.
+    final blocks = deriveBlocks([
+      assistantWith([toolCallBlock(id: 'call-1')]),
+      {'truncated': true, 'bytes': 300000},
+    ]);
+
+    final notices = blocks
+        .where((block) => block.kind == TranscriptBlockKind.notice)
+        .toList();
+    expect(notices, hasLength(1));
+    expect(notices.single.text, contains('300000'));
+    final tools = blocks
+        .where((block) => block.kind == TranscriptBlockKind.tool)
+        .toList();
+    expect(tools, hasLength(1), reason: 'the call itself still renders');
+    expect(tools.single.toolResult, isNull, reason: 'the result was dropped whole');
+    expect(
+      blocks.any(
+        (block) =>
+            block.kind == TranscriptBlockKind.tool && block.toolResult != null,
+      ),
+      isFalse,
+    );
+  });
+
   test('a relayed status payload becomes a notice', () {
     final blocks = deriveBlocks([
       {'kind': 'status', 'event': 'error', 'message': 'model overloaded'},
@@ -226,6 +281,216 @@ void main() {
     expect(blocks, hasLength(1));
     expect(blocks.single.kind, TranscriptBlockKind.notice);
     expect(blocks.single.text, 'model overloaded');
+  });
+
+  test('a tool call and a later result pair into one block at the call', () {
+    final blocks = deriveBlocks([
+      assistantWith([toolCallBlock(id: 'call-1')]),
+      toolResultMessage(toolCallId: 'call-1', content: [textBlock('file body')]),
+    ]);
+
+    expect(blocks, hasLength(1), reason: 'the result must not also render standalone');
+    expect(blocks.single.kind, TranscriptBlockKind.tool);
+    expect(blocks.single.toolName, 'read');
+    expect(blocks.single.toolResult, isNotNull);
+    expect(blocks.single.isError, isFalse);
+    expect(blocks.single.text, contains('file body'));
+  });
+
+  test('a tool call with no result keeps a null result', () {
+    final blocks = deriveBlocks([
+      assistantWith([toolCallBlock(id: 'call-1')]),
+    ]);
+
+    expect(blocks, hasLength(1));
+    expect(blocks.single.kind, TranscriptBlockKind.tool);
+    expect(blocks.single.toolResult, isNull);
+  });
+
+  test('a result with no matching call becomes a standalone tool block', () {
+    final blocks = deriveBlocks([
+      toolResultMessage(
+        toolCallId: 'orphan-1',
+        toolName: 'grep',
+        content: [textBlock('orphan output')],
+      ),
+    ]);
+
+    expect(blocks, hasLength(1), reason: 'an orphan result must not vanish');
+    expect(blocks.single.kind, TranscriptBlockKind.tool);
+    expect(blocks.single.toolName, 'grep');
+    expect(blocks.single.toolResult, isNotNull);
+    expect(blocks.single.text, contains('orphan output'));
+  });
+
+  test('a duplicate toolCallId pairs the first result and drops the second', () {
+    final blocks = deriveBlocks([
+      assistantWith([toolCallBlock(id: 'call-1')]),
+      toolResultMessage(toolCallId: 'call-1', content: [textBlock('first result')]),
+      toolResultMessage(toolCallId: 'call-1', content: [textBlock('second result')]),
+    ]);
+
+    // A last-wins implementation passes every obvious case; only this one
+    // distinguishes it from first-wins.
+    expect(blocks, hasLength(1), reason: 'the duplicate result must not add a block');
+    expect(blocks.single.kind, TranscriptBlockKind.tool);
+    expect(blocks.single.text, contains('first result'));
+    expect(blocks.single.text, isNot(contains('second result')));
+  });
+
+  test('a result that arrives before its call still pairs', () {
+    // Pass 1 indexes the whole list before pass 2 emits, so order must not
+    // matter; a single-pass implementation fails this.
+    final blocks = deriveBlocks([
+      toolResultMessage(toolCallId: 'call-1', content: [textBlock('file body')]),
+      assistantWith([toolCallBlock(id: 'call-1')]),
+    ]);
+
+    expect(blocks, hasLength(1), reason: 'the early result must not render standalone');
+    expect(blocks.single.kind, TranscriptBlockKind.tool);
+    expect(blocks.single.toolResult, isNotNull);
+    expect(blocks.single.text, contains('file body'));
+  });
+
+  test('two calls with one result leave the unresolved call null', () {
+    final blocks = deriveBlocks([
+      assistantWith([toolCallBlock(id: 'call-1'), toolCallBlock(id: 'call-2')]),
+      toolResultMessage(toolCallId: 'call-1'),
+    ]);
+
+    expect(blocks, hasLength(2));
+    expect(blocks[0].toolResult, isNotNull);
+    expect(blocks[1].toolResult, isNull, reason: 'call-2 got no result');
+  });
+
+  test('a result whose id does not match the call stays an orphan', () {
+    // An index-based pairing (n-th result to n-th call) passes every obvious
+    // case and would wrongly attach this result to call-1.
+    final blocks = deriveBlocks([
+      assistantWith([toolCallBlock(id: 'call-1')]),
+      toolResultMessage(
+        toolCallId: 'call-2',
+        toolName: 'grep',
+        content: [textBlock('other output')],
+      ),
+    ]);
+
+    expect(blocks, hasLength(2), reason: 'a mismatched result must not pair');
+    expect(blocks[0].kind, TranscriptBlockKind.tool);
+    expect(blocks[0].toolName, 'read');
+    expect(blocks[0].toolResult, isNull, reason: 'call-1 has no matching result');
+    expect(blocks[1].kind, TranscriptBlockKind.tool);
+    expect(blocks[1].toolName, 'grep');
+    expect(blocks[1].text, contains('other output'));
+  });
+
+  test('two assistant messages with the same call id get distinct block ids', () {
+    // A forked branch can surface the same call twice; two blocks with the same
+    // `id` make the view's ValueKey collide and attach state to the wrong row.
+    final blocks = deriveBlocks([
+      assistantWith([toolCallBlock(id: 'call-1')]),
+      assistantWith([toolCallBlock(id: 'call-1')]),
+    ]);
+
+    expect(blocks, hasLength(2));
+    expect(blocks.map((block) => block.id).toSet(), hasLength(2));
+    expect(blocks.first.id, 'tool:call-1', reason: 'the first keeps the canonical id');
+  });
+
+  test('two orphan results with the same call id get distinct block ids', () {
+    final blocks = deriveBlocks([
+      toolResultMessage(toolCallId: 'orphan-1'),
+      toolResultMessage(toolCallId: 'orphan-1'),
+    ]);
+
+    expect(blocks, hasLength(2));
+    expect(blocks.map((block) => block.id).toSet(), hasLength(2));
+    expect(blocks.first.id, 'tool:orphan-1');
+  });
+
+  test('an error result marks the paired block as an error', () {
+    final blocks = deriveBlocks([
+      assistantWith([toolCallBlock(id: 'call-1')]),
+      toolResultMessage(toolCallId: 'call-1', isError: true, content: [textBlock('boom')]),
+    ]);
+
+    expect(blocks.single.isError, isTrue);
+  });
+
+  test('an image in a tool result becomes an [image] placeholder', () {
+    final blocks = deriveBlocks([
+      assistantWith([toolCallBlock(id: 'call-1')]),
+      toolResultMessage(
+        toolCallId: 'call-1',
+        content: [
+          textBlock('see:'),
+          {'type': 'image', 'data': 'BASE64', 'mimeType': 'image/png'},
+        ],
+      ),
+    ]);
+
+    expect(blocks.single.text, contains('[image]'));
+  });
+
+  test('two text parts in a tool result join on a newline', () {
+    // `[a, b]` concatenated without a separator renders `ab`, welding words
+    // together; the parts are separate lines of output.
+    final blocks = deriveBlocks([
+      assistantWith([toolCallBlock(id: 'call-1')]),
+      toolResultMessage(
+        toolCallId: 'call-1',
+        content: [textBlock('a'), textBlock('b')],
+      ),
+    ]);
+
+    expect(blocks.single.text, 'a\nb');
+  });
+
+  test('a tool result preview caps at the generic line limit and counts the rest', () {
+    final lines = List.generate(12, (i) => 'line $i');
+    final preview = previewToolResult(lines.join('\n'));
+
+    expect(preview.isTruncated, isTrue);
+    expect(preview.shown.split('\n'), hasLength(toolResultPreviewLines));
+    expect(preview.hiddenLines, 12 - toolResultPreviewLines);
+  });
+
+  test('a short tool result preview is not truncated', () {
+    final preview = previewToolResult('one\ntwo');
+
+    expect(preview.isTruncated, isFalse);
+    expect(preview.shown, 'one\ntwo');
+    expect(preview.hiddenLines, 0);
+  });
+
+  test('an empty tool result preview is empty and not truncated', () {
+    final preview = previewToolResult('');
+
+    expect(preview.shown, '');
+    expect(preview.isTruncated, isFalse);
+    expect(preview.hiddenLines, 0);
+  });
+
+  test('a tool result of exactly the cap is not truncated', () {
+    // The off-by-one (`<` vs `<=`) is visible only at exactly the cap.
+    final text = List.generate(
+      toolResultPreviewLines,
+      (i) => 'line $i',
+    ).join('\n');
+    final preview = previewToolResult(text);
+
+    expect(preview.isTruncated, isFalse);
+    expect(preview.shown, text);
+    expect(preview.hiddenLines, 0);
+  });
+
+  test('a tool result one over the cap hides exactly one line', () {
+    final lines = List.generate(toolResultPreviewLines + 1, (i) => 'line $i');
+    final preview = previewToolResult(lines.join('\n'));
+
+    expect(preview.isTruncated, isTrue);
+    expect(preview.shown, lines.take(toolResultPreviewLines).join('\n'));
+    expect(preview.hiddenLines, 1);
   });
 
   test('block ids are distinct and stable across derivation calls', () {

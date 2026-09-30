@@ -17,7 +17,7 @@ parity with the pi TUI is now in progress (M1 of three).
 
 | | `pc/` (Node + TypeScript) | `app/` (Flutter + Dart) |
 |---|---|---|
-| Suite | 281 tests passing | 148 tests passing |
+| Suite | 284 tests passing | 179 tests passing |
 | Static gate | `tsc --noEmit` clean | `flutter analyze` clean |
 | Product code | hub, protocol codec, pi bridge | protocol codec, client, UI |
 
@@ -26,8 +26,10 @@ and the assistant's thinking from one ordered block model fed identically by the
 live relay and the snapshot history, and shows a live `Working…`/`Thinking…`/
 `Responding…` status above the composer. That status is precise rather than a
 guess: the bridge relays a **content-free** `thinking` phase frame, so a slow
-first token is never mislabelled as thinking. Still to come: tool calls and
-their results (M2), and stick-to-bottom scrolling (M3).
+first token is never mislabelled as thinking. Tool calls now render too — a
+collapsed, expandable block that pairs each result to its call by id, keeping an
+orphan result rather than dropping it. Still to come: stick-to-bottom scrolling
+(M3).
 
 **Done:** the wire protocol and codec, single-use pairing tickets, the persisted
 pairing token, the discovery file and the lock that makes `serve` exclusive, the
