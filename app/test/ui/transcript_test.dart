@@ -263,6 +263,66 @@ void main() {
     );
   });
 
+  testWidgets('a truncated history says so above the oldest row it kept', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      wrap(
+        SessionTranscript(
+          truncated: true,
+          blocks: [textBlock('a1', 'the oldest row kept')],
+        ),
+      ),
+    );
+
+    // The window is a suffix, so the cut is at the TOP: without this the
+    // transcript looks like the session simply began there.
+    expect(find.text(TranscriptView.truncatedNotice), findsOneWidget);
+    final notice = tester.getTopLeft(find.text(TranscriptView.truncatedNotice));
+    final oldest = tester.getTopLeft(find.text('the oldest row kept'));
+    expect(notice.dy, lessThan(oldest.dy));
+  });
+
+  testWidgets('a complete history carries no truncation notice', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      wrap(SessionTranscript(blocks: [textBlock('a1', 'the only row')])),
+    );
+
+    expect(find.text(TranscriptView.truncatedNotice), findsNothing);
+  });
+
+  testWidgets('a truncated empty history shows the notice, not "no messages"', (
+    tester,
+  ) async {
+    await tester.pumpWidget(wrap(const SessionTranscript(truncated: true)));
+
+    expect(find.text(TranscriptView.truncatedNotice), findsOneWidget);
+    expect(find.text(TranscriptView.emptyMessage), findsNothing);
+  });
+
+  testWidgets('a truncated history with a live stream keeps the stream last', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      wrap(
+        SessionTranscript(
+          truncated: true,
+          streaming: true,
+          streamingText: 'still arriving',
+          blocks: [textBlock('a1', 'kept')],
+        ),
+      ),
+    );
+
+    final notice = tester.getTopLeft(find.text(TranscriptView.truncatedNotice));
+    final kept = tester.getTopLeft(find.text('kept'));
+    final stream = tester.getTopLeft(find.text('still arriving'));
+    expect(notice.dy, lessThan(kept.dy));
+    expect(kept.dy, lessThan(stream.dy));
+  });
+
   testWidgets('each block is wrapped in a RepaintBoundary keyed by block id', (
     tester,
   ) async {

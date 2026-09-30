@@ -35,6 +35,12 @@ class TranscriptView extends StatefulWidget {
 
   static const String emptyMessage = 'No messages yet.';
 
+  /// Shown above the oldest row a truncated history kept. The window is a
+  /// suffix, so the cut is at the *top*; without this the transcript looks like
+  /// the session simply began at that message.
+  static const String truncatedNotice =
+      'Older messages are not loaded — this session is longer than the history limit.';
+
   /// The streaming row's key. Stable across frames so its element and repaint
   /// boundary are reused while deltas accumulate.
   static const Key streamingKey = ValueKey('transcript-streaming');
@@ -142,10 +148,12 @@ class _TranscriptViewState extends State<TranscriptView> {
   @override
   Widget build(BuildContext context) {
     final blocks = widget.transcript.blocks;
+    final truncated = widget.transcript.truncated;
     final streaming =
         widget.transcript.streaming &&
         widget.transcript.streamingText.isNotEmpty;
-    final itemCount = blocks.length + (streaming ? 1 : 0);
+    final itemCount =
+        blocks.length + (truncated ? 1 : 0) + (streaming ? 1 : 0);
     if (itemCount == 0) {
       return const Center(child: Text(TranscriptView.emptyMessage));
     }
@@ -158,7 +166,20 @@ class _TranscriptViewState extends State<TranscriptView> {
           padding: const EdgeInsets.fromLTRB(0, 8, 0, 72),
           itemCount: itemCount,
           itemBuilder: (context, index) {
-            if (index >= blocks.length) {
+            if (truncated && index == 0) {
+              return const RepaintBoundary(
+                key: ValueKey('history-truncated'),
+                child: NoticeBlock(
+                  block: TranscriptBlock(
+                    kind: TranscriptBlockKind.notice,
+                    id: 'history-truncated',
+                    text: TranscriptView.truncatedNotice,
+                  ),
+                ),
+              );
+            }
+            final blockIndex = truncated ? index - 1 : index;
+            if (blockIndex >= blocks.length) {
               return RepaintBoundary(
                 key: TranscriptView.streamingKey,
                 child: TextBlock(
@@ -171,7 +192,7 @@ class _TranscriptViewState extends State<TranscriptView> {
                 ),
               );
             }
-            final block = blocks[index];
+            final block = blocks[blockIndex];
             return RepaintBoundary(
               key: ValueKey(block.id),
               child: _block(block),
