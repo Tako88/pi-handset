@@ -215,7 +215,7 @@ void main() {
     expect(find.textContaining('bold', findRichText: true), findsOneWidget);
   });
 
-  testWidgets('only visible rows build — a long transcript is lazy', (
+  testWidgets('a delta does not re-read the whole transcript', (
     tester,
   ) async {
     final blocks = CountingBlocks(
@@ -225,13 +225,42 @@ void main() {
       ),
     );
 
+    // Opening a tall transcript pins to the newest row; the one-time layout
+    // cost of finding the bottom is not what this guards. Laziness that matters
+    // is per-frame, so the counter is reset after the open. Deliberate change
+    // (M3): the plan restored a natural-order list, whose initial jump to
+    // `maxScrollExtent` lays out the rows above the bottom once.
     await tester.pumpWidget(wrap(SessionTranscript(blocks: blocks)));
     await tester.pump();
+    expect(
+      find.textContaining('message 199', findRichText: true),
+      findsOneWidget,
+      reason: 'the view opens at the newest row',
+    );
 
-    // A non-lazy view walks all 200 blocks every build (and rebuilds them on
-    // every coalesced frame); a lazy one reads only the rows it shows.
-    expect(blocks.reads, lessThan(blocks.length));
-    expect(find.textContaining('message 0', findRichText: true), findsOneWidget);
+    blocks.reads = 0;
+    await tester.pumpWidget(
+      wrap(
+        SessionTranscript(
+          blocks: blocks,
+          streaming: true,
+          streamingText: 'partial',
+        ),
+      ),
+    );
+    await tester.pump();
+
+    // A non-lazy view walks all 200 blocks on every build (and rebuilds them on
+    // every coalesced frame); this surface reads ~17 rows for the visible
+    // window on a deterministic test layout. The bound is deliberately far
+    // below a full walk (200) so a regression that starts reading every block
+    // fails while ordinary slack in row count passes. Note it counts
+    // `operator[]` reads only, not markdown-parse cost.
+    expect(blocks.reads, lessThan(50));
+    expect(
+      find.textContaining('message 199', findRichText: true),
+      findsOneWidget,
+    );
   });
 
   testWidgets('each block is wrapped in a RepaintBoundary keyed by block id', (

@@ -17,19 +17,23 @@ parity with the pi TUI is now in progress (M1 of three).
 
 | | `pc/` (Node + TypeScript) | `app/` (Flutter + Dart) |
 |---|---|---|
-| Suite | 284 tests passing | 179 tests passing |
+| Suite | 284 tests passing | 197 tests passing |
 | Static gate | `tsc --noEmit` clean | `flutter analyze` clean |
 | Product code | hub, protocol codec, pi bridge | protocol codec, client, UI |
 
-**Transcript parity, in progress.** The app now renders the user's own messages
-and the assistant's thinking from one ordered block model fed identically by the
-live relay and the snapshot history, and shows a live `Working…`/`Thinking…`/
-`Responding…` status above the composer. That status is precise rather than a
-guess: the bridge relays a **content-free** `thinking` phase frame, so a slow
-first token is never mislabelled as thinking. Tool calls now render too — a
-collapsed, expandable block that pairs each result to its call by id, keeping an
-orphan result rather than dropping it. Still to come: stick-to-bottom scrolling
-(M3).
+**Transcript parity is done.** The app renders the user's own messages and the
+assistant's thinking from one ordered block model fed identically by the live relay
+and the snapshot history, shows a live `Working…`/`Thinking…`/`Responding…` status
+above the composer, renders tool calls as collapsed blocks that pair each result to
+its call, and follows the newest message until you scroll away — where a jump-to-latest
+button appears. The status is precise rather than a guess: the bridge relays a
+**content-free** `thinking` phase frame, so a slow first token is never mislabelled as
+thinking.
+
+One deliberate tradeoff worth knowing: opening a long transcript lays it out once
+(O(n)) because starting at the bottom requires it; streaming frames stay lazy. And the
+one thing not streamed live is thinking *content* — it appears in full when the
+assistant message commits, because streaming it would double the bytes already relayed.
 
 **Done:** the wire protocol and codec, single-use pairing tickets, the persisted
 pairing token, the discovery file and the lock that makes `serve` exclusive, the
