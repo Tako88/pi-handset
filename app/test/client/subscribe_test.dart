@@ -45,6 +45,17 @@ void main() {
     if (subscribed) factory.last.receive(event);
   }
 
+  test('opening a session requests its history after the subscribe', () {
+    client.subscribe('s1');
+
+    final types = factory.last.sentFrames
+        .map((frame) => frame['type'])
+        .where((type) => type == 'subscribe' || type == 'history-request')
+        .toList();
+    expect(types, ['subscribe', 'history-request']);
+    expect(factory.last.lastSent['sessionId'], 's1');
+  });
+
   test('switching sessions unsubscribes the previous one', () {
     client.subscribe('A');
     client.subscribe('B');

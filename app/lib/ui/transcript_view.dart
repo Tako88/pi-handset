@@ -80,19 +80,25 @@ class MessageBubble extends StatelessWidget {
 /// Extracts the displayable text of one raw transcript entry, or null when the
 /// entry carries none.
 ///
-/// Two shapes exist on the wire: history/snapshot entries
-/// (`{type: 'user'|'assistant', text}`) and relayed assistant messages
-/// (`{role, content: [{type: 'text', text}]}`). Status payloads carry a
-/// user-visible `message`. Tool payloads are not rendered yet.
+/// Three shapes exist on the wire: a relayed assistant message
+/// (`{role, content: [{type: 'text', text}]}`), a history/snapshot entry in
+/// pi's session shape (`{type: 'message', message: {role, content}}`), and the
+/// flattened `{type: 'user'|'assistant', text}` the fixtures use. Status
+/// payloads carry a user-visible `message`. Tool payloads are not rendered yet.
 String? entryText(Object? entry) {
   if (entry is! Map) return null;
+  // A snapshot carries pi's raw session entries, whose message is nested one
+  // level down; a relayed message carries it at the top level. Unwrap and fall
+  // through, so both render the same way.
+  final nested = entry['message'];
+  if (nested is Map) return entryText(nested);
   final type = entry['type'];
   if ((type == 'user' || type == 'assistant') && entry['text'] is String) {
-    return entry['text'] as String;
+    return _displayText(entry['text'] as String);
   }
   if (entry['role'] is String) {
     final content = entry['content'];
-    if (content is String) return content;
+    if (content is String) return _displayText(content);
     if (content is List) {
       final buffer = StringBuffer();
       for (final part in content) {
@@ -100,11 +106,15 @@ String? entryText(Object? entry) {
           buffer.write(part['text']);
         }
       }
-      if (buffer.isNotEmpty) return buffer.toString();
+      return _displayText(buffer.toString());
     }
   }
   if (entry['kind'] == 'status' && entry['message'] is String) {
-    return entry['message'] as String;
+    return _displayText(entry['message'] as String);
   }
   return null;
 }
+
+/// An entry with no text — a bookkeeping row, or the empty system prompt — must
+/// take no bubble rather than claim a blank one.
+String? _displayText(String text) => text.isEmpty ? null : text;
