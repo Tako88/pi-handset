@@ -138,6 +138,8 @@ void main() {
 
     expect(client.transcript('s1')!.streaming, isFalse);
     expect(client.transcript('s1')!.agentState, 'settled');
-    expect(client.transcript('s1')!.streamingText, 'partial');
+    // A settle with no `message` frame must not leave a stale buffer for the
+    // next stream to append to.
+    expect(client.transcript('s1')!.streamingText, isEmpty);
   });
 }

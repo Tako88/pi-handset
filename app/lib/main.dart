@@ -1,24 +1,25 @@
 import 'package:flutter/material.dart';
-import 'package:pi_droid/toolchain_canary.dart';
+import 'package:pi_droid/client/hub_client.dart';
+import 'package:pi_droid/client/hub_socket.dart';
+import 'package:pi_droid/client/scheduler.dart';
+import 'package:pi_droid/client/secure_token_store.dart';
+import 'package:pi_droid/ui/app_shell.dart';
 
 void main() {
-  runApp(const MainApp());
-}
-
-/// App root. Renders the toolchain canary so the platform proof in step 8
-/// exercises hand-written code rather than template output.
-///
-/// This is scaffolding, not product UI — the real shell replaces it, arriving
-/// with its own failing test.
-class MainApp extends StatelessWidget {
-  const MainApp({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      home: Scaffold(
-        body: Center(child: Text(canaryAnswer().toString())),
+  WidgetsFlutterBinding.ensureInitialized();
+  // One store, two keys: the pairing token and the remembered endpoint.
+  final store = SecureTokenStore();
+  runApp(
+    PiDroidApp(
+      client: HubClient(
+        socketFactory: dialHubSocket,
+        scheduler: TimerHubScheduler(),
+        tokenStore: store,
+        // The client coalesces internally; this is the frame cadence the widget
+        // actually rebuilds at.
+        frameInterval: const Duration(milliseconds: 16),
       ),
-    );
-  }
+      tokenStore: store,
+    ),
+  );
 }

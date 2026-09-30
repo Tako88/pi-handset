@@ -8,16 +8,21 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:pi_droid/client/endpoint_store.dart';
 import 'package:pi_droid/client/hub_socket.dart';
 import 'package:pi_droid/client/scheduler.dart';
 import 'package:pi_droid/client/token_store.dart';
 
-/// An in-memory [TokenStore] for tests. Lives here, not in `lib/`, because a
-/// test double should not ship in the app tree.
+/// An in-memory [TokenStore] for tests, holding both the token and the
+/// remembered endpoint. Lives here, not in `lib/`, because a test double should
+/// not ship in the app tree.
 class InMemoryTokenStore implements TokenStore {
   String? _token;
+  HubEndpoint? _endpoint;
 
-  InMemoryTokenStore({String? initial}) : _token = initial;
+  InMemoryTokenStore({String? initial, HubEndpoint? initialEndpoint})
+    : _token = initial,
+      _endpoint = initialEndpoint;
 
   @override
   Future<String?> read() async => _token;
@@ -26,13 +31,32 @@ class InMemoryTokenStore implements TokenStore {
   Future<void> write(String token) async {
     _token = token;
   }
+
+  @override
+  Future<void> clear() async {
+    _token = null;
+  }
+
+  @override
+  Future<HubEndpoint?> readEndpoint() async => _endpoint;
+
+  @override
+  Future<void> writeEndpoint(HubEndpoint endpoint) async {
+    _endpoint = endpoint;
+  }
+
+  @override
+  Future<void> clearEndpoint() async {
+    _endpoint = null;
+  }
 }
 
-/// A [TokenStore] whose write blocks until [gate] completes. Lets a test
+/// A [TokenStore] whose token write blocks until [gate] completes. Lets a test
 /// observe the window between `paired` arriving and the token being persisted.
 class GatedTokenStore implements TokenStore {
   final Completer<void> gate = Completer<void>();
   String? _token;
+  HubEndpoint? _endpoint;
 
   @override
   Future<String?> read() async => _token;
@@ -41,6 +65,24 @@ class GatedTokenStore implements TokenStore {
   Future<void> write(String token) async {
     await gate.future;
     _token = token;
+  }
+
+  @override
+  Future<void> clear() async {
+    _token = null;
+  }
+
+  @override
+  Future<HubEndpoint?> readEndpoint() async => _endpoint;
+
+  @override
+  Future<void> writeEndpoint(HubEndpoint endpoint) async {
+    _endpoint = endpoint;
+  }
+
+  @override
+  Future<void> clearEndpoint() async {
+    _endpoint = null;
   }
 }
 
