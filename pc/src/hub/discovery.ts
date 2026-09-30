@@ -7,8 +7,11 @@
  * override exists because `$XDG_RUNTIME_DIR` is unset for many users and tests
  * must never touch the real one.
  *
- * The payload is `{ port, pid, startedAt, protocolVersion }` and deliberately
- * **not** the token. The token has exactly one home
+ * The payload is `{ agentPort, viewerPort, pid, startedAt, protocolVersion }`
+ * and deliberately **not** the token. Both ports are published because the
+ * record is what an *agent* reads to find the hub, and the agent listener is
+ * the ephemeral one; the viewer port is included for tooling and diagnostics.
+ * The token has exactly one home
  * (`<configDir>/pi-droid/token`, via `auth.ts`); duplicating it here would
  * create a second copy to leak and a second copy to desynchronize on rotation.
  *
@@ -50,7 +53,10 @@ const LOCK_FILE_MODE = 0o600;
 
 /** What a running supervisor publishes. Never contains the token. */
 export interface DiscoveryRecord {
-  port: number;
+  /** The ephemeral loopback port the agent-side (bridge) listener bound. */
+  agentPort: number;
+  /** The configured viewer-side (app) port. */
+  viewerPort: number;
   pid: number;
   startedAt: string;
   protocolVersion: number;
@@ -156,18 +162,26 @@ function parseRecord(raw: string): DiscoveryRecord | null {
   }
   const record = parsed as Record<string, unknown>;
   if (record.protocolVersion !== PROTOCOL_VERSION) return null;
-  const { pid, port, startedAt } = record;
+  const { agentPort, viewerPort, pid, startedAt } = record;
   if (typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid <= 0) return null;
-  if (typeof port !== 'number' || !Number.isSafeInteger(port) || port < 1 || port > 65535) {
-    return null;
-  }
+  if (!isPort(agentPort) || !isPort(viewerPort)) return null;
   if (typeof startedAt !== 'string' || !Number.isFinite(Date.parse(startedAt))) {
     return null;
   }
   // `startedAt` is checked for parseability only, never range-checked: a
   // "sanity window" would reject a legitimately long-running hub. PID reuse
   // remains an accepted residual — a recycled pid reads as a live hub.
-  return { port, pid, startedAt, protocolVersion: record.protocolVersion };
+  return {
+    agentPort,
+    viewerPort,
+    pid,
+    startedAt,
+    protocolVersion: record.protocolVersion,
+  };
+}
+
+function isPort(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 1 && value <= 65535;
 }
 
 /**

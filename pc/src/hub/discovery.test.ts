@@ -43,7 +43,8 @@ afterEach(() => {
 
 function record(overrides: Partial<Parameters<typeof writeDiscovery>[1]> = {}) {
   return {
-    port: 8787,
+    agentPort: 54321,
+    viewerPort: 8787,
     pid: process.pid,
     startedAt: '2026-09-30T00:00:00.000Z',
     protocolVersion: PROTOCOL_VERSION,
@@ -107,15 +108,16 @@ test('writeDiscovery creates the pi-droid directory 0700 and the file 0600', () 
   assert.equal(statSync(supervisorPath(runtimeDir)).mode & 0o777, 0o600);
 });
 
-test('writeDiscovery writes exactly port, pid, startedAt and protocolVersion', () => {
-  writeDiscovery(runtimeDir, record({ port: 9123 }));
+test('writeDiscovery writes exactly agentPort, viewerPort, pid, startedAt and protocolVersion', () => {
+  writeDiscovery(runtimeDir, record({ viewerPort: 9123 }));
 
   const parsed = JSON.parse(readFileSync(supervisorPath(runtimeDir), 'utf8'));
   assert.deepEqual(Object.keys(parsed).sort(), [
+    'agentPort',
     'pid',
-    'port',
     'protocolVersion',
     'startedAt',
+    'viewerPort',
   ]);
   assert.equal('token' in parsed, false, 'the token must never appear in the runtime file');
 });
@@ -124,7 +126,7 @@ test('writeDiscovery is atomic: rewriting replaces the inode, not the contents i
   writeDiscovery(runtimeDir, record());
   const before = statSync(supervisorPath(runtimeDir)).ino;
 
-  writeDiscovery(runtimeDir, record({ port: 9123 }));
+  writeDiscovery(runtimeDir, record({ viewerPort: 9123 }));
 
   const after = statSync(supervisorPath(runtimeDir)).ino;
   assert.notEqual(after, before, 'temp file + rename changes the inode');
@@ -132,7 +134,7 @@ test('writeDiscovery is atomic: rewriting replaces the inode, not the contents i
 
 test('writeDiscovery leaves no temp files behind', () => {
   writeDiscovery(runtimeDir, record());
-  writeDiscovery(runtimeDir, record({ port: 9123 }));
+  writeDiscovery(runtimeDir, record({ viewerPort: 9123 }));
 
   assert.deepEqual(readdirSync(join(runtimeDir, 'pi-droid')), ['supervisor.json']);
 });
@@ -162,7 +164,15 @@ test('readDiscovery returns null when the JSON is not an object', () => {
 });
 
 test('readDiscovery returns null for a malformed record', () => {
-  seedRaw(JSON.stringify({ port: 'base', pid: 1, startedAt: 'x', protocolVersion: 1 }));
+  seedRaw(
+    JSON.stringify({
+      agentPort: 54321,
+      viewerPort: 'base',
+      pid: 1,
+      startedAt: 'x',
+      protocolVersion: 1,
+    }),
+  );
 
   assert.equal(readDiscovery(runtimeDir, () => true), null);
 });
@@ -179,11 +189,12 @@ test('readDiscovery returns null on a protocolVersion mismatch', () => {
   assert.equal(readDiscovery(runtimeDir, () => true), null);
 });
 
-test('writeDiscovery records the port, pid and protocol version by value', () => {
-  writeDiscovery(runtimeDir, record({ port: 9123, pid: 4242 }));
+test('writeDiscovery records agentPort, viewerPort, pid and protocol version by value', () => {
+  writeDiscovery(runtimeDir, record({ agentPort: 51234, viewerPort: 9123, pid: 4242 }));
 
   const parsed = JSON.parse(readFileSync(supervisorPath(runtimeDir), 'utf8'));
-  assert.equal(parsed.port, 9123);
+  assert.equal(parsed.agentPort, 51234);
+  assert.equal(parsed.viewerPort, 9123);
   assert.equal(parsed.pid, 4242);
   assert.equal(parsed.protocolVersion, PROTOCOL_VERSION);
   assert.equal(typeof parsed.startedAt, 'string');
@@ -192,7 +203,8 @@ test('writeDiscovery records the port, pid and protocol version by value', () =>
 test('readDiscovery rejects a startedAt that is not a parseable time', () => {
   seedRaw(
     JSON.stringify({
-      port: 8787,
+      agentPort: 54321,
+      viewerPort: 8787,
       pid: process.pid,
       startedAt: 'not-a-date',
       protocolVersion: PROTOCOL_VERSION,

@@ -1,17 +1,17 @@
 /**
  * `pi-droid serve` — the supervisor process.
  *
- * This milestone owns the discovery file and the exclusion lock: parse the
- * flags, take the lock (see `acquireLock`), refuse to start while another live
- * supervisor holds it (unless `--take-over`), write our record, and stay alive
- * until a signal. The two listeners arrive in M5 and replace the idle interval.
+ * Parse the flags, take the exclusion lock (see `acquireLock`), refuse to start
+ * while another live supervisor holds it (unless `--take-over`), load the
+ * persisted token, start the hub's two listeners, publish the discovery record
+ * with the real ports, and stay alive until a signal.
  *
  * The lock is the exclusion primitive; the discovery file is only the published
  * record. Taking the lock *before* touching the record is what makes two
  * simultaneous starts exclusive — a check-then-write of the record is not.
  *
- * `--port` is the viewer port (default 8787); `--no-lan` will disable the
- * LAN-visible listener in M5. The lock and record are released on `SIGINT`/
+ * `--port` is the viewer port (default 8787); `--no-lan` binds that listener to
+ * loopback instead of `0.0.0.0`. The lock and record are released on `SIGINT`/
  * `SIGTERM`, but only while we still hold the lock, so a taken-over hub cannot
  * delete its successor's record.
  *
@@ -20,6 +20,7 @@
 
 import { pathToFileURL } from 'node:url';
 
+import { loadOrCreateToken, resolveConfigDir } from '../hub/auth.ts';
 import {
   acquireLock,
   holdsLock,
@@ -30,6 +31,8 @@ import {
   writeDiscovery,
 } from '../hub/discovery.ts';
 import type { LockResult } from '../hub/discovery.ts';
+import { createHub } from '../hub/hub.ts';
+import { createTicketStore } from '../hub/pairing.ts';
 import { PROTOCOL_VERSION } from '../protocol/protocol.ts';
 
 /** The viewer listener's default port. */
@@ -37,7 +40,7 @@ export const DEFAULT_PORT = 8787;
 
 export interface ServeArgs {
   port: number;
-  /** Inert until M5: the LAN listener does not exist yet, so this changes nothing. */
+  /** False binds the viewer listener to loopback instead of `0.0.0.0`. */
   lan: boolean;
   takeOver: boolean;
 }
@@ -89,7 +92,41 @@ function refuse(message: string, code: number): void {
   process.exitCode = code;
 }
 
-function main(): void {
+function warn(message: string): void {
+  process.stderr.write(`pi-droid serve: ${message}\n`);
+}
+
+/**
+ * Closes the hub and releases the record and lock, returning the process exit
+ * code. A failing `close()` is a real error: the signal handler must never let
+ * it become an unhandled rejection, and the process must exit non-zero.
+ */
+export async function finishShutdown(
+  hub: { close(): Promise<void> },
+  runtimeDir: string,
+  pid: number,
+): Promise<number> {
+  try {
+    await hub.close();
+  } catch (error) {
+    process.stderr.write(
+      `pi-droid serve: shutdown failed: ${(error as Error).message}\n`,
+    );
+    return 1;
+  }
+  // Remove the record only while we still hold the lock: a `--take-over`
+  // winner has replaced lock and record, and deleting its record would strand
+  // it. A residual microsecond window remains between this check and the
+  // unlink — an unlink cannot be atomic with a lock check. The pid check
+  // inside `removeDiscovery` is the backstop.
+  if (holdsLock(runtimeDir, pid)) {
+    removeDiscovery(runtimeDir, pid);
+  }
+  releaseLock(runtimeDir, pid);
+  return 0;
+}
+
+async function main(): Promise<void> {
   let args: ServeArgs;
   try {
     args = parseArgs(process.argv.slice(2));
@@ -128,8 +165,41 @@ function main(): void {
     releaseLock(runtimeDir, process.pid);
     refuse(
       `another supervisor is already running ` +
-        `(pid ${existing.pid}, port ${existing.port}); ` +
+        `(pid ${existing.pid}, viewer port ${existing.viewerPort}); ` +
         `use --take-over to replace it`,
+      1,
+    );
+    return;
+  }
+
+  let token: string;
+  try {
+    const loaded = loadOrCreateToken(resolveConfigDir());
+    token = loaded.token;
+    if (loaded.regenerated) {
+      warn('a new pairing token was written; previously paired phones are de-paired');
+    }
+    if (loaded.insecureParent) {
+      warn('the config directory is group- or world-writable; the token may be replaceable');
+    }
+  } catch (error) {
+    releaseLock(runtimeDir, process.pid);
+    refuse((error as Error).message, 2);
+    return;
+  }
+
+  let hub: Awaited<ReturnType<typeof createHub>>;
+  try {
+    hub = await createHub({
+      token,
+      tickets: createTicketStore(),
+      viewerPort: args.port,
+      viewerHost: args.lan ? '0.0.0.0' : '127.0.0.1',
+    });
+  } catch (error) {
+    releaseLock(runtimeDir, process.pid);
+    refuse(
+      `could not start the listeners on port ${args.port}: ${(error as Error).message}`,
       1,
     );
     return;
@@ -137,47 +207,41 @@ function main(): void {
 
   try {
     writeDiscovery(runtimeDir, {
-      port: args.port,
+      agentPort: hub.agentPort,
+      viewerPort: hub.viewerPort,
       pid: process.pid,
       startedAt: new Date().toISOString(),
       protocolVersion: PROTOCOL_VERSION,
     });
   } catch (error) {
+    await hub.close();
     releaseLock(runtimeDir, process.pid);
     refuse((error as Error).message, 2);
     return;
   }
 
   let shuttingDown = false;
-  const keepAlive = setInterval(() => {}, 2 ** 31 - 1);
-
-  const shutdown = (): void => {
-    // Single-shot: a second signal must not re-enter teardown.
+  const shutdown = async (): Promise<void> => {
+    // Single-shot: a second signal must not re-enter teardown. Any close()
+    // rejection is caught inside `finishShutdown`, so this never becomes an
+    // unhandled rejection.
     if (shuttingDown) return;
     shuttingDown = true;
-    // M5 seam: replace this synchronous teardown with an async close that
-    // drains both listeners (`await server.close()`), then exit.
-    clearInterval(keepAlive);
-    // Remove the record only while we still hold the lock: a `--take-over`
-    // winner has replaced lock and record, and deleting its record would strand
-    // it. A residual microsecond window remains between this check and the
-    // unlink — an unlink cannot be atomic with a lock check. The pid check
-    // inside `removeDiscovery` is the backstop.
-    if (holdsLock(runtimeDir, process.pid)) {
-      removeDiscovery(runtimeDir, process.pid);
-    }
-    releaseLock(runtimeDir, process.pid);
-    process.exitCode = 0;
+    process.exitCode = await finishShutdown(hub, runtimeDir, process.pid);
   };
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', () => {
+    void shutdown();
+  });
+  process.on('SIGTERM', () => {
+    void shutdown();
+  });
 
-  // Stay alive until a signal; M5 swaps this for the listeners.
+  // The listeners keep the process alive until a signal.
 }
 
 if (
   process.argv[1] !== undefined &&
   import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
-  main();
+  void main();
 }
