@@ -1,0 +1,674 @@
+/**
+ * The hub: two listeners, listener-bound capabilities, relay and backpressure.
+ *
+ * One WebSocket server per role. The agent listener binds `127.0.0.1:0` (an
+ * ephemeral loopback port, published in the discovery file). The viewer
+ * listener binds `0.0.0.0:<port>` normally, or `127.0.0.1:<port>` under
+ * `--no-lan`. Capabilities are enforced per listener: the agent port accepts
+ * only agent-side messages, the viewer port only viewer-side ones. There is no
+ * `role` field — the listener *is* the role.
+ *
+ * Authentication happens on `hello`, and only on `hello`. Unauthenticated
+ * traffic is never processed; a wrong credential is charged against a
+ * per-connection cap, and the connection is closed once the cap is reached.
+ * Closing is delayed briefly so a socket cannot be used as a fast token oracle.
+ *
+ * The hub is a registry + relay. It never interprets the normalized payload
+ * beyond what resync requires (`lastSeq` and `agentState`); everything else is
+ * forwarded. A registered agent's events go to that session's subscribers; a
+ * viewer's command goes to the session's agent and the result comes back to the
+ * viewer that issued it.
+ *
+ * `ws` is the one runtime dependency, added because Node ships a WebSocket
+ * *client* but no server.
+ */
+
+import { once } from 'node:events';
+
+import { WebSocket, WebSocketServer } from 'ws';
+import type { RawData } from 'ws';
+
+import {
+  EVENT_PAYLOAD_KINDS,
+  PROTOCOL_VERSION,
+  decode,
+  isAgentMessageType,
+  isViewerMessageType,
+} from '../protocol/protocol.ts';
+import type { AgentState } from '../protocol/protocol.ts';
+import { compareToken } from './auth.ts';
+import { ByteBudget } from './backpressure.ts';
+import type { TicketStore } from './pairing.ts';
+
+/**
+ * Application close codes (4000–4999). The full table and the message shapes
+ * live in `protocol.ts`; this is the enforcement site.
+ *
+ * - `CLOSE_PROTOCOL` (4002): malformed JSON, a bad `protocolVersion`, a missing
+ *   required field, an explicit session takeover displacing an agent, or a
+ *   permitted type with no dispatch branch (dispatch fails closed).
+ * - `CLOSE_CAPABILITY` (4003): a message this listener does not permit.
+ * - `CLOSE_RATE_LIMITED` (4008): the failed-credential cap was reached. It is
+ *   sent **after a short delay** so the socket cannot be used as a fast token
+ *   oracle.
+ */
+export const CLOSE_PROTOCOL = 4002;
+export const CLOSE_CAPABILITY = 4003;
+export const CLOSE_RATE_LIMITED = 4008;
+
+const DEFAULT_MAX_AUTH_ATTEMPTS = 3;
+const DEFAULT_AUTH_CLOSE_DELAY_MS = 250;
+const DEFAULT_MAX_VIEWER_BYTES = 256 * 1024;
+/** Cap on a single inbound frame; `ws` defaults to 100 MB, far too generous. */
+const DEFAULT_MAX_PAYLOAD = 1024 * 1024;
+
+/** The bridge's command allowlist; anything else is refused here too. */
+const COMMAND_ALLOWLIST = new Set([
+  'prompt',
+  'steer',
+  'followup',
+  'abort',
+  'setModel',
+  'setThinkingLevel',
+  'compact',
+  'fetchHistory',
+  'setSessionName',
+]);
+
+export interface HubOptions {
+  /** The persistent token viewers and agents authenticate with. */
+  token: string;
+  /** The one-outstanding-ticket authority used to pair a phone. */
+  tickets: TicketStore;
+  /** Viewer listener port; 0 selects an ephemeral port. */
+  viewerPort: number;
+  /** Viewer bind address. Defaults to `0.0.0.0`; `--no-lan` passes `127.0.0.1`. */
+  viewerHost?: string;
+  /** Failed credential attempts a connection gets before it is closed. */
+  maxAuthAttempts?: number;
+  /** Delay before closing a connection that exhausted its attempts. */
+  authCloseDelayMs?: number;
+  /** Per-viewer budget for relayed events, in bytes. */
+  maxViewerBytes?: number;
+  /** Maximum size of a single inbound frame, in bytes. Defaults to 1 MiB. */
+  maxPayload?: number;
+}
+
+export interface Hub {
+  /** The real agent-listener port (ephemeral). */
+  readonly agentPort: number;
+  /** The real viewer-listener port. */
+  readonly viewerPort: number;
+  /** Closes both listeners and terminates every open socket. */
+  close(): Promise<void>;
+}
+
+type Listener = 'agent' | 'viewer';
+
+interface Connection {
+  readonly listener: Listener;
+  readonly socket: WebSocket;
+  readonly budget: ByteBudget;
+  authenticated: boolean;
+  authAttempts: number;
+  closing: boolean;
+  /** Session ids this viewer has been told to resync; cleared per session. */
+  readonly resyncAnnounced: Set<string>;
+}
+
+interface Session {
+  readonly sessionId: string;
+  agent: Connection;
+  lastSeq: number;
+  agentState: AgentState;
+  readonly subscribers: Set<Connection>;
+  readonly pendingHistory: Set<Connection>;
+  /** `id` -> viewers awaiting its result, in issue order. */
+  readonly pendingCommands: Map<string, Connection[]>;
+}
+
+interface State {
+  readonly config: {
+    token: string;
+    tickets: TicketStore;
+    maxAuthAttempts: number;
+    authCloseDelayMs: number;
+    maxViewerBytes: number;
+  };
+  readonly sessions: Map<string, Session>;
+}
+
+async function listen(server: WebSocketServer): Promise<void> {
+  // `WebSocketServer` starts listening on construction; await the first of
+  // 'listening' or 'error' so a port clash rejects this promise instead of
+  // crashing the process.
+  const failure = new Promise<never>((_, reject) => {
+    server.once('error', reject);
+  });
+  await Promise.race([once(server, 'listening').then(() => undefined), failure]);
+}
+
+function closeServer(server: WebSocketServer): Promise<void> {
+  return new Promise((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+}
+
+function addressPort(server: WebSocketServer): number {
+  const address = server.address();
+  if (address === null || typeof address === 'string') {
+    throw new Error('server has no TCP address');
+  }
+  return address.port;
+}
+
+function send(connection: Connection, message: unknown): void {
+  if (connection.socket.readyState !== WebSocket.OPEN) return;
+  connection.socket.send(JSON.stringify(message));
+}
+
+/**
+ * Control messages are tiny and deliberately unbudgeted: a dropped
+ * `resync-required` would strand a throttled viewer forever. The cap exists to
+ * bound bulk payloads, which all go through `sendToViewer`.
+ */
+function announceResync(viewer: Connection, sessionId: string): void {
+  if (viewer.resyncAnnounced.has(sessionId)) return;
+  viewer.resyncAnnounced.add(sessionId);
+  send(viewer, {
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'resync-required',
+    sessionId,
+    reason: 'backpressure',
+  });
+}
+
+/**
+ * Sends one viewer-bound message under its byte budget. A message that does
+ * not fit is dropped whole; when it carried session data (`sessionId` non-null)
+ * the viewer is told once to resync. Snapshot, command-result, session-gone and
+ * `paired` all route through here, so agent-supplied bulk cannot bypass the cap.
+ */
+function sendToViewer(
+  viewer: Connection,
+  message: unknown,
+  sessionId: string | null,
+): void {
+  if (viewer.socket.readyState !== WebSocket.OPEN) return;
+  const text = JSON.stringify(message);
+  const bytes = Buffer.byteLength(text);
+  if (viewer.budget.admit(bytes)) {
+    viewer.socket.send(text, () => viewer.budget.drain(bytes));
+    return;
+  }
+  if (sessionId !== null) announceResync(viewer, sessionId);
+}
+
+function closeWith(connection: Connection, code: number, reason?: string): void {
+  connection.closing = true;
+  connection.socket.close(code, reason);
+}
+
+function asString(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+function asObject(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function failAuth(connection: Connection, config: State['config']): void {
+  connection.authAttempts += 1;
+  if (connection.authAttempts < config.maxAuthAttempts) return;
+  connection.closing = true;
+  const timer = setTimeout(() => {
+    connection.socket.close(CLOSE_RATE_LIMITED);
+  }, config.authCloseDelayMs);
+  timer.unref();
+}
+
+function authenticate(connection: Connection, text: string, state: State): void {
+  const result = decode(text);
+  if (!result.ok || result.value.type !== 'hello') {
+    failAuth(connection, state.config);
+    return;
+  }
+  const hello = result.value;
+  if ('ticket' in hello) {
+    const redeemed = state.config.tickets.redeem(hello.ticket);
+    if (!redeemed.ok) {
+      failAuth(connection, state.config);
+      return;
+    }
+    connection.authenticated = true;
+    sendToViewer(connection, {
+      protocolVersion: PROTOCOL_VERSION,
+      type: 'paired',
+      token: state.config.token,
+    }, null);
+    return;
+  }
+  if (!compareToken(hello.token, state.config.token)) {
+    failAuth(connection, state.config);
+    return;
+  }
+  connection.authenticated = true;
+}
+
+function handleMessage(state: State, connection: Connection, data: RawData): void {
+  if (connection.closing) return;
+  const text = typeof data === 'string' ? data : data.toString('utf8');
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    closeWith(connection, CLOSE_PROTOCOL);
+    return;
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    closeWith(connection, CLOSE_PROTOCOL);
+    return;
+  }
+  const message = parsed as Record<string, unknown>;
+  const type = message.type;
+  if (!connection.authenticated) {
+    // Only `hello` is ever processed before authentication; anything else is
+    // ignored so a pipelined message cannot slip through behind a bad token.
+    if (type === 'hello') authenticate(connection, text, state);
+    return;
+  }
+  const permitted =
+    connection.listener === 'agent' ? isAgentMessageType(type) : isViewerMessageType(type);
+  if (!permitted) {
+    closeWith(connection, CLOSE_CAPABILITY);
+    return;
+  }
+  dispatch(state, connection, message);
+}
+
+/** The session this agent connection currently owns, if any. */
+function ownedSession(state: State, connection: Connection): Session | null {
+  for (const session of state.sessions.values()) {
+    if (session.agent === connection) return session;
+  }
+  return null;
+}
+
+function retireSession(state: State, sessionId: string): void {
+  const session = state.sessions.get(sessionId);
+  if (session === undefined) return;
+  state.sessions.delete(sessionId);
+  for (const subscriber of session.subscribers) {
+    sendToViewer(subscriber, {
+      protocolVersion: PROTOCOL_VERSION,
+      type: 'session-gone',
+      sessionId,
+    }, sessionId);
+  }
+}
+
+function handleRegister(
+  state: State,
+  connection: Connection,
+  message: Record<string, unknown>,
+): void {
+  const sessionId = asString(message.sessionId);
+  if (sessionId === null) {
+    closeWith(connection, CLOSE_PROTOCOL);
+    return;
+  }
+  // Switch/fork: one connection owns at most one session; registering a new id
+  // retires the old one and tells its subscribers it is gone.
+  const previous = ownedSession(state, connection);
+  if (previous !== null && previous.sessionId !== sessionId) {
+    retireSession(state, previous.sessionId);
+  }
+  const existing = state.sessions.get(sessionId);
+  if (existing !== undefined) {
+    // A takeover is explicit: the displaced agent is closed now, with a reason,
+    // rather than being left to discover it on its next event (which would earn
+    // a protocol close anyway, but incidentally).
+    if (existing.agent !== connection) {
+      closeWith(existing.agent, CLOSE_PROTOCOL, 'session taken over');
+    }
+    existing.agent = connection;
+    return;
+  }
+  state.sessions.set(sessionId, {
+    sessionId,
+    agent: connection,
+    lastSeq: 0,
+    agentState: 'idle',
+    subscribers: new Set(),
+    pendingHistory: new Set(),
+    pendingCommands: new Map(),
+  });
+}
+
+function handleEvent(
+  state: State,
+  connection: Connection,
+  message: Record<string, unknown>,
+): void {
+  const session = ownedSession(state, connection);
+  if (session === null) {
+    closeWith(connection, CLOSE_PROTOCOL);
+    return;
+  }
+  const payload = asObject(message.payload);
+  if (payload === null) {
+    closeWith(connection, CLOSE_PROTOCOL);
+    return;
+  }
+  const kind = payload.kind;
+  if (kind === 'stream') {
+    const seq = payload.seq;
+    if (typeof seq !== 'number' || !Number.isSafeInteger(seq) || seq < 1) {
+      closeWith(connection, CLOSE_PROTOCOL);
+      return;
+    }
+    if (typeof payload.text !== 'string') {
+      closeWith(connection, CLOSE_PROTOCOL);
+      return;
+    }
+    session.lastSeq = Math.max(session.lastSeq, seq);
+  } else if (kind === 'agent') {
+    if (payload.state !== 'idle' && payload.state !== 'running' && payload.state !== 'settled') {
+      closeWith(connection, CLOSE_PROTOCOL);
+      return;
+    }
+    session.agentState = payload.state;
+  } else if (!(EVENT_PAYLOAD_KINDS as readonly unknown[]).includes(kind)) {
+    // `message`/`tool`/`status` are relayed untouched; only a genuinely
+    // unknown kind is a protocol violation.
+    closeWith(connection, CLOSE_PROTOCOL);
+    return;
+  }
+  for (const subscriber of session.subscribers) relayToViewer(subscriber, message, session.sessionId);
+}
+
+/**
+ * Relays one event to one viewer under its byte budget. A message that does not
+ * fit is dropped whole; the viewer is told once per session to resync, and its
+ * next `history-request` rebuilds it from the hub's tracked `lastSeq`/`agentState`.
+ */
+function relayToViewer(viewer: Connection, message: unknown, sessionId: string): void {
+  sendToViewer(viewer, message, sessionId);
+}
+
+function commandResult(id: string, ok: boolean, error: string): unknown {
+  return { protocolVersion: PROTOCOL_VERSION, type: 'command-result', id, ok, error };
+}
+
+function handleCommand(
+  state: State,
+  connection: Connection,
+  message: Record<string, unknown>,
+): void {
+  const id = asString(message.id);
+  const sessionId = asString(message.sessionId);
+  const name = asString(message.name);
+  if (id === null || sessionId === null || name === null) {
+    closeWith(connection, CLOSE_PROTOCOL);
+    return;
+  }
+  if (!COMMAND_ALLOWLIST.has(name)) {
+    sendToViewer(connection, commandResult(id, false, 'unknown command'), null);
+    return;
+  }
+  const session = state.sessions.get(sessionId);
+  if (session === undefined) {
+    sendToViewer(connection, commandResult(id, false, 'unknown session'), null);
+    return;
+  }
+  // Keyed by (session, id) with the issuing viewer queued: two viewers using
+  // the same id no longer overwrite one another.
+  const queue = session.pendingCommands.get(id);
+  if (queue === undefined) session.pendingCommands.set(id, [connection]);
+  else queue.push(connection);
+  send(session.agent, message);
+}
+
+function handleCommandResult(
+  state: State,
+  connection: Connection,
+  message: Record<string, unknown>,
+): void {
+  const id = asString(message.id);
+  if (id === null) {
+    closeWith(connection, CLOSE_PROTOCOL);
+    return;
+  }
+  // Only the agent that owns the session may answer for it; another agent's
+  // result is dropped rather than routed into this session's viewer.
+  const session = ownedSession(state, connection);
+  if (session === null) return;
+  const queue = session.pendingCommands.get(id);
+  if (queue === undefined || queue.length === 0) return;
+  const viewer = queue.shift()!;
+  if (queue.length === 0) session.pendingCommands.delete(id);
+  sendToViewer(viewer, message, session.sessionId);
+}
+
+function handleSubscribe(
+  state: State,
+  connection: Connection,
+  message: Record<string, unknown>,
+): void {
+  const sessionId = asString(message.sessionId);
+  if (sessionId === null) {
+    closeWith(connection, CLOSE_PROTOCOL);
+    return;
+  }
+  const session = state.sessions.get(sessionId);
+  if (session === undefined) {
+    sendToViewer(connection, {
+      protocolVersion: PROTOCOL_VERSION,
+      type: 'session-gone',
+      sessionId,
+    }, null);
+    return;
+  }
+  session.subscribers.add(connection);
+}
+
+function handleUnsubscribe(
+  state: State,
+  connection: Connection,
+  message: Record<string, unknown>,
+): void {
+  const sessionId = asString(message.sessionId);
+  if (sessionId === null) {
+    closeWith(connection, CLOSE_PROTOCOL);
+    return;
+  }
+  state.sessions.get(sessionId)?.subscribers.delete(connection);
+}
+
+function handleHistory(
+  state: State,
+  connection: Connection,
+  message: Record<string, unknown>,
+): void {
+  const sessionId = asString(message.sessionId);
+  if (sessionId === null) {
+    closeWith(connection, CLOSE_PROTOCOL);
+    return;
+  }
+  const session = state.sessions.get(sessionId);
+  if (session === undefined || session.agent !== connection) return;
+  const entries = Array.isArray(message.entries) ? message.entries : [];
+  const truncated = message.truncated === true;
+  for (const viewer of session.pendingHistory) {
+    sendToViewer(viewer, {
+      protocolVersion: PROTOCOL_VERSION,
+      type: 'snapshot',
+      sessionId,
+      lastSeq: session.lastSeq,
+      agentState: session.agentState,
+      entries,
+      truncated,
+    }, sessionId);
+  }
+  session.pendingHistory.clear();
+}
+
+/**
+ * Concurrent requests for one session are coalesced: the first is forwarded to
+ * the agent, later ones just join the reply list, so N viewers cannot stampede
+ * one agent. The session's tracked `lastSeq`/`agentState` are authoritative.
+ */
+function handleHistoryRequest(
+  state: State,
+  connection: Connection,
+  message: Record<string, unknown>,
+): void {
+  const sessionId = asString(message.sessionId);
+  if (sessionId === null) {
+    closeWith(connection, CLOSE_PROTOCOL);
+    return;
+  }
+  // `sinceSeq` is viewer-supplied and forwarded, so it gets the same
+  // positive-safe-integer validation as a `stream.seq`.
+  const sinceSeq = message.sinceSeq;
+  if (
+    sinceSeq !== undefined &&
+    (typeof sinceSeq !== 'number' || !Number.isSafeInteger(sinceSeq) || sinceSeq < 1)
+  ) {
+    closeWith(connection, CLOSE_PROTOCOL);
+    return;
+  }
+  const session = state.sessions.get(sessionId);
+  if (session === undefined) {
+    sendToViewer(connection, {
+      protocolVersion: PROTOCOL_VERSION,
+      type: 'session-gone',
+      sessionId,
+    }, null);
+    return;
+  }
+  connection.resyncAnnounced.delete(sessionId);
+  const firstRequest = session.pendingHistory.size === 0;
+  session.pendingHistory.add(connection);
+  if (!firstRequest) return;
+  const forwarded: Record<string, unknown> = {
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'history-request',
+    sessionId,
+  };
+  if (sinceSeq !== undefined) forwarded.sinceSeq = sinceSeq;
+  send(session.agent, forwarded);
+}
+
+function dispatch(
+  state: State,
+  connection: Connection,
+  message: Record<string, unknown>,
+): void {
+  if (message.protocolVersion !== PROTOCOL_VERSION) {
+    closeWith(connection, CLOSE_PROTOCOL);
+    return;
+  }
+  const type = message.type;
+  if (connection.listener === 'agent') {
+    if (type === 'register') handleRegister(state, connection, message);
+    else if (type === 'event') handleEvent(state, connection, message);
+    else if (type === 'history') handleHistory(state, connection, message);
+    else if (type === 'command-result') handleCommandResult(state, connection, message);
+    // A type that passed the listener set check but has no branch above is a
+    // wiring bug, not a client capability error: fail closed as a protocol
+    // violation rather than silently dropping the message. (Chosen over
+    // CLOSE_CAPABILITY so removing the set check still fails the capability
+    // test by assertion, not by a vacuous 4003.)
+    else closeWith(connection, CLOSE_PROTOCOL);
+    return;
+  }
+  if (type === 'subscribe') handleSubscribe(state, connection, message);
+  else if (type === 'unsubscribe') handleUnsubscribe(state, connection, message);
+  else if (type === 'command') handleCommand(state, connection, message);
+  else if (type === 'history-request') handleHistoryRequest(state, connection, message);
+  else closeWith(connection, CLOSE_PROTOCOL);
+}
+
+export async function createHub(options: HubOptions): Promise<Hub> {
+  const maxPayload = options.maxPayload ?? DEFAULT_MAX_PAYLOAD;
+  const agent = new WebSocketServer({ host: '127.0.0.1', port: 0, maxPayload });
+  // Attach the readiness promises before awaiting either: a server that starts
+  // listening while we await its sibling would otherwise fire 'listening' once,
+  // before the listener is attached, and hang forever.
+  const agentReady = listen(agent);
+  const viewer = new WebSocketServer({
+    host: options.viewerHost ?? '0.0.0.0',
+    port: options.viewerPort,
+    maxPayload,
+  });
+  const viewerReady = listen(viewer);
+
+  try {
+    await Promise.all([agentReady, viewerReady]);
+  } catch (error) {
+    await Promise.allSettled([closeServer(agent), closeServer(viewer)]);
+    throw error;
+  }
+
+  const state: State = {
+    config: {
+      token: options.token,
+      tickets: options.tickets,
+      maxAuthAttempts: options.maxAuthAttempts ?? DEFAULT_MAX_AUTH_ATTEMPTS,
+      authCloseDelayMs: options.authCloseDelayMs ?? DEFAULT_AUTH_CLOSE_DELAY_MS,
+      maxViewerBytes: options.maxViewerBytes ?? DEFAULT_MAX_VIEWER_BYTES,
+    },
+    sessions: new Map(),
+  };
+
+  const sockets = new Set<WebSocket>();
+  for (const [server, listener] of [
+    [agent, 'agent'],
+    [viewer, 'viewer'],
+  ] as const) {
+    server.on('connection', (socket: WebSocket) => {
+      sockets.add(socket);
+      const connection: Connection = {
+        listener,
+        socket,
+        budget: new ByteBudget(state.config.maxViewerBytes),
+        authenticated: false,
+        authAttempts: 0,
+        closing: false,
+        resyncAnnounced: new Set(),
+      };
+      socket.on('close', () => {
+        sockets.delete(socket);
+        // A closing agent retires its session and tells subscribers; a closing
+        // viewer is dropped from every set it was in.
+        for (const [sessionId, session] of [...state.sessions]) {
+          if (session.agent === connection) retireSession(state, sessionId);
+          session.subscribers.delete(connection);
+          session.pendingHistory.delete(connection);
+          for (const [id, queue] of [...session.pendingCommands]) {
+            const remaining = queue.filter((viewer) => viewer !== connection);
+            if (remaining.length === 0) session.pendingCommands.delete(id);
+            else session.pendingCommands.set(id, remaining);
+          }
+        }
+      });
+      // A socket error is followed by a close; the close handler is the one
+      // that matters. Ignoring here keeps the process off the crash path.
+      socket.on('error', () => {});
+      socket.on('message', (data: RawData) => handleMessage(state, connection, data));
+    });
+  }
+
+  return {
+    agentPort: addressPort(agent),
+    viewerPort: addressPort(viewer),
+    async close(): Promise<void> {
+      for (const socket of sockets) socket.terminate();
+      sockets.clear();
+      await Promise.all([closeServer(agent), closeServer(viewer)]);
+    },
+  };
+}

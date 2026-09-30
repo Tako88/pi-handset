@@ -2,21 +2,36 @@ import assert from 'node:assert/strict';
 import { afterEach, beforeEach, test } from 'node:test';
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import { createServer } from 'node:net';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { PROTOCOL_VERSION } from '../../src/protocol/protocol.ts';
+import { finishShutdown } from '../../src/cli/serve.ts';
 
 const pcRoot = fileURLToPath(new URL('../..', import.meta.url));
 const serveEntry = fileURLToPath(new URL('../../src/cli/serve.ts', import.meta.url));
 
 let runtimeDir: string;
+let configDir: string;
 let spawned: ChildProcess[];
 
 beforeEach(() => {
   runtimeDir = mkdtempSync(join(tmpdir(), 'pi-droid-serve-'));
+  // The supervisor loads the real token; point its config at a temp dir so the
+  // suite never touches the user's `~/.config`.
+  configDir = mkdtempSync(join(tmpdir(), 'pi-droid-serve-config-'));
   spawned = [];
 });
 
@@ -28,6 +43,7 @@ afterEach(() => {
     }
   }
   rmSync(runtimeDir, { recursive: true, force: true });
+  rmSync(configDir, { recursive: true, force: true });
 });
 
 interface ServeHandle {
@@ -38,7 +54,11 @@ interface ServeHandle {
 function startServe(args: string[] = []): ServeHandle {
   const child = spawn(process.execPath, [serveEntry, ...args], {
     cwd: pcRoot,
-    env: { ...process.env, PI_DROID_RUNTIME_DIR: runtimeDir },
+    env: {
+      ...process.env,
+      PI_DROID_RUNTIME_DIR: runtimeDir,
+      XDG_CONFIG_HOME: configDir,
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   spawned.push(child);
@@ -63,6 +83,26 @@ function readPid(): number | null {
   } catch {
     return null;
   }
+}
+
+function readRecord(): Record<string, unknown> | null {
+  try {
+    return JSON.parse(readFileSync(discoveryFile(), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+/** A port nobody is listening on right now. */
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address() as AddressInfo;
+      server.close(() => resolve(port));
+    });
+  });
 }
 
 function waitExit(child: ChildProcess): Promise<{ code: number | null; signal: string | null }> {
@@ -111,16 +151,19 @@ async function waitForAnyExit(
   throw new Error('neither serve exited; mutual exclusion failed');
 }
 
-test('serve writes a 0600 discovery file and removes it on SIGTERM', async () => {
-  const first = startServe();
+test('serve writes a 0600 discovery file with both ports and removes it on SIGTERM', async () => {
+  const port = await freePort();
+  const first = startServe(['--port', String(port)]);
 
   await waitFor(() => readPid() === first.child.pid, 'the discovery file');
   assert.equal(statSync(discoveryFile()).mode & 0o777, 0o600);
   assert.equal(statSync(join(runtimeDir, 'pi-droid')).mode & 0o777, 0o700);
 
-  const raw = JSON.parse(readFileSync(discoveryFile(), 'utf8'));
+  const raw = readRecord()!;
   assert.equal(raw.pid, first.child.pid);
-  assert.equal(raw.port, 8787);
+  assert.equal(raw.viewerPort, port);
+  assert.ok(Number.isSafeInteger(raw.agentPort) && (raw.agentPort as number) > 0);
+  assert.notEqual(raw.agentPort, raw.viewerPort, 'the agent listener is ephemeral');
   assert.equal(raw.protocolVersion, PROTOCOL_VERSION);
   assert.equal(typeof raw.startedAt, 'string');
 
@@ -131,11 +174,26 @@ test('serve writes a 0600 discovery file and removes it on SIGTERM', async () =>
   assert.equal(existsSync(discoveryFile()), false, 'the file is removed on close');
 });
 
+test('serve with --no-lan still publishes both ports', async () => {
+  const port = await freePort();
+  const hub = startServe(['--port', String(port), '--no-lan']);
+
+  await waitFor(() => readPid() === hub.child.pid, 'the discovery file');
+
+  const raw = readRecord()!;
+  assert.equal(raw.viewerPort, port);
+  assert.ok((raw.agentPort as number) > 0);
+
+  const exited = waitExit(hub.child);
+  hub.child.kill('SIGTERM');
+  await exited;
+});
+
 test('two simultaneous serves: exactly one survives, the other exits non-zero', async () => {
   // Both start without waiting for either to publish: that is the race the
   // sequential "second refuses" test cannot exercise.
-  const first = startServe();
-  const second = startServe(['--port', '9123']);
+  const first = startServe(['--port', String(await freePort())]);
+  const second = startServe(['--port', String(await freePort())]);
 
   const loser = await waitForAnyExit(first.child, second.child);
   const winner = loser === first.child ? second : first;
@@ -165,7 +223,8 @@ test('a stale discovery file naming a dead pid is reclaimed, not refused', async
   writeFileSync(
     discoveryFile(),
     JSON.stringify({
-      port: 8787,
+      agentPort: 54321,
+      viewerPort: 8787,
       pid: stale,
       startedAt: new Date().toISOString(),
       protocolVersion: PROTOCOL_VERSION,
@@ -173,12 +232,14 @@ test('a stale discovery file naming a dead pid is reclaimed, not refused', async
     { mode: 0o600 },
   );
 
-  const hub = startServe(['--port', '9123']);
+  const port = await freePort();
+  const hub = startServe(['--port', String(port)]);
   await waitFor(() => readPid() === hub.child.pid, 'the replacement hub');
 
-  const raw = JSON.parse(readFileSync(discoveryFile(), 'utf8'));
+  const raw = readRecord()!;
   assert.equal(raw.pid, hub.child.pid);
-  assert.equal(raw.port, 9123);
+  assert.equal(raw.viewerPort, port);
+  assert.ok((raw.agentPort as number) > 0);
   assert.equal(raw.protocolVersion, PROTOCOL_VERSION);
 
   const exited = waitExit(hub.child);
@@ -187,11 +248,11 @@ test('a stale discovery file naming a dead pid is reclaimed, not refused', async
 });
 
 test('a second serve refuses while the first is alive and leaves its file untouched', async () => {
-  const first = startServe();
+  const first = startServe(['--port', String(await freePort())]);
   await waitFor(() => readPid() === first.child.pid, 'the first hub');
   const before = statSync(discoveryFile()).ino;
 
-  const second = startServe(['--port', '9123']);
+  const second = startServe(['--port', String(await freePort())]);
   const { code } = await waitExit(second.child);
 
   assert.notEqual(code, 0, 'the second serve must exit non-zero');
@@ -201,10 +262,14 @@ test('a second serve refuses while the first is alive and leaves its file untouc
 });
 
 test('--take-over replaces a live hub and the loser cannot delete the winner file', async () => {
-  const first = startServe();
+  const first = startServe(['--port', String(await freePort())]);
   await waitFor(() => readPid() === first.child.pid, 'the first hub');
 
-  const second = startServe(['--take-over', '--port', '9123']);
+  const second = startServe([
+    '--take-over',
+    '--port',
+    String(await freePort()),
+  ]);
   await waitFor(() => readPid() === second.child.pid, 'the takeover hub');
 
   const firstExit = waitExit(first.child);
@@ -218,4 +283,18 @@ test('--take-over replaces a live hub and the loser cannot delete the winner fil
   await secondExit;
 
   assert.equal(existsSync(discoveryFile()), false, 'the winner removes its own file');
+});
+
+test('a hub whose close rejects yields a non-zero exit, not an unhandled rejection', async () => {
+  const code = await finishShutdown(
+    {
+      close: async () => {
+        throw new Error('listener teardown failed');
+      },
+    },
+    runtimeDir,
+    process.pid,
+  );
+
+  assert.equal(code, 1);
 });

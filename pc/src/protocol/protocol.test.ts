@@ -3,7 +3,13 @@ import { test } from 'node:test';
 
 // Deliberately `.ts`, and deliberately written before `./protocol.ts` exists:
 // the red run must fail with an unresolved import, not a loader error.
-import { PROTOCOL_VERSION, decode, encode } from './protocol.ts';
+import {
+  PROTOCOL_VERSION,
+  decode,
+  encode,
+  isAgentMessageType,
+  isViewerMessageType,
+} from './protocol.ts';
 import type { DecodeErrorCode, EventMessage, HelloMessage } from './protocol.ts';
 
 function expectReject(raw: string, code: DecodeErrorCode, errorPattern: RegExp): void {
@@ -230,6 +236,62 @@ test('decode rejects an unknown event payload kind', () => {
     'bad-payload',
     /payload/i,
   );
+});
+
+test('a message payload round-trips and is accepted whole', () => {
+  const event = {
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'event',
+    payload: { kind: 'message', role: 'assistant', content: 'hi' },
+  };
+  assert.deepEqual(decode(JSON.stringify(event)), { ok: true, value: event });
+});
+
+test('a tool payload round-trips and is accepted whole', () => {
+  const event = {
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'event',
+    payload: { kind: 'tool', name: 'read', status: 'running' },
+  };
+  assert.deepEqual(decode(JSON.stringify(event)), { ok: true, value: event });
+});
+
+test('a status payload round-trips and is accepted whole', () => {
+  const event = {
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'event',
+    payload: { kind: 'status', message: 'compacting' },
+  };
+  assert.deepEqual(decode(JSON.stringify(event)), { ok: true, value: event });
+});
+
+test('an agent payload with a known state round-trips', () => {
+  const event = {
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'event',
+    payload: { kind: 'agent', state: 'settled' },
+  };
+  assert.deepEqual(decode(JSON.stringify(event)), { ok: true, value: event });
+});
+
+test('decode rejects an agent payload with an unknown state', () => {
+  expectReject(
+    JSON.stringify({
+      protocolVersion: PROTOCOL_VERSION,
+      type: 'event',
+      payload: { kind: 'agent', state: 'sleeping' },
+    }),
+    'bad-state',
+    /state/i,
+  );
+});
+
+test('the per-listener message type guards know their own set', () => {
+  assert.equal(isAgentMessageType('register'), true);
+  assert.equal(isAgentMessageType('command'), false);
+  assert.equal(isViewerMessageType('command'), true);
+  assert.equal(isViewerMessageType('register'), false);
+  assert.equal(isAgentMessageType(42), false);
 });
 
 test('decode rejects a top-level stream message', () => {

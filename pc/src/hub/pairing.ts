@@ -122,3 +122,6 @@ export function createTicketStore(deps: TicketStoreDeps = {}) {
     },
   };
 }
+
+/** The ticket authority M5's hub holds; the concrete store shape stays private. */
+export type TicketStore = ReturnType<typeof createTicketStore>;
