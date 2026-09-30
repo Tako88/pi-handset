@@ -230,7 +230,7 @@ function broadcastSessions(state: State): void {
 /**
  * Control messages are tiny and deliberately unbudgeted: a dropped
  * `resync-required` would strand a throttled viewer forever. The cap exists to
- * bound bulk payloads, which all go through `sendToViewer`.
+ * bound unsolicited bulk, which all goes through `sendToViewer`.
  */
 function announceResync(viewer: Connection, sessionId: string): void {
   if (viewer.resyncAnnounced.has(sessionId)) return;
@@ -246,8 +246,12 @@ function announceResync(viewer: Connection, sessionId: string): void {
 /**
  * Sends one viewer-bound message under its byte budget. A message that does
  * not fit is dropped whole; when it carried session data (`sessionId` non-null)
- * the viewer is told once to resync. Snapshot, command-result, session-gone and
- * `paired` all route through here, so agent-supplied bulk cannot bypass the cap.
+ * the viewer is told once to resync. This is the budgeted path for unsolicited
+ * traffic (relayed events, `sessions`, `session-gone`, `command-result`,
+ * `paired`); it cannot be used to push bytes at a viewer that did not ask. A
+ * response to an explicit request (`snapshot`) and a recovery control
+ * (`resync-required`) are not unsolicited: they are sent via `send()` instead
+ * and are never dropped, so a throttled viewer is not stranded.
  */
 function sendToViewer(
   viewer: Connection,
@@ -569,7 +573,13 @@ function handleHistory(
   const entries = Array.isArray(message.entries) ? message.entries : [];
   const truncated = message.truncated === true;
   for (const viewer of session.pendingHistory) {
-    sendToViewer(viewer, {
+    // A snapshot answering a `history-request` is a control *response*, not
+    // bulk relay: the viewer asked for it, so it cannot be used to push
+    // unsolicited bytes, and it must not be dropped. Budgeting it caused a
+    // livelock — a snapshot larger than the viewer cap was dropped, the viewer
+    // was told to resync, its next request produced the same oversized
+    // snapshot, and so on. Like `resync-required`, deliver it unbudgeted.
+    send(viewer, {
       protocolVersion: PROTOCOL_VERSION,
       type: 'snapshot',
       sessionId,
@@ -577,7 +587,7 @@ function handleHistory(
       agentState: session.agentState,
       entries,
       truncated,
-    }, sessionId);
+    });
   }
   session.pendingHistory.clear();
 }

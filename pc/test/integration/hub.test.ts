@@ -752,7 +752,12 @@ test('exceeding the byte budget drops events, resyncs, and preserves agentState'
   assert.equal(snapshot!.agentState, 'settled');
 });
 
-test('an oversized snapshot is dropped and the viewer is told to resync', async () => {
+test('a snapshot answering a history-request is delivered past the byte budget', async () => {
+  // Root cause of the resync livelock: a snapshot produced in answer to a
+  // `history-request` is a control *response*, not bulk relay. Budgeting it
+  // meant a snapshot bigger than the viewer cap was dropped, which announced
+  // another resync, whose request produced another oversized snapshot — a
+  // stable loop. This test previously asserted the drop; that was the bug.
   const hub = await startHub({ maxViewerBytes: 4096 });
   const agent = await connect(hub.agentPort);
   const viewer = await connect(hub.viewerPort);
@@ -766,8 +771,6 @@ test('an oversized snapshot is dropped and the viewer is told to resync', async 
   viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'history-request', sessionId: 's1' });
   assert.equal((await agent.next(2000)).type, 'history-request');
 
-  // The snapshot path must be budgeted too: one giant agent-supplied entries
-  // array is dropped whole, and the viewer is told to resync.
   const entries = [{ seq: 1, text: 'x'.repeat(20_000) }];
   agent.send({
     protocolVersion: PROTOCOL_VERSION,
@@ -777,9 +780,12 @@ test('an oversized snapshot is dropped and the viewer is told to resync', async 
     truncated: false,
   });
 
-  const resync = await viewer.next(3000);
-  assert.equal(resync.type, 'resync-required');
-  assert.equal(resync.sessionId, 's1');
+  const snapshot = await viewer.next(3000);
+  assert.equal(snapshot.type, 'snapshot');
+  assert.equal(snapshot.sessionId, 's1');
+  assert.deepEqual(snapshot.entries, entries);
+  // The response is not droppable, so no resync is announced for it.
+  assert.equal(await viewer.tryNext(300), undefined);
 });
 
 test('resync is announced per session, not once per viewer connection', async () => {
