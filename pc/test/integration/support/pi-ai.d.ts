@@ -13,10 +13,11 @@
  * and fails loudly at runtime, when the import yields `undefined`.
  *
  * Deliberately minimal: only what a test actually calls. `fauxProvider` returns
- * much more than this (deferred responses, `callCount`, `appendResponses`, the
- * tool/thinking block helpers) and none of it is used, so none of it is
- * declared. Add a member here when a test needs it — an unused declaration is
- * surface that can drift for no gain.
+ * much more than this (deferred responses, `callCount`, `appendResponses`) and
+ * none of it is used, so none of it is declared. `fauxThinking`/`fauxText` build
+ * the scripted thinking + text content the M1 phase-frame test needs. Add a
+ * member here when a test needs it — an unused declaration is surface that can
+ * drift for no gain.
  */
 declare module '@earendil-works/pi-ai' {
   export interface FauxProviderHandle {
@@ -31,4 +32,6 @@ declare module '@earendil-works/pi-ai' {
     content: string | unknown | unknown[],
     options?: Record<string, unknown>,
   ): unknown;
+  export function fauxText(text: string): unknown;
+  export function fauxThinking(thinking: string): unknown;
 }

@@ -66,6 +66,33 @@ test('decode accepts an empty stream delta', () => {
   });
 });
 
+test('decode accepts a phase-only stream frame carrying no text', () => {
+  const raw = JSON.stringify({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'event',
+    payload: { kind: 'stream', seq: 3, phase: 'thinking' },
+  });
+  const result = decode(raw);
+  if (!result.ok) assert.fail(`expected a phase-only stream to decode: ${result.error}`);
+  assert.deepEqual(result.value, {
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'event',
+    payload: { kind: 'stream', seq: 3, phase: 'thinking' },
+  });
+});
+
+test('decode rejects an unknown stream phase', () => {
+  expectReject(
+    JSON.stringify({
+      protocolVersion: PROTOCOL_VERSION,
+      type: 'event',
+      payload: { kind: 'stream', seq: 1, phase: 'yearning' },
+    }),
+    'bad-payload',
+    /phase/i,
+  );
+});
+
 test('decode rejects a hello carrying no credential', () => {
   expectReject(
     JSON.stringify({ protocolVersion: PROTOCOL_VERSION, type: 'hello' }),

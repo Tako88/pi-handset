@@ -36,6 +36,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:pi_droid/client/hub_client.dart';
 import 'package:pi_droid/client/hub_socket.dart';
 import 'package:pi_droid/client/scheduler.dart';
+import 'package:pi_droid/client/transcript.dart';
 import 'package:pi_droid/protocol/ticket.dart';
 
 import '../client/support/fakes.dart';
@@ -272,6 +273,7 @@ void main() {
         final events = taps.expand((tap) => tap.eventPayloads()).toList();
         final streamedText = events
             .where((payload) => payload['kind'] == 'stream')
+            .where((payload) => payload['text'] is String)
             .map((payload) => payload['text']! as String)
             .join();
         expect(
@@ -280,29 +282,54 @@ void main() {
           reason:
               'the stream deltas must accumulate to exactly the faux text',
         );
+        // Per-role, not a single total: M1 relays the user prompt too, and a
+        // double-emitted user (or a future toolResult) must not pass silently.
         final messageIndexes = <int>[];
+        final messageRoles = <String>[];
         var settledIndex = -1;
         for (var index = 0; index < events.length; index++) {
           final payload = events[index];
-          if (payload['kind'] == 'message') messageIndexes.add(index);
+          if (payload['kind'] == 'message') {
+            messageIndexes.add(index);
+            final message = (payload['message']! as Map).cast<String, Object?>();
+            messageRoles.add(message['role']! as String);
+          }
           if (payload['kind'] == 'agent' && payload['state'] == 'settled') {
             settledIndex = index;
           }
         }
+        final userMessageIndexes = <int>[];
+        final assistantMessageIndexes = <int>[];
+        for (var i = 0; i < messageRoles.length; i++) {
+          if (messageRoles[i] == 'user') userMessageIndexes.add(messageIndexes[i]);
+          if (messageRoles[i] == 'assistant') {
+            assistantMessageIndexes.add(messageIndexes[i]);
+          }
+        }
+        expect(
+          userMessageIndexes,
+          hasLength(1),
+          reason: 'exactly one user prompt must be relayed',
+        );
+        expect(
+          assistantMessageIndexes,
+          hasLength(1),
+          reason: 'exactly one assistant reply must be relayed',
+        );
         expect(
           messageIndexes,
-          hasLength(1),
-          reason: 'exactly one final assistant message must be relayed',
+          hasLength(2),
+          reason: 'no role other than user and assistant may be relayed',
         );
         expect(
           settledIndex,
-          greaterThan(messageIndexes.single),
+          greaterThan(assistantMessageIndexes.single),
           reason:
-              'the message must arrive before the settled state, or the app '
-              'commits the reply after it has cleared its buffer',
+              'the assistant message must arrive before the settled state, or '
+              'the app commits the reply after it has cleared its buffer',
         );
         final delivered =
-            events[messageIndexes.single]['message']! as Map;
+            events[assistantMessageIndexes.single]['message']! as Map;
         expect(delivered['role'], 'assistant');
         expect(jsonEncode(delivered), contains(fauxText));
 
@@ -327,6 +354,28 @@ void main() {
           reason:
               'the committed transcript must contain the assistant reply: '
               '${_clientDiagnostics(client)}',
+        );
+        // M1 end to end: the derived blocks carry the user's own prompt and the
+        // assistant reply, both committed from relayed `message` payloads.
+        final committedBlocks = deriveBlocks(transcript.entries);
+        expect(
+          committedBlocks
+              .where((block) => block.fromUser && block.kind == TranscriptBlockKind.text)
+              .map((block) => block.text),
+          contains('first prompt'),
+          reason:
+              'the user\'s own message must appear as a block: '
+              '${committedBlocks.map((block) => block.text).toList()}',
+        );
+        expect(
+          committedBlocks.any(
+            (block) =>
+                !block.fromUser &&
+                block.kind == TranscriptBlockKind.text &&
+                block.text.contains(fauxText),
+          ),
+          isTrue,
+          reason: 'the assistant reply must appear as a block',
         );
 
         // 9. The plan's acceptance case: restart the hub on the same port with
@@ -435,7 +484,11 @@ void main() {
         );
         final secondMessage = reconnectedTaps()
             .expand((tap) => tap.eventPayloads())
-            .firstWhere((payload) => payload['kind'] == 'message');
+            .firstWhere(
+              (payload) =>
+                  payload['kind'] == 'message' &&
+                  (payload['message']! as Map)['role'] == 'assistant',
+            );
         expect(
           jsonEncode(secondMessage),
           contains(fauxText),

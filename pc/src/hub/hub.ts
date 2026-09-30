@@ -34,6 +34,7 @@ import {
   EVENT_PAYLOAD_KINDS,
   MAX_RELAY_BYTES,
   PROTOCOL_VERSION,
+  STREAM_PHASES,
   asObject,
   asString,
   decode,
@@ -435,7 +436,18 @@ function handleEvent(
       closeWith(connection, CLOSE_PROTOCOL);
       return;
     }
-    if (typeof payload.text !== 'string') {
+    if (payload.text !== undefined && typeof payload.text !== 'string') {
+      closeWith(connection, CLOSE_PROTOCOL);
+      return;
+    }
+    if (
+      payload.phase !== undefined &&
+      !(STREAM_PHASES as readonly unknown[]).includes(payload.phase)
+    ) {
+      closeWith(connection, CLOSE_PROTOCOL);
+      return;
+    }
+    if (payload.text === undefined && payload.phase === undefined) {
       closeWith(connection, CLOSE_PROTOCOL);
       return;
     }

@@ -24,6 +24,7 @@ import {
   AGENT_MESSAGE_TYPES,
   EVENT_PAYLOAD_KINDS,
   HUB_TO_VIEWER_MESSAGE_TYPES,
+  STREAM_PHASES,
   VIEWER_MESSAGE_TYPES,
   decode,
   encode,
@@ -228,12 +229,14 @@ test('the canonical message-type and payload-kind lists match the shared fixture
   const shared = JSON.parse(readFileSync(messageTypesPath, 'utf8')) as {
     messageTypes: string[];
     eventPayloadKinds: string[];
+    streamPhases: string[];
     agentMessageTypes: string[];
     viewerMessageTypes: string[];
     hubToViewerMessageTypes: string[];
   };
   assert.deepEqual(new Set(ALL_MESSAGE_TYPES), new Set(shared.messageTypes));
   assert.deepEqual(new Set(EVENT_PAYLOAD_KINDS), new Set(shared.eventPayloadKinds));
+  assert.deepEqual(new Set(STREAM_PHASES), new Set(shared.streamPhases));
   assert.deepEqual(new Set(AGENT_MESSAGE_TYPES), new Set(shared.agentMessageTypes));
   assert.deepEqual(new Set(VIEWER_MESSAGE_TYPES), new Set(shared.viewerMessageTypes));
   assert.deepEqual(new Set(HUB_TO_VIEWER_MESSAGE_TYPES), new Set(shared.hubToViewerMessageTypes));

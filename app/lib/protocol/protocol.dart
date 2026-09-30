@@ -20,6 +20,12 @@ const List<String> agentStates = ['idle', 'running', 'settled'];
 /// The normalized payload kinds an `event` may carry.
 const List<String> eventPayloadKinds = ['stream', 'message', 'agent', 'tool', 'status'];
 
+/// Lifecycle phases a `stream` frame may signal. `thinking` is emitted on
+/// `thinking_start` as a content-free liveness signal (the frame carries no
+/// `text`), before any reasoning delta. A frame may carry `text` and/or
+/// `phase`; at least one is required.
+const List<String> streamPhases = ['thinking'];
+
 /// What the loopback (agent) listener accepts besides `hello`.
 ///
 /// These lists are canonical: [decode]'s switch follows them, never the
@@ -153,8 +159,20 @@ DecodeResult decode(String text) {
             'stream seq must be a positive safe integer',
           );
         }
-        if (body['text'] is! String) {
+        if (body.containsKey('text') && body['text'] is! String) {
           return const DecodeResult.fail('bad-text', 'stream text must be a string');
+        }
+        if (body.containsKey('phase') && !streamPhases.contains(body['phase'])) {
+          return DecodeResult.fail(
+            'bad-payload',
+            'stream phase must be one of ${streamPhases.join(', ')}',
+          );
+        }
+        if (!body.containsKey('text') && !body.containsKey('phase')) {
+          return const DecodeResult.fail(
+            'bad-text',
+            'stream frame must carry text and/or a phase',
+          );
         }
         return DecodeResult.ok(message);
       }

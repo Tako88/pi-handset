@@ -19,6 +19,7 @@ import '../client/token_store.dart';
 import 'compose_bar.dart';
 import 'pairing_screen.dart';
 import 'session_list.dart';
+import 'status_indicator.dart';
 import 'transcript_view.dart';
 
 class PiDroidApp extends StatefulWidget {
@@ -192,14 +193,20 @@ class _PiDroidAppState extends State<PiDroidApp> {
         ),
       ),
       body: _withStatusBanner(TranscriptView(transcript: transcript)),
-      bottomNavigationBar: ComposeBar(
-        enabled: _state.status == HubConnectionStatus.connected,
-        onSend: (text) => widget.client.sendCommand(
-          activeId,
-          'prompt',
-          args: {'text': text},
-        ),
-        onAbort: () => widget.client.sendCommand(activeId, 'abort'),
+      bottomNavigationBar: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          StatusIndicator(transcript: transcript),
+          ComposeBar(
+            enabled: _state.status == HubConnectionStatus.connected,
+            onSend: (text) => widget.client.sendCommand(
+              activeId,
+              'prompt',
+              args: {'text': text},
+            ),
+            onAbort: () => widget.client.sendCommand(activeId, 'abort'),
+          ),
+        ],
       ),
     );
   }

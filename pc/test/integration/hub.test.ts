@@ -361,6 +361,37 @@ test("a registered agent's stream event reaches a subscribed viewer", async () =
   assert.deepEqual(relayed.payload, { kind: 'stream', seq: 1, text: 'hello viewer' });
 });
 
+test("a content-free phase stream frame relays and does not close the agent", async () => {
+  const hub = await startHub();
+  const agent = await connect(hub.agentPort);
+  const viewer = await connect(hub.viewerPort);
+  await helloTokened(agent);
+  await helloViewer(viewer);
+
+  agent.send({ protocolVersion: PROTOCOL_VERSION, type: 'register', sessionId: 's1' });
+  await barrier(agent);
+  viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'subscribe', sessionId: 's1' });
+  await barrier(viewer);
+
+  agent.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'event',
+    payload: { kind: 'stream', seq: 1, phase: 'thinking' },
+  });
+  const phase = await viewer.next(2000);
+  assert.deepEqual(phase.payload, { kind: 'stream', seq: 1, phase: 'thinking' });
+
+  // A phase frame must not be treated as a protocol violation: the same agent
+  // connection still relays the text that follows the thinking.
+  agent.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'event',
+    payload: { kind: 'stream', seq: 2, text: 'hi' },
+  });
+  const text = await viewer.next(2000);
+  assert.deepEqual(text.payload, { kind: 'stream', seq: 2, text: 'hi' });
+});
+
 test("a registered agent's message, tool and status events relay verbatim", async () => {
   const hub = await startHub();
   const agent = await connect(hub.agentPort);

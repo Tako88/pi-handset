@@ -37,6 +37,10 @@
     "type": "event",
     "payload": { "kind": "stream", "seq": 1, "text": "hello " }
   },
+  "event-stream-phase.json": {
+    "type": "event",
+    "payload": { "kind": "stream", "seq": 1, "phase": "thinking" }
+  },
   "event-tool.json": {
     "type": "event",
     "payload": {
