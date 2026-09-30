@@ -1,0 +1,13 @@
+{
+  "name": "pi-droid-pc",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test 'src/**/*.test.ts' 'test/**/*.test.ts'",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.0",
+    "typescript": "^5.9.2"
+  }
+}
