@@ -17,6 +17,10 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pi_droid/client/hub_client.dart';
 import 'package:pi_droid/client/hub_socket.dart';
+import 'package:pi_droid/client/scheduler.dart';
+import 'package:pi_droid/protocol/ticket.dart';
+
+import '../../client/support/fakes.dart';
 
 /// A real pi boots slower than any fake. Generous, but bounded.
 const Duration bootTimeout = Duration(seconds: 30);
@@ -208,4 +212,226 @@ String clientDiagnostics(HubClient client) {
   return 'client{status=${state.status}, error=${state.lastError}, '
       'sessions=${state.sessions.map((s) => s.sessionId).toList()}, '
       'active=${state.activeSessionId}, transcripts=[$transcripts]}';
+}
+
+/// A live hub + pi + paired production client, ready to prompt.
+///
+/// [teardown] closes the client, kills the children it spawned and removes the
+/// temp dir; call it from a `finally` on every path.
+class LiveAttach {
+  LiveAttach({
+    required this.tmp,
+    required this.runtimeDir,
+    required this.piCwd,
+    required this.viewerPort,
+    required this.hub,
+    required this.pi,
+    required this.client,
+    required this.taps,
+    required this.sessionId,
+  });
+
+  final Directory tmp;
+  final Directory runtimeDir;
+  final Directory piCwd;
+  final int viewerPort;
+  final Child hub;
+  final Child pi;
+  final HubClient client;
+  final List<Tap> taps;
+  final String sessionId;
+
+  Future<void> teardown() async {
+    try {
+      await client.stop();
+    } catch (_) {
+      // Already gone.
+    }
+    for (final child in [pi, hub]) {
+      try {
+        await child.kill(ProcessSignal.sigkill);
+      } catch (_) {
+        // Best effort.
+      }
+    }
+    try {
+      tmp.deleteSync(recursive: true);
+    } catch (_) {
+      // Best effort.
+    }
+  }
+}
+
+/// Boots a real supervisor and a real pi (bridge + faux harness) in [fauxMode],
+/// pairs the production client, subscribes to the first session and waits for
+/// its history. On any failure the children spawned so far are killed and the
+/// temp dir removed before the error propagates.
+///
+/// [fauxToolContent], when given, is written into pi's cwd and wired to
+/// `PI_DROID_FAUX_TOOL_PATH` so the `tools` recipe's faux `read` call has a
+/// file to read.
+Future<LiveAttach> attachLive({
+  required String fauxMode,
+  String? fauxToolContent,
+  Map<String, String> extraEnv = const {},
+}) async {
+  final appDir = Directory.current;
+  if (appDir.uri.pathSegments.where((segment) => segment.isNotEmpty).last !=
+      'app') {
+    fail('attachLive expects to run from the app/ package root: ${appDir.path}');
+  }
+  final repoRoot = appDir.parent;
+  final servePath = '${repoRoot.path}/pc/src/cli/serve.ts';
+  final bridgePath = '${repoRoot.path}/pc/extensions/pi-droid-bridge.ts';
+  final harnessPath =
+      '${repoRoot.path}/pc/test/integration/support/faux-provider.ts';
+  for (final path in [servePath, bridgePath, harnessPath]) {
+    if (!File(path).existsSync()) fail('missing $path');
+  }
+
+  final tmp = Directory.systemTemp.createTempSync('pi-droid-attach-');
+  final runtimeDir = Directory('${tmp.path}/runtime')..createSync();
+  final configDir = Directory('${tmp.path}/config')..createSync();
+  final piCwd = Directory('${tmp.path}/cwd')..createSync();
+  final children = <Child>[];
+  HubClient? client;
+  try {
+    final environment = <String, String>{
+      'XDG_RUNTIME_DIR': runtimeDir.path,
+      'XDG_CONFIG_HOME': configDir.path,
+      'PI_DROID_FAUX_MODE': fauxMode,
+      'PI_DROID_DEBUG': '1',
+      ...extraEnv,
+    };
+    if (fauxToolContent != null) {
+      final toolPath = '${piCwd.path}/faux-tool.txt';
+      File(toolPath).writeAsStringSync(fauxToolContent);
+      environment['PI_DROID_FAUX_TOOL_PATH'] = toolPath;
+    }
+
+    final viewerPort = await freePort();
+    final hub = await spawn(
+      'node',
+      [servePath, '--port', '$viewerPort', '--no-lan'],
+      workingDirectory: repoRoot.path,
+      environment: environment,
+      label: 'node serve',
+    );
+    children.add(hub);
+    await waitUntil(
+      () => readDiscovery(runtimeDir.path)?['viewerPort'] == viewerPort,
+      'the supervisor to publish its discovery record',
+      timeout: bootTimeout,
+      diagnostics: () => 'hub: ${hub.diagnostics()}',
+    );
+
+    final pi = await spawn(
+      'pi',
+      [
+        '--mode',
+        'rpc',
+        '-ne',
+        '-e',
+        harnessPath,
+        '-e',
+        bridgePath,
+        '--provider',
+        'faux',
+        '--model',
+        'faux-1',
+        '--no-session',
+        '-nc',
+      ],
+      workingDirectory: piCwd.path,
+      environment: environment,
+      label: 'pi',
+    );
+    children.add(pi);
+
+    hub.process.kill(ProcessSignal.sigusr1);
+    await waitUntil(
+      () => pairingCodePattern.hasMatch(hub.stdout.toString()),
+      'the supervisor to print a pairing code',
+      timeout: bootTimeout,
+      diagnostics: () => 'hub: ${hub.diagnostics()}',
+    );
+    final ticket = normalizeTicket(
+      pairingCodePattern.firstMatch(hub.stdout.toString())!.group(1)!,
+    );
+    if (ticket == null) fail('the printed code was not a valid pairing ticket');
+
+    final taps = <Tap>[];
+    Future<HubSocket> socketFactory(Uri url) async {
+      final inner = await dialHubSocket(url);
+      final tap = Tap();
+      taps.add(tap);
+      return TapSocket(inner, tap);
+    }
+
+    client = HubClient(
+      socketFactory: socketFactory,
+      scheduler: TimerHubScheduler(),
+      tokenStore: InMemoryTokenStore(),
+    );
+    await client
+        .start('127.0.0.1', port: viewerPort, ticket: ticket)
+        .timeout(bootTimeout);
+    await waitUntil(
+      () => client!.state.status == HubConnectionStatus.connected,
+      'the client to pair and authenticate',
+      timeout: bootTimeout,
+      diagnostics: () => clientDiagnostics(client!),
+    );
+    await waitUntil(
+      () => client!.state.sessions.isNotEmpty,
+      'pi to register its session with the hub',
+      timeout: bootTimeout,
+      diagnostics: () =>
+          'hub: ${hub.diagnostics()}\npi: ${pi.diagnostics()}\n'
+          '${clientDiagnostics(client!)}',
+    );
+    final sessionId = client.state.sessions.first.sessionId;
+    client.subscribe(sessionId);
+    await waitUntil(
+      () => client!.transcript(sessionId)?.historyLoaded == true,
+      'the opened session history to arrive',
+      timeout: bootTimeout,
+      diagnostics: () =>
+          'hub: ${hub.diagnostics()}\npi: ${pi.diagnostics()}\n'
+          '${clientDiagnostics(client!)}',
+    );
+
+    return LiveAttach(
+      tmp: tmp,
+      runtimeDir: runtimeDir,
+      piCwd: piCwd,
+      viewerPort: viewerPort,
+      hub: hub,
+      pi: pi,
+      client: client,
+      taps: taps,
+      sessionId: sessionId,
+    );
+  } catch (_) {
+    if (client != null) {
+      try {
+        await client.stop();
+      } catch (_) {
+        // Best effort.
+      }
+    }
+    for (final child in children.reversed) {
+      try {
+        await child.kill(ProcessSignal.sigkill);
+      } catch (_) {
+        // Best effort.
+      }
+    }
+    try {
+      tmp.deleteSync(recursive: true);
+    } catch (_) {
+      // Best effort.
+    }
+    rethrow;
+  }
 }

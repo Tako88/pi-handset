@@ -4,6 +4,8 @@
 /// `RepaintBoundary` there, so a streamed frame repaints only the streaming row.
 library;
 
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
@@ -87,24 +89,113 @@ class _ThinkingBlockState extends State<ThinkingBlock> {
   }
 }
 
-/// A tool call row. M1 labels the call; M2 adds the collapsed result.
-class ToolBlock extends StatelessWidget {
+/// A tool call row: collapsed by default, showing the tool name, its arguments
+/// and a capped result preview; tap to expand the full result. An error result
+/// is tinted and iconed apart. The TUI's own `[Showing lines … Full output: …]`
+/// note is inside the result and renders verbatim — the path is never fetched
+/// (the phone cannot read the PC's temp file).
+class ToolBlock extends StatefulWidget {
   const ToolBlock({super.key, required this.block});
 
   final TranscriptBlock block;
 
   @override
+  State<ToolBlock> createState() => _ToolBlockState();
+}
+
+class _ToolBlockState extends State<ToolBlock> {
+  bool _expanded = false;
+
+  @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+    final block = widget.block;
     final name = block.toolName ?? 'tool';
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      child: Text(
-        'tool · $name',
-        style: TextStyle(color: colors.outline, fontSize: 12),
+    final args = argumentsLabel(block.toolArgs);
+    final hasResult = block.toolResult != null;
+    final preview = previewToolResult(block.text);
+    final body = _expanded ? block.text : preview.shown;
+    final accent = block.isError ? colors.error : colors.outline;
+    return InkWell(
+      onTap: hasResult ? () => setState(() => _expanded = !_expanded) : null,
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: block.isError
+              ? colors.errorContainer
+              : colors.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  block.isError ? Icons.error_outline : Icons.build,
+                  size: 16,
+                  color: accent,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  name,
+                  style: TextStyle(fontWeight: FontWeight.w600, color: colors.onSurface),
+                ),
+                if (args.isNotEmpty) ...[
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      args,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(color: colors.onSurfaceVariant, fontSize: 12),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+            if (hasResult && body.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(
+                  body,
+                  style: TextStyle(
+                    fontFamily: 'monospace',
+                    color: block.isError ? colors.onErrorContainer : colors.onSurfaceVariant,
+                    fontSize: 12,
+                  ),
+                ),
+              ),
+            if (hasResult && !_expanded && preview.isTruncated)
+              Text(
+                '… (${preview.hiddenLines} more lines)',
+                style: TextStyle(color: colors.outline, fontSize: 12),
+              ),
+          ],
+        ),
       ),
     );
   }
+}
+
+/// The most argument characters the header row shows. A `write`/`edit` call
+/// carries the whole file body in its arguments, and without a cap the header
+/// would hand kilobytes to layout (and measure them). One generic cap; the
+/// spinner never depends on the exact width.
+const int toolArgumentsLabelMaxChars = 200;
+
+/// Renders tool arguments compactly for the header line: JSON when structured,
+/// the raw string otherwise, capped with an ellipsis.
+String argumentsLabel(Object? args) {
+  final raw = args == null
+      ? ''
+      : args is String
+      ? args
+      : args is Map
+      ? jsonEncode(args)
+      : args.toString();
+  if (raw.length <= toolArgumentsLabelMaxChars) return raw;
+  return '${raw.substring(0, toolArgumentsLabelMaxChars)}…';
 }
 
 /// A truncation or status notice.

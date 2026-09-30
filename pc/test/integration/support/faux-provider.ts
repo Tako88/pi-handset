@@ -11,9 +11,17 @@
  * chose. No network, no spend.
  */
 
-import { fauxAssistantMessage, fauxProvider, fauxText, fauxThinking } from '@earendil-works/pi-ai';
+import {
+  fauxAssistantMessage,
+  fauxProvider,
+  fauxText,
+  fauxThinking,
+  fauxToolCall,
+} from '@earendil-works/pi-ai';
 
-export default function fauxHarness(pi: { registerProvider(provider: unknown): void }): void {
+export default function fauxHarness(pi: {
+  registerProvider(provider: unknown): void;
+}): void {
   const mode = process.env.PI_DROID_FAUX_MODE ?? 'text';
   const text = process.env.PI_DROID_FAUX_TEXT ?? 'FAUX_OK';
   const thinking = process.env.PI_DROID_FAUX_THINKING ?? 'FAUX_THOUGHT';
@@ -27,8 +35,23 @@ export default function fauxHarness(pi: { registerProvider(provider: unknown): v
   const reply = reasoning
     ? fauxAssistantMessage([fauxThinking(thinking), fauxText(text)])
     : fauxAssistantMessage(text);
-  // Two identical responses: M10b drives two prompts through one pi process
-  // (the second after a hub restart). M9 consumes only the first.
-  faux.setResponses([reply, reply]);
+  // The `tools` recipe scripts one tool call followed by the plain text reply,
+  // so pi executes a real tool and emits a `toolResult` message before it calls
+  // the model again. Two distinct responses, not the repeated `reply`.
+  const responses =
+    mode === 'tools'
+      ? [
+          fauxAssistantMessage(
+            fauxToolCall(
+              'read',
+              { path: process.env.PI_DROID_FAUX_TOOL_PATH ?? 'faux-tool.txt' },
+              { id: 'call-1' },
+            ),
+            { stopReason: 'toolUse' },
+          ),
+          fauxAssistantMessage(text),
+        ]
+      : [reply, reply];
+  faux.setResponses(responses);
   pi.registerProvider(faux.provider);
 }

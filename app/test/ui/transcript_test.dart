@@ -56,6 +56,139 @@ TranscriptBlock textBlock(
 );
 
 void main() {
+  TranscriptBlock toolBlock({
+    String id = 'tool:call-1',
+    String? toolName = 'read',
+    Object? toolArgs = const {'path': '/etc/hostname'},
+    Object? toolResult,
+    bool isError = false,
+    String text = '',
+  }) => TranscriptBlock(
+    kind: TranscriptBlockKind.tool,
+    id: id,
+    toolName: toolName,
+    toolArgs: toolArgs,
+    toolResult: toolResult,
+    isError: isError,
+    text: text,
+  );
+
+  testWidgets('a tool block is collapsed with a capped preview and a more-lines count', (
+    tester,
+  ) async {
+    final result = List.generate(12, (i) => 'line $i').join('\n');
+    await tester.pumpWidget(
+      wrap(
+        SessionTranscript(
+          blocks: [toolBlock(toolResult: const {'role': 'toolResult'}, text: result)],
+        ),
+      ),
+    );
+
+    expect(find.byType(ToolBlock), findsOneWidget);
+    expect(find.text('read'), findsOneWidget);
+    expect(find.textContaining('/etc/hostname'), findsOneWidget);
+    expect(find.textContaining('line 0'), findsOneWidget);
+    expect(
+      find.textContaining('line $toolResultPreviewLines'),
+      findsNothing,
+      reason: 'lines past the cap must stay collapsed',
+    );
+    expect(
+      find.textContaining('(${12 - toolResultPreviewLines} more lines)'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('tapping a tool block expands the full result', (tester) async {
+    final result = List.generate(12, (i) => 'line $i').join('\n');
+    await tester.pumpWidget(
+      wrap(
+        SessionTranscript(
+          blocks: [toolBlock(toolResult: const {'role': 'toolResult'}, text: result)],
+        ),
+      ),
+    );
+
+    await tester.tap(find.byType(ToolBlock));
+    await tester.pump();
+
+    expect(find.textContaining('line 11'), findsOneWidget);
+    expect(find.textContaining('more lines'), findsNothing);
+  });
+
+  testWidgets('an error tool block is styled as an error', (tester) async {
+    await tester.pumpWidget(
+      wrap(
+        SessionTranscript(
+          blocks: [
+            toolBlock(
+              toolResult: const {'role': 'toolResult', 'isError': true},
+              isError: true,
+              text: 'boom',
+            ),
+          ],
+        ),
+      ),
+    );
+
+    expect(find.byIcon(Icons.error_outline), findsOneWidget);
+    expect(find.byIcon(Icons.build), findsNothing);
+  });
+
+  testWidgets('the TUI full-output note renders verbatim', (tester) async {
+    const note =
+        '[Showing lines 1-2 of 100. Full output: /tmp/pi-tool-abc.log]';
+    await tester.pumpWidget(
+      wrap(
+        SessionTranscript(
+          blocks: [
+            toolBlock(
+              toolResult: const {'role': 'toolResult'},
+              text: note,
+            ),
+          ],
+        ),
+      ),
+    );
+
+    expect(find.textContaining('Full output: /tmp/pi-tool-abc.log'), findsOneWidget);
+  });
+
+  testWidgets('an [image] placeholder renders on the tool path', (tester) async {
+    await tester.pumpWidget(
+      wrap(
+        SessionTranscript(
+          blocks: [
+            toolBlock(
+              toolResult: const {'role': 'toolResult'},
+              text: '[image]',
+            ),
+          ],
+        ),
+      ),
+    );
+
+    expect(find.text('[image]'), findsOneWidget);
+  });
+
+  test('tool arguments are capped in the header row', () {
+    // A `write`/`edit` call carries the whole file body in its arguments; the
+    // header must not hand kilobytes of it to layout.
+    final huge = 'x' * (toolArgumentsLabelMaxChars * 3);
+    final label = argumentsLabel({'path': '/tmp/f', 'content': huge});
+
+    expect(label.length, lessThanOrEqualTo(toolArgumentsLabelMaxChars + 1));
+    expect(label.endsWith('…'), isTrue);
+    expect(label, isNot(contains('x' * (toolArgumentsLabelMaxChars + 1))));
+  });
+
+  test('small tool arguments are shown whole', () {
+    expect(argumentsLabel({'path': '/etc/hostname'}), '{"path":"/etc/hostname"}');
+    expect(argumentsLabel('raw string'), 'raw string');
+    expect(argumentsLabel(null), '');
+  });
+
   testWidgets('a streaming message renders as plain text, not markdown', (
     tester,
   ) async {

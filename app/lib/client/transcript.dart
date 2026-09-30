@@ -53,7 +53,32 @@ class TranscriptBlock {
 /// Derives the ordered block list for [entries]. Pure and O(n) in the number of
 /// entries — call it when entries change, never per stream delta.
 List<TranscriptBlock> deriveBlocks(List<Object?> entries) {
+  // Pass 1 — index tool results by call id (first-wins) and collect the call
+  // ids the assistant issued. A resumed/forked branch can surface the same
+  // call twice; dropping a later duplicate rather than overwriting keeps the
+  // call row showing the first result, not the second. The result may appear
+  // before or after its call, so the index is built before pass 2 emits.
+  final resultsById = <String, Map<Object?, Object?>>{};
+  final callIds = <String>{};
+  for (final entry in entries) {
+    if (entry is! Map) continue;
+    final source = _unwrap(entry);
+    if (source == null) continue;
+    final role = source['role'];
+    if (role == 'toolResult') {
+      final callId = source['toolCallId'];
+      if (callId is String && !resultsById.containsKey(callId)) {
+        resultsById[callId] = source;
+      }
+    } else if (role == 'assistant') {
+      _collectToolCallIds(source['content'], callIds);
+    }
+  }
+
   final blocks = <TranscriptBlock>[];
+  // Per-derivation counts of emitted tool ids: a fork can surface the same call
+  // id twice, and two blocks sharing an `id` collide the view's `ValueKey`.
+  final toolIdCounts = <String, int>{};
   for (final entry in entries) {
     if (entry is! Map) continue;
     final idBase = identityHashCode(entry);
@@ -106,13 +131,42 @@ List<TranscriptBlock> deriveBlocks(List<Object?> entries) {
     if (role == 'user') {
       _emitTextContent(blocks, source['content'], idBase, fromUser: true);
     } else if (role == 'assistant') {
-      _emitAssistantContent(blocks, source['content'], idBase);
+      _emitAssistantContent(
+        blocks,
+        source['content'],
+        idBase,
+        resultsById,
+        toolIdCounts,
+      );
     } else if (role == 'toolResult') {
-      _emitToolResult(blocks, source, idBase);
+      final callId = source['toolCallId'];
+      // Paired: already rendered at its call in the assistant message.
+      if (callId is String && callIds.contains(callId)) continue;
+      _emitToolResult(blocks, source, idBase, toolIdCounts);
     }
     // `system`, `custom` and bookkeeping roles take no block.
   }
   return blocks;
+}
+
+/// A tool-block id, disambiguated when a fork surfaces the same call id twice.
+/// The first occurrence keeps the bare `tool:<callId>` so the common case is
+/// unchanged; later occurrences get a `#n` suffix, keeping every `ValueKey`
+/// distinct so expansion state cannot attach to the wrong row.
+String _toolBlockId(String callId, Map<String, int> seen) {
+  final index = seen[callId] ?? 0;
+  seen[callId] = index + 1;
+  return index == 0 ? 'tool:$callId' : 'tool:$callId#$index';
+}
+
+/// Collects the `toolCall` ids in an assistant message's content.
+void _collectToolCallIds(Object? content, Set<String> ids) {
+  if (content is! List) return;
+  for (final part in content) {
+    if (part is Map && part['type'] == 'toolCall' && part['id'] is String) {
+      ids.add(part['id'] as String);
+    }
+  }
 }
 
 /// Unwraps a snapshot entry (`{type:'message', message:{…}}`) or accepts a bare
@@ -179,6 +233,8 @@ void _emitAssistantContent(
   List<TranscriptBlock> blocks,
   Object? content,
   int idBase,
+  Map<String, Map<Object?, Object?>> resultsById,
+  Map<String, int> toolIdCounts,
 ) {
   if (content is String) {
     if (content.isEmpty) return;
@@ -212,12 +268,16 @@ void _emitAssistantContent(
         if (body != null) _addThinking(blocks, '$idBase:$sub', body);
       } else if (type == 'toolCall') {
         final callId = part['id'] is String ? part['id'] as String : '$idBase:$sub';
+        final result = resultsById[callId];
         blocks.add(
           TranscriptBlock(
             kind: TranscriptBlockKind.tool,
-            id: 'tool:$callId',
+            id: _toolBlockId(callId, toolIdCounts),
             toolName: part['name'] is String ? part['name'] as String : null,
             toolArgs: part['arguments'],
+            text: result == null ? '' : _resultText(result),
+            toolResult: result,
+            isError: result != null && result['isError'] == true,
           ),
         );
       } else if (type == 'image') {
@@ -266,31 +326,68 @@ void _addThinking(List<TranscriptBlock> blocks, String id, String body) {
   );
 }
 
+/// The number of lines a collapsed tool result shows. One generic cap, not a
+/// per-tool table: a test pins it so tuning it cannot silently change behaviour.
+const int toolResultPreviewLines = 8;
+
+/// The visible prefix of a collapsed tool result and how many lines it hides.
+class ToolPreview {
+  final String shown;
+  final int hiddenLines;
+  const ToolPreview(this.shown, this.hiddenLines);
+
+  bool get isTruncated => hiddenLines > 0;
+}
+
+/// Splits [text] at [maxLines], reporting how many lines it hid.
+ToolPreview previewToolResult(
+  String text, {
+  int maxLines = toolResultPreviewLines,
+}) {
+  if (text.isEmpty) return const ToolPreview('', 0);
+  final lines = text.split('\n');
+  if (lines.length <= maxLines) return ToolPreview(text, 0);
+  return ToolPreview(lines.take(maxLines).join('\n'), lines.length - maxLines);
+}
+
 /// A tool result whose assistant call was not in the entries becomes a
-/// standalone row rather than vanishing (M1: within a snapshot; M2 pairs it).
+/// standalone row rather than vanishing (a history projection may cut the call
+/// but keep the result).
 void _emitToolResult(
   List<TranscriptBlock> blocks,
   Map<Object?, Object?> source,
   int idBase,
+  Map<String, int> toolIdCounts,
 ) {
-  final content = source['content'];
-  final text = content is String
-      ? content
-      : content is List
-      ? content
-            .whereType<Map>()
-            .where((part) => part['type'] == 'text' && part['text'] is String)
-            .map((part) => part['text'] as String)
-            .join()
-      : '';
+  final callId = source['toolCallId'];
   blocks.add(
     TranscriptBlock(
       kind: TranscriptBlockKind.tool,
-      id: '$idBase:0',
-      text: text,
+      id: callId is String ? _toolBlockId(callId, toolIdCounts) : '$idBase:0',
+      text: _resultText(source),
       toolName: source['toolName'] is String ? source['toolName'] as String : null,
       toolResult: source,
       isError: source['isError'] == true,
     ),
   );
+}
+
+/// The result's display text: text parts joined, images as an `[image]`
+/// placeholder. Image bytes are never fetched (and a placeholder is not a
+/// renderer).
+String _resultText(Map<Object?, Object?> source) {
+  final content = source['content'];
+  if (content is String) return content;
+  if (content is! List) return '';
+  final parts = <String>[];
+  for (final part in content) {
+    if (part is! Map) continue;
+    final type = part['type'];
+    if (type == 'text' && part['text'] is String) {
+      parts.add(part['text'] as String);
+    } else if (type == 'image') {
+      parts.add('[image]');
+    }
+  }
+  return parts.join('\n');
 }

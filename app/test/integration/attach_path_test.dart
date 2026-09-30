@@ -282,8 +282,8 @@ void main() {
           reason:
               'the stream deltas must accumulate to exactly the faux text',
         );
-        // Per-role, not a single total: M1 relays the user prompt too, and a
-        // double-emitted user (or a future toolResult) must not pass silently.
+        // Per-role, not a single total. M2 relays a THIRD role, `toolResult`;
+        // this recipe runs no tools, so its count must be zero.
         final messageIndexes = <int>[];
         final messageRoles = <String>[];
         var settledIndex = -1;
@@ -300,10 +300,14 @@ void main() {
         }
         final userMessageIndexes = <int>[];
         final assistantMessageIndexes = <int>[];
+        final toolResultIndexes = <int>[];
         for (var i = 0; i < messageRoles.length; i++) {
           if (messageRoles[i] == 'user') userMessageIndexes.add(messageIndexes[i]);
           if (messageRoles[i] == 'assistant') {
             assistantMessageIndexes.add(messageIndexes[i]);
+          }
+          if (messageRoles[i] == 'toolResult') {
+            toolResultIndexes.add(messageIndexes[i]);
           }
         }
         expect(
@@ -317,9 +321,14 @@ void main() {
           reason: 'exactly one assistant reply must be relayed',
         );
         expect(
+          toolResultIndexes,
+          isEmpty,
+          reason: 'the plain recipe runs no tools',
+        );
+        expect(
           messageIndexes,
           hasLength(2),
-          reason: 'no role other than user and assistant may be relayed',
+          reason: 'no role other than user and assistant may be relayed here',
         );
         expect(
           settledIndex,
@@ -519,6 +528,84 @@ void main() {
       }
     },
     timeout: const Timeout(Duration(minutes: 5)),
+  );
+
+  test(
+    'a tools recipe relays a tool block paired with its result through the live relay',
+    () async {
+      // The seam nothing else covers: the bridge relays a `toolResult`, the
+      // client stores it live, and `deriveBlocks` pairs it into the call. A
+      // count-only assertion would pass if the bridge dropped every result.
+      final attach = await attachLive(
+        fauxMode: 'tools',
+        fauxToolContent: 'FAUX_TOOL_CONTENT\nline two\n',
+        extraEnv: {'PI_DROID_FAUX_TEXT': fauxText},
+      );
+      try {
+        final prompt = await attach.client
+            .sendCommand(
+              attach.sessionId,
+              'prompt',
+              args: {'text': 'use a tool'},
+            )
+            .timeout(promptTimeout);
+        expect(
+          prompt.ok,
+          isTrue,
+          reason: 'the prompt must be accepted: ${prompt.error}',
+        );
+        await waitUntil(
+          () =>
+              attach.client.transcript(attach.sessionId)?.agentState ==
+              'settled',
+          'the tools turn to settle',
+          timeout: promptTimeout,
+          diagnostics: () => clientDiagnostics(attach.client),
+        );
+
+        // The result reached the client as a relayed `toolResult` message...
+        final entries = attach.client.transcript(attach.sessionId)!.entries;
+        bool isToolResult(Object? entry) {
+          if (entry is! Map) return false;
+          final role = entry['message'] is Map
+              ? (entry['message']! as Map)['role']
+              : entry['role'];
+          return role == 'toolResult';
+        }
+
+        expect(
+          entries.any(isToolResult),
+          isTrue,
+          reason:
+              'the live relay must carry the toolResult: '
+              '${clientDiagnostics(attach.client)}',
+        );
+
+        // ...and exactly one tool block carries it. A broken pairing renders
+        // the result twice (call block + orphan), so the length is the guard.
+        final blocks = deriveBlocks(entries);
+        final tools = blocks
+            .where((block) => block.kind == TranscriptBlockKind.tool)
+            .toList();
+        expect(
+          tools,
+          hasLength(1),
+          reason:
+              'one call must pair into one block, got '
+              '${tools.map((block) => block.id).toList()}',
+        );
+        expect(tools.single.toolName, 'read');
+        expect(
+          tools.single.toolResult,
+          isNotNull,
+          reason: 'the result must pair with its call, not render as an orphan',
+        );
+        expect(tools.single.text, contains('FAUX_TOOL_CONTENT'));
+      } finally {
+        await attach.teardown();
+      }
+    },
+    timeout: const Timeout(Duration(minutes: 3)),
   );
 
   test('a missing toolchain binary fails with an actionable message', () async {

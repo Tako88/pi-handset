@@ -207,9 +207,11 @@ export interface MessageEndEvent {
 
 /** The roles whose `message_end` is relayed. `user` carries the user's own
  * prompt (M1: own messages in the transcript); `assistant` carries the
- * committed reply. `toolResult` is deliberately absent — M2 adds it together
- * with the tool renderer its unlabelled output requires. */
-const RELAYED_MESSAGE_ROLES = new Set(['user', 'assistant']);
+ * committed reply. `toolResult` (M2) carries a tool's output and is relayed
+ * only now that `deriveBlocks` pairs it into its call and `ToolBlock` renders
+ * it — relaying it a milestone earlier would have shipped unlabelled tool
+ * noise. `system`/`custom`/unknown stay ignored. */
+const RELAYED_MESSAGE_ROLES = new Set(['user', 'assistant', 'toolResult']);
 
 /**
  * Maps pi's `message_end` extension event to at most one normalized payload.

@@ -529,19 +529,17 @@ test('a real pi with the bridge registers and a hub prompt streams from the faux
   assert.ok(collected.running, 'the agent never reported the running state');
   assert.ok(collected.settled, 'the agent never settled');
 
-  // Per-role counts, not a single total: M1 relays the user's own prompt too,
-  // and a double-emitted user (or a future toolResult) must not pass silently.
-  const userMessages = collected.messages.filter((entry) => entry.role === 'user');
-  const assistantMessages = collected.messages.filter((entry) => entry.role === 'assistant');
-  assert.equal(
-    userMessages.length,
-    1,
-    `exactly one user message must be relayed, got ${collected.messages.length} total`,
-  );
-  assert.equal(assistantMessages.length, 1, 'exactly one assistant message must be relayed');
-  assert.equal(collected.messages.length, 2, 'no role other than user and assistant may be relayed');
+  // Per-role counts, not a single total. M2 added a THIRD relayed role,
+  // `toolResult`; this recipe runs no tools, so its count must be zero — an
+  // accidental relay (or a recipe leak) may not pass silently.
+  const byRole = (role: string) =>
+    collected.messages.filter((entry) => entry.role === role);
+  assert.equal(byRole('user').length, 1, 'exactly one user message must be relayed');
+  assert.equal(byRole('assistant').length, 1, 'exactly one assistant message must be relayed');
+  assert.equal(byRole('toolResult').length, 0, 'a plain reply runs no tools');
+  assert.equal(collected.messages.length, 2, 'no role other than user and assistant may be relayed here');
 
-  const assistant = assistantMessages[0]!.payload.message as Record<string, unknown>;
+  const assistant = byRole('assistant')[0]!.payload.message as Record<string, unknown>;
   assert.match(
     JSON.stringify(assistant),
     new RegExp(FAUX_TEXT),
@@ -592,6 +590,11 @@ test('a thinking recipe emits a content-free phase frame before the assistant me
 
   const assistantMessages = collected.messages.filter((entry) => entry.role === 'assistant');
   assert.equal(assistantMessages.length, 1, 'exactly one assistant message must be relayed');
+  assert.equal(
+    collected.messages.filter((entry) => entry.role === 'toolResult').length,
+    0,
+    'the thinking recipe runs no tools',
+  );
   // The thinking content is not streamed; it arrives in full inside the
   // committed message, which is where the transcript renders it from.
   assert.match(
@@ -603,6 +606,60 @@ test('a thinking recipe emits a content-free phase frame before the assistant me
     collected.streams.map((stream) => stream.text).join(''),
     FAUX_TEXT,
     'phase frames must not pollute the streamed text',
+  );
+});
+
+test('a tools recipe relays a toolResult whose toolCallId matches the call', async () => {
+  const toolPath = join(childCwd, 'faux-tool.txt');
+  writeFileSync(toolPath, 'FAUX_TOOL_CONTENT\nline two\n', { flag: 'w' });
+
+  const collected = await drivePrompt({
+    PI_DROID_FAUX_MODE: 'tools',
+    PI_DROID_FAUX_TOOL_PATH: toolPath,
+  });
+
+  assert.ok(collected.result, 'no command-result arrived for the prompt');
+  assert.equal(collected.result.ok, true, `prompt was refused: ${String(collected.result.error)}`);
+  assert.ok(collected.settled, 'the agent never settled');
+
+  // Per-role counts, not a single total. The tools recipe adds a THIRD relayed
+  // role: `toolResult`. Count it explicitly, or a dropped result passes as
+  // cleanly as a double-emitted one.
+  const byRole = (role: string) =>
+    collected.messages.filter((entry) => entry.role === role);
+  assert.equal(byRole('user').length, 1, 'exactly one user message must be relayed');
+  assert.equal(
+    byRole('assistant').length,
+    2,
+    'the tool-call turn and the final reply are two assistant messages',
+  );
+  assert.equal(
+    byRole('toolResult').length,
+    1,
+    `exactly one toolResult must be relayed, got roles ${collected.messages
+      .map((entry) => entry.role)
+      .join(',')}`,
+  );
+  assert.equal(collected.messages.length, 4, 'no role other than user, assistant and toolResult may be relayed');
+
+  // The call is in the first assistant message; the result names the same id
+  // and carries the tool's output.
+  const callMessage = JSON.stringify(byRole('assistant')[0]!.payload.message);
+  assert.match(callMessage, /"type":"toolCall"/);
+  assert.match(callMessage, /"id":"call-1"/);
+  const result = byRole('toolResult')[0]!.payload.message as Record<string, unknown>;
+  assert.equal(result.toolCallId, 'call-1', 'the result must pair with the call by id');
+  assert.equal(result.toolName, 'read');
+  assert.equal(result.isError, false);
+  assert.match(
+    JSON.stringify(result.content),
+    /FAUX_TOOL_CONTENT/,
+    'the result content must carry the tool output',
+  );
+  assert.match(
+    JSON.stringify(byRole('assistant')[1]!.payload.message),
+    new RegExp(FAUX_TEXT),
+    'the final assistant message must carry the provider text',
   );
 });
 
