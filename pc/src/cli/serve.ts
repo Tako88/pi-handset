@@ -32,7 +32,7 @@ import {
 } from '../hub/discovery.ts';
 import type { LockResult } from '../hub/discovery.ts';
 import { createHub } from '../hub/hub.ts';
-import { createTicketStore } from '../hub/pairing.ts';
+import { TICKET_TTL_MS, createTicketStore } from '../hub/pairing.ts';
 import { PROTOCOL_VERSION } from '../protocol/protocol.ts';
 
 /** The viewer listener's default port. */
@@ -94,6 +94,37 @@ function refuse(message: string, code: number): void {
 
 function warn(message: string): void {
   process.stderr.write(`pi-droid serve: ${message}\n`);
+}
+
+/**
+ * The startup hint: how to ask for a pairing code. It names the exact signal
+ * and pid because the phone cannot read the token file, so this line is the
+ * only path from a fresh device to a code.
+ */
+export function pairingHint(pid: number): string {
+  return (
+    `pi-droid serve: ready. Pair a phone: run \`kill -USR1 ${pid}\` to print a ` +
+    `pairing code (valid for ${TICKET_TTL_MS / 60_000} minutes).\n`
+  );
+}
+
+/** Printed in response to SIGUSR1. The code is grouped for reading; TTL stated. */
+export function pairingCodeNotice(code: string): string {
+  return `pi-droid pairing code: ${code} (valid for ${TICKET_TTL_MS / 60_000} minutes)\n`;
+}
+
+/**
+ * The announcement for a pairing request, or null while shutting down. Once
+ * teardown has begun the hub is closing or closed, so a code minted now could
+ * never be redeemed — printing one would be a lie. `issue` is called only when
+ * the announcement is allowed.
+ */
+export function pairingAnnouncement(
+  shuttingDown: boolean,
+  issue: () => string,
+): string | null {
+  if (shuttingDown) return null;
+  return pairingCodeNotice(issue());
 }
 
 /**
@@ -189,10 +220,15 @@ async function main(): Promise<void> {
   }
 
   let hub: Awaited<ReturnType<typeof createHub>>;
+  // One store, shared with the hub: the handler below mints from the *same*
+  // instance the hub redeems from. A fresh `createTicketStore()` there would
+  // print codes the hub cannot exchange — the printed-but-unredeemable bug
+  // this milestone fixes.
+  const tickets = createTicketStore();
   try {
     hub = await createHub({
       token,
-      tickets: createTicketStore(),
+      tickets,
       viewerPort: args.port,
       viewerHost: args.lan ? '0.0.0.0' : '127.0.0.1',
     });
@@ -204,6 +240,19 @@ async function main(): Promise<void> {
     );
     return;
   }
+
+  // Declared before the SIGUSR1 handler so a signal arriving after teardown has
+  // begun is seen as shutting down and mints nothing (`pairingAnnouncement`).
+  let shuttingDown = false;
+
+  // Installed before the discovery file is written, so a reader that sees the
+  // record is guaranteed the handler exists. Printed on demand, never at
+  // startup: a ticket lives only TICKET_TTL_MS, so one minted at launch would
+  // usually expire before the user reached the phone.
+  process.on('SIGUSR1', () => {
+    const announcement = pairingAnnouncement(shuttingDown, () => tickets.issue());
+    if (announcement !== null) process.stdout.write(announcement);
+  });
 
   try {
     writeDiscovery(runtimeDir, {
@@ -220,7 +269,8 @@ async function main(): Promise<void> {
     return;
   }
 
-  let shuttingDown = false;
+  process.stdout.write(pairingHint(process.pid));
+
   const shutdown = async (): Promise<void> => {
     // Single-shot: a second signal must not re-enter teardown. Any close()
     // rejection is caught inside `finishShutdown`, so this never becomes an

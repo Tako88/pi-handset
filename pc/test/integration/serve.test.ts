@@ -17,15 +17,21 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { WebSocket } from 'ws';
+
 import { PROTOCOL_VERSION } from '../../src/protocol/protocol.ts';
 import { finishShutdown } from '../../src/cli/serve.ts';
 
 const pcRoot = fileURLToPath(new URL('../..', import.meta.url));
 const serveEntry = fileURLToPath(new URL('../../src/cli/serve.ts', import.meta.url));
 
+/** Bound on a child's exit; a child that will not die is SIGKILLed. */
+const EXIT_TIMEOUT_MS = 10_000;
+
 let runtimeDir: string;
 let configDir: string;
 let spawned: ChildProcess[];
+let sockets: WebSocket[];
 
 beforeEach(() => {
   runtimeDir = mkdtempSync(join(tmpdir(), 'pi-droid-serve-'));
@@ -33,10 +39,14 @@ beforeEach(() => {
   // suite never touches the user's `~/.config`.
   configDir = mkdtempSync(join(tmpdir(), 'pi-droid-serve-config-'));
   spawned = [];
+  sockets = [];
 });
 
 afterEach(() => {
   // Never leave orphans: kill anything still running, even on a failed test.
+  for (const socket of sockets) {
+    socket.terminate();
+  }
   for (const child of spawned) {
     if (child.exitCode === null && child.signalCode === null) {
       child.kill('SIGKILL');
@@ -48,6 +58,7 @@ afterEach(() => {
 
 interface ServeHandle {
   child: ChildProcess;
+  stdout: () => string;
   stderr: () => string;
 }
 
@@ -62,11 +73,15 @@ function startServe(args: string[] = []): ServeHandle {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   spawned.push(child);
+  let stdout = '';
+  child.stdout!.on('data', (chunk) => {
+    stdout += String(chunk);
+  });
   let stderr = '';
   child.stderr!.on('data', (chunk) => {
     stderr += String(chunk);
   });
-  return { child, stderr: () => stderr };
+  return { child, stdout: () => stdout, stderr: () => stderr };
 }
 
 function discoveryFile(): string {
@@ -105,13 +120,43 @@ function freePort(): Promise<number> {
   });
 }
 
+/**
+ * Waits for a spawned child to be gone. Resolves on the first of `exit`,
+ * `close` or `error`: a failed spawn (ENOENT/EACCES) emits `error` and never a
+ * guaranteed `exit`, so waiting on `exit` alone would hang `node:test` forever
+ * (there is no default timeout). The wait is bounded too — a child that will
+ * not die is SIGKILLed and the promise rejects naming its pid and command, so a
+ * hang inside `afterEach` cannot block every subsequent test in the file.
+ */
 function waitExit(child: ChildProcess): Promise<{ code: number | null; signal: string | null }> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     if (child.exitCode !== null || child.signalCode !== null) {
       resolve({ code: child.exitCode, signal: child.signalCode });
       return;
     }
-    child.once('exit', (code, signal) => resolve({ code, signal }));
+    const command = child.spawnargs.join(' ');
+    let timer: ReturnType<typeof setTimeout>;
+    const settle = (): void => {
+      clearTimeout(timer);
+      child.removeListener('exit', settle);
+      child.removeListener('close', settle);
+      child.removeListener('error', settle);
+      resolve({ code: child.exitCode, signal: child.signalCode });
+    };
+    timer = setTimeout(() => {
+      child.removeListener('exit', settle);
+      child.removeListener('close', settle);
+      child.removeListener('error', settle);
+      child.kill('SIGKILL');
+      reject(
+        new Error(
+          `child ${String(child.pid)} did not exit within ${EXIT_TIMEOUT_MS}ms and was SIGKILLed: ${command}`,
+        ),
+      );
+    }, EXIT_TIMEOUT_MS);
+    child.once('exit', settle);
+    child.once('close', settle);
+    child.once('error', settle);
   });
 }
 
@@ -150,6 +195,110 @@ async function waitForAnyExit(
   }
   throw new Error('neither serve exited; mutual exclusion failed');
 }
+
+/** The pairing codes printed so far, in print order (`XXXX-XXXX`). */
+function printedCodes(out: string): string[] {
+  return out.match(/\b[0-9A-Z]{4}-[0-9A-Z]{4}\b/g) ?? [];
+}
+
+/** Spawns serve and waits until it is listening (discovery file published). */
+async function startReadyServe(port: number): Promise<ServeHandle> {
+  const serve = startServe(['--port', String(port)]);
+  await waitFor(() => readPid() === serve.child.pid, 'the discovery file');
+  return serve;
+}
+
+/** Opens the viewer socket; the caller must terminate it (afterEach does). */
+function connectViewer(port: number): Promise<WebSocket> {
+  const socket = new WebSocket(`ws://127.0.0.1:${port}`);
+  sockets.push(socket);
+  return new Promise((resolve, reject) => {
+    socket.once('open', () => resolve(socket));
+    socket.once('error', reject);
+  });
+}
+
+/** Resolves with the next `paired` reply, rejecting after a bound. */
+function awaitPaired(socket: WebSocket): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error('timed out waiting for paired')),
+      5000,
+    );
+    socket.on('message', (data) => {
+      const message = JSON.parse(String(data)) as Record<string, unknown>;
+      if (message.type === 'paired') {
+        clearTimeout(timer);
+        resolve(message);
+      }
+    });
+  });
+}
+
+/** Exchanges a code for the token over a fresh viewer connection. */
+async function redeem(port: number, code: string): Promise<Record<string, unknown>> {
+  const socket = await connectViewer(port);
+  const paired = awaitPaired(socket);
+  socket.send(JSON.stringify({ protocolVersion: PROTOCOL_VERSION, type: 'hello', ticket: code }));
+  return paired;
+}
+
+/** The token serve persisted in the temp config dir. */
+function persistedToken(): string {
+  return readFileSync(join(configDir, 'pi-droid', 'token'), 'utf8').trim();
+}
+
+test('serve announces how to request a pairing code, naming the pid', async () => {
+  const port = await freePort();
+  const serve = startServe(['--port', String(port)]);
+  await waitFor(() => readPid() === serve.child.pid, 'the discovery file');
+
+  await waitFor(
+    () => serve.stdout().includes(`kill -USR1 ${serve.child.pid}`),
+    'the startup pairing hint',
+  );
+  assert.match(serve.stdout(), /kill -USR1 \d+/);
+
+  const exited = waitExit(serve.child);
+  serve.child.kill('SIGTERM');
+  await exited;
+});
+
+test('SIGUSR1 prints a pairing code that the hub actually redeems', async () => {
+  const port = await freePort();
+  const serve = await startReadyServe(port);
+
+  serve.child.kill('SIGUSR1');
+  await waitFor(() => printedCodes(serve.stdout()).length === 1, 'the pairing code');
+  const code = printedCodes(serve.stdout())[0]!;
+
+  const paired = await redeem(port, code);
+  assert.equal(paired.token, persistedToken(), 'the printed code must exchange for the token');
+
+  const exited = waitExit(serve.child);
+  serve.child.kill('SIGTERM');
+  await exited;
+});
+
+test('SIGUSR1 twice prints a second code that also redeems', async () => {
+  const port = await freePort();
+  const serve = await startReadyServe(port);
+
+  serve.child.kill('SIGUSR1');
+  await waitFor(() => printedCodes(serve.stdout()).length === 1, 'the first code');
+  serve.child.kill('SIGUSR1');
+  await waitFor(() => printedCodes(serve.stdout()).length === 2, 'the second code');
+
+  const [first, second] = printedCodes(serve.stdout());
+  assert.notEqual(first, second, 'a re-issue must mint a fresh code');
+
+  const paired = await redeem(port, second!);
+  assert.equal(paired.token, persistedToken(), 'the second code must also exchange');
+
+  const exited = waitExit(serve.child);
+  serve.child.kill('SIGTERM');
+  await exited;
+});
 
 test('serve writes a 0600 discovery file with both ports and removes it on SIGTERM', async () => {
   const port = await freePort();

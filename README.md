@@ -10,13 +10,15 @@ This file is orientation, setup and status.
 
 ## Status
 
-Both sides are built and tested. The bridge has now met a real `pi`; **the app
-has still only ever talked to a fake socket**, so nothing has run end to end.
-Nine of ten milestones in the attach-protocol plan are done.
+Both sides are built and tested. The bridge has met a real `pi`, and the hub now
+hands out pairing codes; **the app has still only ever talked to a fake socket**,
+so nothing has run end to end. Step 18 of the plan was split three ways when recon
+found that pairing was unreachable — the delivery path was designed, unit-tested and
+never wired.
 
 | | `pc/` (Node + TypeScript) | `app/` (Flutter + Dart) |
 |---|---|---|
-| Suite | 270 tests passing | 108 tests passing |
+| Suite | 275 tests passing | 108 tests passing |
 | Static gate | `tsc --noEmit` clean | `flutter analyze` clean |
 | Product code | hub, protocol codec, pi bridge | protocol codec, client, UI |
 
@@ -24,17 +26,23 @@ Nine of ten milestones in the attach-protocol plan are done.
 pairing token, the discovery file and the lock that makes `serve` exclusive, the
 hub (two listeners, listener-bound capabilities, relay, backpressure, and the
 session-registry push), the pi bridge extension, shared golden fixtures with a
-pure Dart codec, the app — client, pairing, session list and transcript — and the
-bridge driven inside a real `pi` against a faux provider, including its silence
-as a process.
+pure Dart codec, the app — client, pairing, session list and transcript — the
+bridge driven inside a real `pi` against a faux provider, including its silence as
+a process, and `serve` minting pairing codes on demand.
 
-**Next up:** end to end — hub, a real pi, and the app on the emulator, including
-the restart-without-re-pairing check.
+**Next up:**
+
+1. **The real client against a real hub** — a Dart integration test driving the
+   actual `HubClient` at a real hub with a real `pi` behind it, pairing included.
+2. **The manual pass** — the app on the emulator, and one run against a real model;
+   that run is the only thing automation still cannot cover.
 
 The gap that matters: the app has never spoken to a hub with a real `pi` behind
-it. Two faults were found only when the bridge met a live `pi` — one of them cost
-every assistant reply — and both were invisible to a green suite. Treat the app's
-fake-socket tests with the same suspicion.
+it. Two faults have now been found only at the moment a designed path met reality —
+the bridge's final message, which cost every assistant reply, and pairing, which
+meant a new phone could not attach at all. Both were invisible to a green suite,
+because the tests supplied what production never produced. The app's fake-socket
+tests are the remaining surface of that shape.
 
 ## Repo layout
 
@@ -70,6 +78,27 @@ flutter run --profile -d "$SERIAL"
 
 Run both gates on both sides before calling anything done — `npm test` does not run
 `typecheck`, and `flutter test` does not run `analyze`.
+
+### Pairing a phone
+
+A pairing code is minted **on demand**, not at startup, because it has a 5-minute
+TTL: a code printed at launch would usually expire before you reached the phone.
+
+The hub prints how:
+
+```sh
+cd pc
+node src/cli/serve.ts
+# pi-droid serve: ready. Pair a phone: run `kill -USR1 <pid>` to print a pairing code (valid for 5 minutes).
+
+kill -USR1 <pid>     # the pid the line above names
+# pi-droid pairing code: ABCD-EFGH (valid for 5 minutes)
+```
+
+Enter the PC's address, the viewer port (`--port`, default 8787) and that code in
+the app. The phone then stores a token, so pairing happens once per phone and
+**restarting the hub does not de-pair**. The code is single-use and dies after 5
+failed attempts, so if you mistype it enough times, request a fresh one.
 
 ## Local setup
 
