@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 // Deliberately written before `./serve.ts` exists: red must be an unresolved import.
-import { parseArgs } from './serve.ts';
+import { pairingAnnouncement, pairingCodeNotice, parseArgs } from './serve.ts';
 
 test('parseArgs defaults to port 8787, LAN on, no take-over', () => {
   assert.deepEqual(parseArgs([]), { port: 8787, lan: true, takeOver: false });
@@ -55,4 +55,19 @@ test('parseArgs combines flags', () => {
     lan: false,
     takeOver: true,
   });
+});
+
+test('a post-shutdown SIGUSR1 mints no pairing code', () => {
+  let issued = 0;
+  const announcement = pairingAnnouncement(true, () => {
+    issued += 1;
+    return 'ABCD-EFGH';
+  });
+  assert.equal(announcement, null);
+  assert.equal(issued, 0, 'a shutting-down hub must not mint a ticket');
+});
+
+test('a SIGUSR1 while running prints a redeemable code', () => {
+  const announcement = pairingAnnouncement(false, () => 'ABCD-EFGH');
+  assert.equal(announcement, pairingCodeNotice('ABCD-EFGH'));
 });
