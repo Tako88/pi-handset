@@ -10,14 +10,13 @@ This file is orientation, setup and status.
 
 ## Status
 
-Both sides are built and tested, and the whole path is now exercised by
-automation — a real `pi`, a real hub, and the **real** Dart client, including
-pairing and a hub restart. What remains is the on-device UI and one run against a
-live model.
+Both sides are built and tested, and the whole path has been exercised for real:
+a real `pi`, a real hub, the **real** Dart client, and the app on an emulator
+driving a live model. All ten milestones are done.
 
 | | `pc/` (Node + TypeScript) | `app/` (Flutter + Dart) |
 |---|---|---|
-| Suite | 275 tests passing | 112 tests passing |
+| Suite | 275 tests passing | 120 tests passing |
 | Static gate | `tsc --noEmit` clean | `flutter analyze` clean |
 | Product code | hub, protocol codec, pi bridge | protocol codec, client, UI |
 
@@ -26,24 +25,38 @@ pairing token, the discovery file and the lock that makes `serve` exclusive, the
 hub (two listeners, listener-bound capabilities, relay, backpressure, and the
 session-registry push), the pi bridge extension, shared golden fixtures with a
 pure Dart codec, the app — client, pairing, session list and transcript — the
-bridge driven inside a real `pi` against a faux provider, including its silence as
-a process, `serve` minting pairing codes on demand, and the real client attaching
-to a real hub with a real `pi` behind it — pairing, streaming, and surviving a hub
-restart without re-pairing.
+bridge driven inside a real `pi` against a faux provider including its silence as
+a process, `serve` minting pairing codes on demand, the real client attaching to
+a real hub with a real `pi` behind it, and the manual pass: pairing through the UI,
+a live model streaming into a rendered transcript, and a hub restart survived
+without re-pairing.
 
-**Next up:** the manual pass — the app on the emulator, and one run against a live
-model, which is the only thing automation still cannot cover.
+**What is left** is not milestone work: links in a rendered reply are styled but
+not tappable (that needs `url_launcher`, deliberately not taken), the reinstall of
+a rebuilt APK drops the stored pairing because the keystore-wrapped credential can
+no longer be decrypted, and `tool` payloads still have no producer — the bridge
+ignores tool-call frames by design.
 
-Step 18 was split three ways when recon found that pairing was unreachable: the
+### What the manual pass actually found
+
+Step 18 was split three ways when recon found pairing was unreachable: the
 delivery path had been designed, unit-tested and never wired, so a new phone could
-not attach at all. Three faults have now been found only at the moment a designed
-path met reality — the bridge's final message, which cost every assistant reply;
-pairing; and a client that silently stopped updating after a reconnect race. All
-three were invisible to a green suite, because the tests supplied what production
-never produced. A fourth was introduced by the fix for the third and caught in
-review: re-arming the retry without a cap pinned the client to a session that could
-never return. Every one of these lives where design meets reality, which is why
-the remaining manual pass matters more than its size suggests.
+not attach at all. That was the pattern for the whole milestone. **Five faults were
+found only at the moment a designed path met reality, and four of them were
+invisible to a green suite of 118 tests:**
+
+| Fault | Why the suite could not see it |
+|---|---|
+| The bridge's final message never arrived (`message_end`, not `done`), so every assistant reply streamed in and vanished | the stub supplied the event shape the real host never sends |
+| `INTERNET` was declared only in the debug and profile manifests, so a **release** build could not open a socket | manifests are not involved in host-side tests |
+| Snapshot entries rendered as nothing — the renderer did not understand pi's raw session shape | client tests see `entries` non-empty; only widgets render |
+| Opening a session never requested its history, so past conversation was never shown | `requestHistory` was tested directly; nothing tested that opening triggers it |
+| A reconnect discarded the visible transcript | needed a real restart to observe |
+
+One more was introduced by the fix for the reconnect race and caught in review:
+re-arming the retry without a cap pinned the client to a session that could never
+return. Every one of these lives where design meets reality, which is the argument
+for the manual pass, not against it.
 
 ## Repo layout
 
@@ -84,6 +97,19 @@ Both suites now spawn real processes: `pc/`'s suite starts a real `pi` for the
 bridge test, and `app/`'s starts a real hub and a real `pi` for the attach test. So
 both need `node` and the `pi` CLI on `PATH`. They fail loudly and name the missing
 binary rather than skipping, because a test that quietly does not run is not a gate.
+
+The one check that is **not** in a default suite is the live model, because it
+spends money:
+
+```sh
+cd app
+flutter test test_live/attach_live_test.dart       # one short paid call
+PI_DROID_LIVE_MODEL=provider/model flutter test test_live/attach_live_test.dart
+```
+
+It lives outside `test/` so `flutter test` never picks it up, and it is deliberately
+not a `skip:` — a test that is skipped by default is the never-failing gate this
+project rejects. Run it by hand when the provider integration matters.
 
 ### Pairing a phone
 
@@ -177,6 +203,26 @@ Two defaults were changed and matter: `flutter create`'s AVD arrived with
 `hw.gpu.enabled=no` and 2 GB RAM, i.e. **software rendering**, which makes any frame
 timing measurement meaningless. They are now `hw.gpu.mode=host` and 4 GB.
 
+A third change is needed before anyone can **type** into the emulator by hand.
+`hw.keyboard=no` means the emulator presents no hardware keyboard to Android, so
+all input has to go through the on-screen IME — which is how a manual pass ends up
+fighting a soft keyboard wedged over the app. It is now `hw.keyboard=yes`, and with
+`show_ime_with_hard_keyboard=0` the soft keyboard stays hidden while the host
+keyboard types straight through. Edit `config.ini` with the emulator **stopped**
+(it rewrites the file on exit), or use Studio's *AVD Manager → Edit → Show Advanced
+Settings → Enable keyboard input*.
+
+Two device settings also bite when driving the emulator from `adb` rather than by
+hand, both already set here:
+
+- `settings put secure stylus_handwriting_enabled 0` — otherwise Android's "Try
+  out your stylus" panel silently swallows `adb shell input text`, treating the
+  keystrokes as handwriting strokes.
+- Tap a field's *input area*, not the floating label above it, and never dismiss the
+  keyboard with `keyevent 4`: BACK can background the app. When scripting typing,
+  remember the string is re-split by the **remote** shell, so spaces must be `%s`
+  (`hello%sworld`) or the whole thing quoted for the remote side.
+
 Hardware acceleration works: `/dev/kvm` is present and world-writable, AMD-V (`svm`)
 is available, GPU is an AMD RX 9060 XT on RADV/Mesa.
 
@@ -255,6 +301,24 @@ fish_add_path $HOME/Android/Sdk/emulator
   an agent switching sessions is routine rather than exceptional, so an uncapped
   re-arm turns every later registry push into two doomed frames forever. Retries are
   capped at three, after which the client drops the session and says so.
+- **Android does not block `ws://` from Dart's socket stack.** The cleartext policy
+  is enforced in the Java networking stack; `dart:io` opens its own sockets, so the
+  app connects fine at targetSdk 36 with no `usesCleartextTraffic` and no network
+  security config. Verified on-device, not assumed — which matters, because the
+  obvious "fix" would have been to weaken the manifest for a restriction that does
+  not apply. The deliberate no-TLS decision holds.
+- **A connection error must not outlive the connection; a session notice must not
+  be cleared by one.** The app shows one error banner, and a failed dial used to
+  leave it up forever — reporting a refused connection during a healthy session. It
+  now records which errors are connection-scoped and clears those on a successful
+  authentication, while notices a reconnect cannot fix (resync gave up, session
+  gone, token not persisted) survive. Collapsing them into one bucket and clearing
+  it blindly would trade a visible lie for an invisible one.
+- **Pairing survives a reboot but not a reinstall.** The endpoint and token live in
+  keystore-wrapped storage, which a normal restart reads fine but `adb install -r`
+  of a rebuilt APK cannot decrypt. So "back to the pairing screen" after a rebuild
+  is an install artifact, not a lost pairing — worth knowing before hunting a bug
+  that is not there.
 
 ## Further reading
 

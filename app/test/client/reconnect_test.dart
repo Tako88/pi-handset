@@ -347,4 +347,66 @@ void main() {
 
     expect(client.state.lastError, isNotNull);
   });
+
+  test('a successful connect clears the previous dial failure', () async {
+    // The hub was down; the dial failed and recorded a connection error. The
+    // next dial succeeds and authenticates. That stale error must clear, or the
+    // banner lies about a demonstrably healthy session.
+    factory.onDial = () => Exception('connection refused');
+    await client.start('127.0.0.1');
+    await pumpEventQueue();
+    expect(client.state.lastError, contains('refused'));
+
+    factory.onDial = null;
+    await reconnect();
+    factory.last.receive(sessionsFrame());
+    await pumpEventQueue();
+
+    expect(client.state.status, HubConnectionStatus.connected);
+    expect(client.state.lastError, isNull);
+  });
+
+  test('a session-scoped notice survives a reconnect', () async {
+    // "the session is gone" describes something a reconnect does not fix, so
+    // the fix for the stale dial error must not clear it as collateral.
+    await client.start('127.0.0.1');
+    await pumpEventQueue();
+    factory.last.receive(sessionsFrame());
+    await pumpEventQueue();
+    client.subscribe('s1');
+
+    const gone = {
+      'protocolVersion': 1,
+      'type': 'session-gone',
+      'sessionId': 's1',
+    };
+    const sessionsWithoutS1 = {
+      'protocolVersion': 1,
+      'type': 'sessions',
+      'sessions': <Object?>[],
+    };
+    final socket = factory.last;
+    for (var i = 0; i < HubClient.maxConsecutiveSessionGone; i++) {
+      socket.receive(gone);
+      await pumpEventQueue();
+      socket.receive(sessionsWithoutS1);
+      await pumpEventQueue();
+    }
+    socket.receive(gone);
+    await pumpEventQueue();
+    expect(client.state.lastError, contains('s1'));
+
+    socket.remoteClose(1001);
+    await pumpEventQueue();
+    await reconnect();
+    factory.last.receive(sessionsFrame());
+    await pumpEventQueue();
+
+    expect(client.state.status, HubConnectionStatus.connected);
+    expect(
+      client.state.lastError,
+      contains('s1'),
+      reason: 'a reconnect does not make a genuinely gone session exist',
+    );
+  });
 }
