@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test 'src/**/*.test.ts' 'test/**/*.test.ts'",
+    "test": "node --test 'src/**/*.test.ts' 'test/**/*.test.ts' 'extensions/**/*.test.ts'",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

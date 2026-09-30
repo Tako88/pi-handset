@@ -169,20 +169,25 @@ test('a wrong token is never processed and closes the connection at the attempt 
   const viewer = await connect(hub.viewerPort);
 
   viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'hello', token: 'b'.repeat(64) });
-  // A message that would produce an observable reply if the hub processed it
-  // before authenticating. It must be ignored: the wrong token closes first.
-  viewer.send({
-    protocolVersion: PROTOCOL_VERSION,
-    type: 'history-request',
-    sessionId: 'ghost',
-  });
-  assert.equal(await viewer.tryNext(200), undefined, 'unauthenticated input is never processed');
-
   viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'hello', token: 'b'.repeat(64) });
   viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'hello', token: 'b'.repeat(64) });
 
   const { code } = await closed(viewer);
   assert.equal(code, CLOSE_RATE_LIMITED);
+});
+
+test('an unauthenticated connection sending a non-hello is closed as a protocol violation', async () => {
+  const hub = await startHub({ maxAuthAttempts: 3, authCloseDelayMs: 10 });
+  const viewer = await connect(hub.viewerPort);
+
+  // A stale-token bridge must not sit "connected" forever while the hub
+  // silently drops its register/events. Any non-`hello` before authentication
+  // is a protocol violation and closes the connection immediately.
+  viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'hello', token: 'b'.repeat(64) });
+  viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'register', sessionId: 's1' });
+
+  const { code } = await closed(viewer);
+  assert.equal(code, CLOSE_PROTOCOL);
 });
 
 test('a valid ticket pairs once and the hub replies with paired carrying the token', async () => {

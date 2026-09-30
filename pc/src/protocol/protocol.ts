@@ -12,14 +12,22 @@
 export const PROTOCOL_VERSION = 1;
 
 /**
+ * The shared byte cap for agent-supplied bulk payloads: the bridge truncates
+ * projected history and the final `done` message to this, and the hub uses it
+ * as the default per-viewer relay budget. One number, one home.
+ */
+export const MAX_RELAY_BYTES = 256 * 1024;
+
+/**
  * The wire protocol, in one place.
  *
  * A Dart port works from this block alone.
  *
  * ## Close codes (WebSocket application range 4000-4999)
  * - `4002` capability/protocol violation: a message a listener does not permit,
- *   a bad `protocolVersion`, malformed JSON, a missing required field, or a
- *   permitted type with no dispatch branch (the hub fails closed).
+ *   a non-`hello` message before authentication, a bad `protocolVersion`,
+ *   malformed JSON, a missing required field, or a permitted type with no
+ *   dispatch branch (the hub fails closed).
  * - `4003` a listener-bound capability violation for a message this listener
  *   does not permit (see `hub.ts`, the enforcement site).
  * - `4008` rate limited: the per-connection failed-credential cap was reached.
@@ -249,6 +257,18 @@ export function isViewerMessageType(type: unknown): type is ViewerMessageType {
   return (
     typeof type === 'string' && (VIEWER_MESSAGE_TYPES as readonly string[]).includes(type)
   );
+}
+
+/** The shared runtime guard for a non-empty string field. */
+export function asString(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+/** The shared runtime guard for a plain JSON object field. */
+export function asObject(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
 }
 
 /** Machine-readable failure reasons, stable enough for M5 to map and M7 to port. */
