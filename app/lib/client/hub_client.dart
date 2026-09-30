@@ -251,6 +251,13 @@ class HubClient {
   int _commandCounter = 0;
   bool _resubscribed = false;
 
+  /// Whether [HubClientState.lastError] came from the connection path (dial,
+  /// auth, send) rather than a session/operation. A later authenticated
+  /// connection clears the former; it never clears the latter, because a
+  /// reconnect does not fix a session that is gone or a token that would not
+  /// persist.
+  bool _lastErrorFromConnection = false;
+
   /// The session the user last asked to view. Unlike [HubClientState.activeSessionId]
   /// it survives a `session-gone`, so a re-subscribe that raced the agent's
   /// re-registration after a hub restart can be retried when the session
@@ -351,6 +358,7 @@ class HubClient {
     _resyncCounts.clear();
     _sessionGoneCounts.clear();
     _restoredSessions.clear();
+    _lastErrorFromConnection = false;
     _state = const HubClientState();
     _flushNotify();
   }
@@ -508,8 +516,7 @@ class HubClient {
     try {
       socket = await _socketFactory(url);
     } catch (error) {
-      _state = _state.copyWith(lastError: '$error');
-      _scheduleNotify();
+      _setError('$error', connection: true);
       _scheduleReconnect();
       return;
     }
@@ -552,12 +559,11 @@ class HubClient {
     if (close.code == closeRateLimited) {
       // The hub delayed this close on purpose; say so, or the longer wait looks
       // like a generic reconnect loop.
-      _state = _state.copyWith(
-        lastError:
-            'the hub is rate-limiting authentication; retrying in '
-            '${rateLimitedReconnectDelay.inSeconds} seconds',
+      _setError(
+        'the hub is rate-limiting authentication; retrying in '
+        '${rateLimitedReconnectDelay.inSeconds} seconds',
+        connection: true,
       );
-      _scheduleNotify();
       _setStatus(HubConnectionStatus.connecting);
       _scheduleReconnect(fixed: rateLimitedReconnectDelay);
       return;
@@ -565,12 +571,11 @@ class HubClient {
     if (wasAuthenticating && _state.lastError == null) {
       // A rejected ticket closes without a `paired` and cancels the watchdog, so
       // unless an error is recorded here the pairing form spins forever.
-      _state = _state.copyWith(
-        lastError:
-            'the hub closed the connection before authenticating; the pairing '
-            'code may be invalid — enter a new one',
+      _setError(
+        'the hub closed the connection before authenticating; the pairing '
+        'code may be invalid — enter a new one',
+        connection: true,
       );
-      _scheduleNotify();
     }
     _setStatus(HubConnectionStatus.connecting);
     _scheduleReconnect();
@@ -592,12 +597,11 @@ class HubClient {
   void _onAuthTimeout() {
     final socket = _socket;
     if (socket == null) return;
-    _state = _state.copyWith(
-      lastError:
-          'timed out waiting for the hub to authenticate; the pairing token '
-          'may be stale',
+    _setError(
+      'timed out waiting for the hub to authenticate; the pairing token '
+      'may be stale',
+      connection: true,
     );
-    _scheduleNotify();
     // Closing lets the normal socket-done path schedule a backoff redial.
     unawaited(socket.close().catchError((Object _) {}));
   }
@@ -644,8 +648,9 @@ class HubClient {
     try {
       _handleFrame(frame);
     } catch (error) {
-      _state = _state.copyWith(lastError: '$error');
-      _scheduleNotify();
+      // A frame-handling fault is a protocol/logic bug, not a connection
+      // failure; reconnecting will not fix it, so it must outlive one.
+      _setError('$error', connection: false);
     }
   }
 
@@ -681,11 +686,10 @@ class HubClient {
       // unawaited-write window would silently lose it and re-pair.
       await _tokenStore.write(token);
     } catch (error) {
-      _state = _state.copyWith(lastError: 'could not persist token: $error');
-      _scheduleNotify();
+      _setError('could not persist token: $error', connection: false);
       return;
     }
-    _setStatus(HubConnectionStatus.connected);
+    _markConnected();
     _restoreSubscription();
   }
 
@@ -700,7 +704,7 @@ class HubClient {
     _state = _state.copyWith(sessions: summaries);
     // The hub pushes `sessions` on authentication; its arrival is how a
     // token-authenticated connection is confirmed (there is no `paired`).
-    _setStatus(HubConnectionStatus.connected);
+    _markConnected();
     _restoreSubscription();
   }
 
@@ -790,11 +794,10 @@ class HubClient {
     _resyncCounts[sessionId] = count;
     if (count > _maxConsecutiveResyncs) {
       // Re-requesting forever is the livelock; stop and surface it instead.
-      _state = _state.copyWith(
-        lastError:
-            'gave up resyncing $sessionId after $_maxConsecutiveResyncs attempts',
+      _setError(
+        'gave up resyncing $sessionId after $_maxConsecutiveResyncs attempts',
+        connection: false,
       );
-      _scheduleNotify();
       return;
     }
     requestHistory(sessionId);
@@ -828,7 +831,7 @@ class HubClient {
         .toList();
     final transcripts = {..._state.transcripts};
     if (!keepTranscript) transcripts.remove(sessionId);
-    var next = _state.copyWith(
+    _state = _state.copyWith(
       sessions: sessions,
       transcripts: transcripts,
       activeSessionId: _state.activeSessionId == sessionId
@@ -836,13 +839,13 @@ class HubClient {
           : _state.activeSessionId,
     );
     if (gaveUp) {
-      next = next.copyWith(
-        lastError:
-            'the session $sessionId is gone; pick another session to view',
+      _setError(
+        'the session $sessionId is gone; pick another session to view',
+        connection: false,
       );
+    } else {
+      _scheduleNotify();
     }
-    _state = next;
-    _scheduleNotify();
   }
 
   void _failPending(String error, {String? sessionId}) {
@@ -881,8 +884,7 @@ class HubClient {
       _send(message);
       return null;
     } catch (error) {
-      _state = _state.copyWith(lastError: '$error');
-      _scheduleNotify();
+      _setError('$error', connection: true);
       return error;
     }
   }
@@ -902,6 +904,25 @@ class HubClient {
     if (_state.status == status) return;
     _state = _state.copyWith(status: status);
     _scheduleNotify();
+  }
+
+  /// Records a user-visible error and whether a later authenticated connection
+  /// supersedes it. Dial, auth and send failures are connection-scoped; session
+  /// and operation notices are not.
+  void _setError(String message, {required bool connection}) {
+    _lastErrorFromConnection = connection;
+    _state = _state.copyWith(lastError: message);
+    _scheduleNotify();
+  }
+
+  /// Called once a connection is authenticated. A stale connection error is
+  /// cleared; a session/operation notice is left exactly where it was.
+  void _markConnected() {
+    if (_lastErrorFromConnection) {
+      _lastErrorFromConnection = false;
+      _state = _state.copyWith(lastError: null);
+    }
+    _setStatus(HubConnectionStatus.connected);
   }
 
   void _scheduleNotify() {
