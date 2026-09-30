@@ -10,15 +10,14 @@ This file is orientation, setup and status.
 
 ## Status
 
-Both sides are built and tested. The bridge has met a real `pi`, and the hub now
-hands out pairing codes; **the app has still only ever talked to a fake socket**,
-so nothing has run end to end. Step 18 of the plan was split three ways when recon
-found that pairing was unreachable — the delivery path was designed, unit-tested and
-never wired.
+Both sides are built and tested, and the whole path is now exercised by
+automation — a real `pi`, a real hub, and the **real** Dart client, including
+pairing and a hub restart. What remains is the on-device UI and one run against a
+live model.
 
 | | `pc/` (Node + TypeScript) | `app/` (Flutter + Dart) |
 |---|---|---|
-| Suite | 275 tests passing | 108 tests passing |
+| Suite | 275 tests passing | 112 tests passing |
 | Static gate | `tsc --noEmit` clean | `flutter analyze` clean |
 | Product code | hub, protocol codec, pi bridge | protocol codec, client, UI |
 
@@ -28,21 +27,23 @@ hub (two listeners, listener-bound capabilities, relay, backpressure, and the
 session-registry push), the pi bridge extension, shared golden fixtures with a
 pure Dart codec, the app — client, pairing, session list and transcript — the
 bridge driven inside a real `pi` against a faux provider, including its silence as
-a process, and `serve` minting pairing codes on demand.
+a process, `serve` minting pairing codes on demand, and the real client attaching
+to a real hub with a real `pi` behind it — pairing, streaming, and surviving a hub
+restart without re-pairing.
 
-**Next up:**
+**Next up:** the manual pass — the app on the emulator, and one run against a live
+model, which is the only thing automation still cannot cover.
 
-1. **The real client against a real hub** — a Dart integration test driving the
-   actual `HubClient` at a real hub with a real `pi` behind it, pairing included.
-2. **The manual pass** — the app on the emulator, and one run against a real model;
-   that run is the only thing automation still cannot cover.
-
-The gap that matters: the app has never spoken to a hub with a real `pi` behind
-it. Two faults have now been found only at the moment a designed path met reality —
-the bridge's final message, which cost every assistant reply, and pairing, which
-meant a new phone could not attach at all. Both were invisible to a green suite,
-because the tests supplied what production never produced. The app's fake-socket
-tests are the remaining surface of that shape.
+Step 18 was split three ways when recon found that pairing was unreachable: the
+delivery path had been designed, unit-tested and never wired, so a new phone could
+not attach at all. Three faults have now been found only at the moment a designed
+path met reality — the bridge's final message, which cost every assistant reply;
+pairing; and a client that silently stopped updating after a reconnect race. All
+three were invisible to a green suite, because the tests supplied what production
+never produced. A fourth was introduced by the fix for the third and caught in
+review: re-arming the retry without a cap pinned the client to a session that could
+never return. Every one of these lives where design meets reality, which is why
+the remaining manual pass matters more than its size suggests.
 
 ## Repo layout
 
@@ -78,6 +79,11 @@ flutter run --profile -d "$SERIAL"
 
 Run both gates on both sides before calling anything done — `npm test` does not run
 `typecheck`, and `flutter test` does not run `analyze`.
+
+Both suites now spawn real processes: `pc/`'s suite starts a real `pi` for the
+bridge test, and `app/`'s starts a real hub and a real `pi` for the attach test. So
+both need `node` and the `pi` CLI on `PATH`. They fail loudly and name the missing
+binary rather than skipping, because a test that quietly does not run is not a gate.
 
 ### Pairing a phone
 
@@ -241,6 +247,14 @@ fish_add_path $HOME/Android/Sdk/emulator
   through jiti and resolves it from pi's own tree, but `tsc` cannot, so the import
   is backed by a deliberately minimal hand-declared ambient slice. That is a real
   drift window: a change to the faux API compiles green and fails at runtime.
+- **A reconnect must re-establish the subscription — and the retry must be capped.**
+  The hub drops a closed connection from a session's subscriber set, so after a
+  redial the client has to re-subscribe and re-request history or it silently stops
+  updating while still looking connected. But a `session-gone` reply must not re-arm
+  that retry without limit: a switched-away or deleted session is gone for good, and
+  an agent switching sessions is routine rather than exceptional, so an uncapped
+  re-arm turns every later registry push into two doomed frames forever. Retries are
+  capped at three, after which the client drops the session and says so.
 
 ## Further reading
 

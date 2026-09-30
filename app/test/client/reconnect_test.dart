@@ -130,6 +130,100 @@ void main() {
     );
   });
 
+  test('a rejected re-subscribe is retried when the session reappears', () async {
+    // A hub restart: the client redials with the token, but the agent has not
+    // re-registered yet, so the hub answers the re-subscribe with
+    // `session-gone`. When the agent re-registers, the client must retry rather
+    // than stay silently unsubscribed.
+    await client.start('127.0.0.1');
+    await pumpEventQueue();
+    factory.last.receive(sessionsFrame());
+    await pumpEventQueue();
+    client.subscribe('s1');
+
+    factory.last.remoteClose(1001);
+    await pumpEventQueue();
+    await reconnect();
+
+    final newSocket = factory.last;
+    newSocket.receive(sessionsFrame());
+    await pumpEventQueue();
+    expect(framesOfType(newSocket, 'subscribe'), hasLength(1));
+
+    newSocket.receive({
+      'protocolVersion': 1,
+      'type': 'session-gone',
+      'sessionId': 's1',
+    });
+    await pumpEventQueue();
+    expect(client.state.activeSessionId, isNull);
+
+    newSocket.receive({
+      'protocolVersion': 1,
+      'type': 'sessions',
+      'sessions': [
+        {'sessionId': 's1', 'label': 'one', 'agentState': 'idle'},
+      ],
+    });
+    await pumpEventQueue();
+
+    expect(framesOfType(newSocket, 'subscribe'), hasLength(2));
+    expect(framesOfType(newSocket, 'subscribe').last['sessionId'], 's1');
+    expect(framesOfType(newSocket, 'history-request'), hasLength(2));
+    expect(client.state.activeSessionId, 's1');
+  });
+
+  test('a session that stays gone is retried to a cap, then abandoned', () async {
+    // The race the M10b fix targeted (a re-subscribe racing the agent's
+    // re-registration) must keep retrying. But a session that is genuinely gone
+    // — deleted, or the agent switched/forked away — answers `session-gone`
+    // forever. Without a cap, every registry push resends subscribe+history
+    // and nothing ever surfaces an error.
+    await client.start('127.0.0.1');
+    await pumpEventQueue();
+    factory.last.receive(sessionsFrame());
+    await pumpEventQueue();
+    client.subscribe('s1');
+    final socket = factory.last;
+
+    const gone = {
+      'protocolVersion': 1,
+      'type': 'session-gone',
+      'sessionId': 's1',
+    };
+    const sessionsWithoutS1 = {
+      'protocolVersion': 1,
+      'type': 'sessions',
+      'sessions': <Object?>[],
+    };
+
+    // Under the cap each rejection re-arms and the next push retries.
+    for (var i = 0; i < HubClient.maxConsecutiveSessionGone; i++) {
+      socket.receive(gone);
+      await pumpEventQueue();
+      socket.receive(sessionsWithoutS1);
+      await pumpEventQueue();
+    }
+    expect(framesOfType(socket, 'subscribe'), hasLength(4)); // the first + 3.
+
+    // Past the cap the client must stop: clear the desired session, keep
+    // `activeSessionId` from flapping back, and surface the reason.
+    socket.receive(gone);
+    await pumpEventQueue();
+    final subscribeAtGiveUp = framesOfType(socket, 'subscribe').length;
+    final historyAtGiveUp = framesOfType(socket, 'history-request').length;
+    for (var i = 0; i < 3; i++) {
+      socket.receive(sessionsWithoutS1);
+      await pumpEventQueue();
+    }
+
+    expect(framesOfType(socket, 'subscribe'), hasLength(subscribeAtGiveUp));
+    expect(framesOfType(socket, 'history-request'), hasLength(historyAtGiveUp));
+    expect(client.state.activeSessionId, isNull);
+    expect(client.state.lastError, isNotNull);
+    expect(client.state.lastError, contains('s1'));
+  });
+
   test('a redial without an active session subscribes to nothing', () async {
     await client.start('127.0.0.1');
     await pumpEventQueue();

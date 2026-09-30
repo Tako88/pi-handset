@@ -15,6 +15,9 @@ import { fauxAssistantMessage, fauxProvider } from '@earendil-works/pi-ai';
 
 export default function fauxHarness(pi: { registerProvider(provider: unknown): void }): void {
   const faux = fauxProvider();
-  faux.setResponses([fauxAssistantMessage(process.env.PI_DROID_FAUX_TEXT ?? 'FAUX_OK')]);
+  const text = process.env.PI_DROID_FAUX_TEXT ?? 'FAUX_OK';
+  // Two identical responses: M10b drives two prompts through one pi process
+  // (the second after a hub restart). M9 consumes only the first.
+  faux.setResponses([fauxAssistantMessage(text), fauxAssistantMessage(text)]);
   pi.registerProvider(faux.provider);
 }
