@@ -192,7 +192,11 @@ class _PiDroidAppState extends State<PiDroidApp> {
           tooltip: 'Sessions',
         ),
       ),
-      body: _withStatusBanner(TranscriptView(transcript: transcript)),
+      body: _withStatusBanner(
+        // Keyed on the session: a new session is a new view, so its scroll
+        // position and following state are not inherited from the last one.
+        TranscriptView(key: ValueKey(activeId), transcript: transcript),
+      ),
       bottomNavigationBar: Column(
         mainAxisSize: MainAxisSize.min,
         children: [

@@ -37,6 +37,21 @@ Map<String, Object?> sessionsFrame(List<Map<String, Object?>> sessions) => {
 };
 
 const sessionS1 = {'sessionId': 's1', 'label': 'api refactor', 'agentState': 'idle'};
+const sessionS2 = {'sessionId': 's2', 'label': 'second session', 'agentState': 'idle'};
+
+/// A snapshot with [count] flattened message entries — enough to overflow the
+/// 600px test viewport so scroll position is observable.
+Map<String, Object?> snapshotFrame(String sessionId, int count) => {
+  'protocolVersion': 1,
+  'type': 'snapshot',
+  'sessionId': sessionId,
+  'lastSeq': 1,
+  'agentState': 'idle',
+  'entries': [
+    for (var i = 0; i < count; i++) {'type': 'assistant', 'text': 'message $i'},
+  ],
+  'truncated': false,
+};
 
 class Harness {
   Harness({String? token = testToken, HubEndpoint? endpoint, TokenStore? tokenStore})
@@ -109,6 +124,59 @@ void main() {
       expect(command['args'], {'text': 'hi pi'});
     },
   );
+
+  testWidgets('switching sessions does not carry over the scroll position', (
+    tester,
+  ) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+
+    h.factory.last.receive(sessionsFrame([sessionS1, sessionS2]));
+    await settle(tester, h.scheduler);
+
+    // Pre-load s2 so the switch back to it is immediate — no empty-transcript
+    // frame in between, which would unmount the view and dispose its state.
+    h.client.subscribe('s2');
+    await settle(tester, h.scheduler);
+    h.factory.last.receive(snapshotFrame('s2', 60));
+    await settle(tester, h.scheduler);
+    await tester.pump();
+    await tester.pump();
+
+    // Switch to s1, populate it tall, and scroll away from the bottom.
+    h.client.subscribe('s1');
+    await settle(tester, h.scheduler);
+    h.factory.last.receive(snapshotFrame('s1', 60));
+    await settle(tester, h.scheduler);
+    await tester.pump();
+    await tester.pump();
+    await tester.drag(find.byType(ListView), const Offset(0, 300));
+    await tester.pumpAndSettle();
+    expect(
+      find.byIcon(Icons.arrow_downward),
+      findsOneWidget,
+      reason: 'the setup must really scroll away before asserting the switch',
+    );
+
+    // Switch back to the cached s2 while the transcript view stays mounted —
+    // the state-reuse path the session key exists to break.
+    h.client.subscribe('s2');
+    await settle(tester, h.scheduler);
+    await tester.pump();
+    await tester.pump();
+
+    expect(
+      find.text('message 59'),
+      findsOneWidget,
+      reason: 'a freshly opened session opens at its newest row',
+    );
+    expect(
+      find.byIcon(Icons.arrow_downward),
+      findsNothing,
+      reason: "s1's scroll position and following state must not leak into s2",
+    );
+  });
 
   testWidgets('a refused prompt reaches the screen', (tester) async {
     final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
