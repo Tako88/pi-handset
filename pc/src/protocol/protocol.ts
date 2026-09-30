@@ -54,6 +54,13 @@ export const MAX_RELAY_BYTES = 256 * 1024;
  * hub -> viewer:
  * - `paired` { token } — sent once, on a successful ticket exchange; this is
  *   the only message that carries the token.
+ * - `sessions` { sessions: [ { sessionId, label, agentState } ] } — the
+ *   registry as a summary, pushed on authentication and whenever the registry
+ *   changes: a register/takeover, a session retirement, or an agent-state
+ *   transition. A stream delta does not push it. `lastSeq` is deliberately not
+ *   part of a summary — it moves on every stream delta; a viewer that needs a
+ *   watermark asks for a `snapshot`. An empty list is a real value (there are
+ *   no sessions), not an absence.
  * - `event` { payload } — routed normalized events.
  * - `snapshot` { sessionId, lastSeq, agentState, entries: unknown[], truncated }
  *   — `lastSeq`/`agentState` are hub-tracked; `entries` are agent-supplied and
@@ -182,6 +189,29 @@ export interface PairedMessage {
   token: string;
 }
 
+/**
+ * One registered session, summarised for a phone's session list. `label` is
+ * derived once at register time from the session's `name`, or a viewer-safe
+ * basename of `sessionFile`/`cwd`, or the `sessionId`.
+ * Deliberately narrower than the register record: `pid`/`cwd`/`model`/
+ * `sessionFile` never travel as fields, and the hub invents no state —
+ * `agentState` is the same value a `snapshot` reports. `lastSeq` is absent on
+ * purpose: it changes on every stream delta, so a list carrying it would be
+ * stale or force a push per token; a viewer that needs a watermark asks for a
+ * `snapshot`.
+ */
+export interface SessionSummary {
+  sessionId: string;
+  label: string;
+  agentState: AgentState;
+}
+
+export interface SessionsMessage {
+  protocolVersion: number;
+  type: 'sessions';
+  sessions: SessionSummary[];
+}
+
 export interface SnapshotMessage {
   protocolVersion: number;
   type: 'snapshot';
@@ -237,6 +267,7 @@ export type ViewerMessageType = (typeof VIEWER_MESSAGE_TYPES)[number];
  */
 export const HUB_TO_VIEWER_MESSAGE_TYPES = [
   'paired',
+  'sessions',
   'event',
   'snapshot',
   'command-result',
@@ -274,6 +305,7 @@ export type ViewerToHubMessage =
 
 export type HubToViewerMessage =
   | PairedMessage
+  | SessionsMessage
   | EventMessage
   | SnapshotMessage
   | CommandResultMessage
@@ -292,6 +324,7 @@ export type Message =
   | HistoryRequestMessage
   | CommandMessage
   | PairedMessage
+  | SessionsMessage
   | SnapshotMessage
   | ResyncRequiredMessage
   | SessionGoneMessage;
@@ -501,6 +534,27 @@ export function decode(text: string): DecodeResult {
         return fail('bad-field', 'paired token must be a non-empty string');
       }
       return { ok: true, value: parsed as PairedMessage };
+    }
+    case 'sessions': {
+      if (!Array.isArray(message.sessions)) {
+        return fail('bad-field', 'sessions must be an array');
+      }
+      for (const entry of message.sessions) {
+        if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+          return fail('bad-field', 'sessions entries must be JSON objects');
+        }
+        const summary = entry as Record<string, unknown>;
+        if (asString(summary.sessionId) === null) {
+          return fail('bad-field', 'sessions sessionId must be a non-empty string');
+        }
+        if (asString(summary.label) === null) {
+          return fail('bad-field', 'sessions label must be a non-empty string');
+        }
+        if (!(AGENT_STATES as readonly unknown[]).includes(summary.agentState)) {
+          return fail('bad-state', 'sessions agentState must be idle, running or settled');
+        }
+      }
+      return { ok: true, value: parsed as SessionsMessage };
     }
     case 'snapshot': {
       if (asString(message.sessionId) === null) {

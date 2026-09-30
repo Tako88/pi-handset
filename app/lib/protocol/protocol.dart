@@ -44,6 +44,7 @@ const List<String> viewerMessageTypes = [
 /// What the hub sends to a viewer. Canonical; see [agentMessageTypes].
 const List<String> hubToViewerMessageTypes = [
   'paired',
+  'sessions',
   'event',
   'snapshot',
   'command-result',
@@ -271,6 +272,39 @@ DecodeResult decode(String text) {
           'bad-field',
           'paired token must be a non-empty string',
         );
+      }
+      return DecodeResult.ok(message);
+    case 'sessions':
+      final sessions = message['sessions'];
+      if (sessions is! List) {
+        return const DecodeResult.fail('bad-field', 'sessions must be an array');
+      }
+      for (final entry in sessions) {
+        if (entry is! Map) {
+          return const DecodeResult.fail(
+            'bad-field',
+            'sessions entries must be JSON objects',
+          );
+        }
+        final summary = entry.cast<String, Object?>();
+        if (_nonEmptyString(summary['sessionId']) == null) {
+          return const DecodeResult.fail(
+            'bad-field',
+            'sessions sessionId must be a non-empty string',
+          );
+        }
+        if (_nonEmptyString(summary['label']) == null) {
+          return const DecodeResult.fail(
+            'bad-field',
+            'sessions label must be a non-empty string',
+          );
+        }
+        if (!agentStates.contains(summary['agentState'])) {
+          return const DecodeResult.fail(
+            'bad-state',
+            'sessions agentState must be idle, running or settled',
+          );
+        }
       }
       return DecodeResult.ok(message);
     case 'snapshot':

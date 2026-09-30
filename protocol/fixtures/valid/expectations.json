@@ -69,6 +69,16 @@
     "type": "paired",
     "token": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   },
+  "sessions.json": {
+    "type": "sessions",
+    "sessions": [
+      {
+        "sessionId": "sess-1",
+        "label": "my session",
+        "agentState": "settled"
+      }
+    ]
+  },
   "register.json": {
     "type": "register",
     "sessionId": "sess-1",
