@@ -175,6 +175,12 @@ const int _backoffCapMs = 30000;
 /// itself dropped would otherwise loop forever.
 const int _maxConsecutiveResyncs = 3;
 
+/// Consecutive `session-gone` answers a session may provoke before the client
+/// stops re-subscribing and surfaces an error. Under the cap a rejection re-arms
+/// the re-subscribe (which recovers the race the M10b fix targeted); past it the
+/// session is genuinely gone and retrying forever only churns the registry.
+const int _maxConsecutiveSessionGone = 3;
+
 /// Bounded wait for `paired` or `sessions` after dialing. A wrong or stale
 /// token gets silence on an open socket — the hub charges one attempt per
 /// `hello` and this client sends exactly one — so without this the client would
@@ -223,6 +229,10 @@ class HubClient {
   /// `subscribe`.
   final Map<String, int> _resyncCounts = {};
 
+  /// Consecutive `session-gone` answers per session, reset by a `snapshot`, a
+  /// user-initiated `subscribe`, or `disconnect`.
+  final Map<String, int> _sessionGoneCounts = {};
+
   Uri? _url;
   Map<String, Object?>? _credential;
   HubSocket? _socket;
@@ -235,6 +245,12 @@ class HubClient {
   int _commandCounter = 0;
   bool _resubscribed = false;
 
+  /// The session the user last asked to view. Unlike [HubClientState.activeSessionId]
+  /// it survives a `session-gone`, so a re-subscribe that raced the agent's
+  /// re-registration after a hub restart can be retried when the session
+  /// reappears instead of leaving the client silently unsubscribed.
+  String? _desiredSessionId;
+
   /// The current snapshot.
   HubClientState get state => _state;
 
@@ -245,6 +261,10 @@ class HubClient {
   /// The number of consecutive resyncs a session is allowed before the client
   /// gives up. Exposed for the tests that drive the cap.
   static const int maxConsecutiveResyncs = _maxConsecutiveResyncs;
+
+  /// The number of consecutive `session-gone` answers a session is allowed
+  /// before the client gives up. Exposed for the tests that drive the cap.
+  static const int maxConsecutiveSessionGone = _maxConsecutiveSessionGone;
 
   SessionTranscript? transcript(String sessionId) =>
       _state.transcripts[sessionId];
@@ -320,8 +340,10 @@ class HubClient {
     }
     _credential = null;
     _resubscribed = false;
+    _desiredSessionId = null;
     _attempt = 0;
     _resyncCounts.clear();
+    _sessionGoneCounts.clear();
     _state = const HubClientState();
     _flushNotify();
   }
@@ -331,6 +353,16 @@ class HubClient {
   /// Relayed `event` frames carry no `sessionId`, so the client can only
   /// attribute them to the session it is currently viewing.
   void subscribe(String sessionId) {
+    // A user picking a session is a fresh start: a gone streak from an earlier
+    // automatic retry must not count against it.
+    _sessionGoneCounts.remove(sessionId);
+    _subscribe(sessionId);
+  }
+
+  /// The shared body of [subscribe]. The automatic restore after a
+  /// `session-gone` reuses it *without* clearing [_sessionGoneCounts], so
+  /// consecutive rejections accumulate to the give-up cap.
+  void _subscribe(String sessionId) {
     final previous = _state.activeSessionId;
     if (previous != null && previous != sessionId) {
       // The hub only ever adds subscribers, and relayed events carry no
@@ -344,6 +376,7 @@ class HubClient {
       });
     }
     _resyncCounts.remove(sessionId);
+    _desiredSessionId = sessionId;
     _ensureTranscript(sessionId);
     _state = _state.copyWith(activeSessionId: sessionId);
     _trySend({
@@ -360,6 +393,7 @@ class HubClient {
       'type': 'unsubscribe',
       'sessionId': sessionId,
     });
+    if (_desiredSessionId == sessionId) _desiredSessionId = null;
     if (_state.activeSessionId == sessionId) {
       _state = _state.copyWith(activeSessionId: null);
       _scheduleNotify();
@@ -430,15 +464,17 @@ class HubClient {
   /// after a redial the client would otherwise keep its `activeSessionId` and
   /// transcript while the hub delivers nothing — a transcript that silently
   /// stops updating. Re-subscribing alone is not enough: the drop may have
-  /// gapped the transcript, so history is re-requested too. Idempotent per
-  /// dial, because the token path confirms auth with a `sessions` push that
-  /// also fires on every registry change.
+  /// gapped the transcript, so history is re-requested too.
+  ///
+  /// Runs once per dial, and again only after a `session-gone` clears the guard
+  /// (past the give-up cap it never runs again). It leaves the gone streak
+  /// intact, so an automatic retry cannot reset its own cap.
   void _restoreSubscription() {
     if (_resubscribed) return;
     _resubscribed = true;
-    final sessionId = _state.activeSessionId;
+    final sessionId = _desiredSessionId ?? _state.activeSessionId;
     if (sessionId == null) return;
-    subscribe(sessionId);
+    _subscribe(sessionId);
     requestHistory(sessionId);
   }
 
@@ -702,8 +738,9 @@ class HubClient {
 
   void _onSnapshot(Map<String, Object?> message) {
     final sessionId = message['sessionId']! as String;
-    // A delivered baseline breaks any resync streak.
+    // A delivered baseline breaks any resync or gone streak.
     _resyncCounts.remove(sessionId);
+    _sessionGoneCounts.remove(sessionId);
     _putTranscript(
       sessionId,
       SessionTranscript(
@@ -747,18 +784,39 @@ class HubClient {
 
   void _onSessionGone(String sessionId) {
     _resyncCounts.remove(sessionId);
+    final count = (_sessionGoneCounts[sessionId] ?? 0) + 1;
+    _sessionGoneCounts[sessionId] = count;
+    final gaveUp = count > _maxConsecutiveSessionGone;
+    if (gaveUp) {
+      // The session is genuinely gone. Re-arming again would resend
+      // subscribe+history on every registry push forever, so clear the desired
+      // session and say so rather than looping silently.
+      if (_desiredSessionId == sessionId) _desiredSessionId = null;
+    } else if (_desiredSessionId == sessionId) {
+      // A gone session may come back (an agent restart, or a re-subscribe that
+      // raced the agent's re-registration): drop the one-shot guard so the next
+      // `sessions` push re-attaches to the session the user was viewing.
+      _resubscribed = false;
+    }
     _failPending('session gone', sessionId: sessionId);
     final sessions = _state.sessions
         .where((summary) => summary.sessionId != sessionId)
         .toList();
     final transcripts = {..._state.transcripts}..remove(sessionId);
-    _state = _state.copyWith(
+    var next = _state.copyWith(
       sessions: sessions,
       transcripts: transcripts,
       activeSessionId: _state.activeSessionId == sessionId
           ? null
           : _state.activeSessionId,
     );
+    if (gaveUp) {
+      next = next.copyWith(
+        lastError:
+            'the session $sessionId is gone; pick another session to view',
+      );
+    }
+    _state = next;
     _scheduleNotify();
   }
 
