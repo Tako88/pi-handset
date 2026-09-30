@@ -26,8 +26,10 @@
  * Accepted residuals, reviewed and deliberately not engineered around:
  * - The `lstat`-then-use TOCTOU window is bounded by repairing
  *   `<configDir>/pi-droid` to `0700`; no other local user can write into it.
- * - A concurrent first-create can race and mint two tokens. M4's hub mutual
- *   exclusion covers that, so there is no lock or atomic-create here.
+ * - A concurrent first-create can race and mint two tokens. That window is
+ *   closed at the hub level: M4's lock (an exclusive create held for the whole
+ *   process lifetime) serializes startup before any token is read, so only one
+ *   process reaches this module first. There is deliberately no lock here.
  * - A crash can leave `token.tmp.*` files behind. They are `0600` and
  *   superseded by the renamed token; no reaper deletes them.
  * - Hardlinks to the token are not detectable via `lstat` and are severed by
