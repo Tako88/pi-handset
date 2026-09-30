@@ -183,7 +183,7 @@ class _PiDroidAppState extends State<PiDroidApp> {
 
     final transcript =
         _state.transcripts[activeId] ?? const SessionTranscript();
-    return Scaffold(
+    final view = Scaffold(
       appBar: AppBar(
         title: Text(_sessionLabel(activeId)),
         leading: IconButton(
@@ -212,6 +212,17 @@ class _PiDroidAppState extends State<PiDroidApp> {
           ),
         ],
       ),
+    );
+
+    // The transcript is one level in, so the system back button must close it
+    // rather than exit the app. It routes through _close(), the same path as the
+    // AppBar arrow, so the two ways back cannot drift apart.
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _close();
+      },
+      child: view,
     );
   }
 

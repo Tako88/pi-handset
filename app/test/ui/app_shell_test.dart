@@ -4,6 +4,7 @@
 // failed pairing and a broken store all have to reach the screen.
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pi_droid/client/endpoint_store.dart';
 import 'package:pi_droid/client/hub_client.dart';
@@ -28,6 +29,20 @@ Future<void> settle(WidgetTester tester, FakeScheduler scheduler) async {
   await tester.pump();
   scheduler.flushNotifications();
   await tester.pump();
+}
+
+/// Android's back button as the engine delivers it: a `popRoute` message on
+/// `flutter/navigation`. A widget test has no real activity to exit, so an
+/// unhandled pop is simply a no-op — which is exactly how it should look.
+/// Settles afterwards, because the handler's state change arrives through the
+/// client's scheduler like any other notification.
+Future<void> pressSystemBack(WidgetTester tester, FakeScheduler scheduler) async {
+  await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+    'flutter/navigation',
+    const JSONMethodCodec().encodeMethodCall(const MethodCall('popRoute')),
+    (_) {},
+  );
+  await settle(tester, scheduler);
 }
 
 Map<String, Object?> sessionsFrame(List<Map<String, Object?>> sessions) => {
@@ -124,6 +139,24 @@ void main() {
       expect(command['args'], {'text': 'hi pi'});
     },
   );
+
+  testWidgets('the system back button returns to the session list', (tester) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+
+    await tester.tap(find.text('api refactor'));
+    await settle(tester, h.scheduler);
+    expect(find.byKey(const Key('compose-field')), findsOneWidget);
+
+    await pressSystemBack(tester, h.scheduler);
+
+    expect(find.byKey(const Key('compose-field')), findsNothing);
+    expect(find.text('pi sessions'), findsOneWidget);
+  });
 
   testWidgets('switching sessions does not carry over the scroll position', (
     tester,
