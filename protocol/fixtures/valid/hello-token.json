@@ -1,0 +1,5 @@
+{
+  "protocolVersion": 1,
+  "type": "hello",
+  "token": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+}

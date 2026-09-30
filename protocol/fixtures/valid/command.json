@@ -1,0 +1,10 @@
+{
+  "protocolVersion": 1,
+  "type": "command",
+  "id": "cmd-9",
+  "sessionId": "sess-1",
+  "name": "prompt",
+  "args": {
+    "text": "hi"
+  }
+}

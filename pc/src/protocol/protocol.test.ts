@@ -363,3 +363,12 @@ test('decode never throws on deeply nested JSON', () => {
   const result = decode('['.repeat(200_000) + ']'.repeat(200_000));
   assert.equal(result.ok, false);
 });
+
+// Regression guard: `decodeOrderedStream` rejected a stale `seq`, but the
+// shipping hub (`hub.ts`) accepts one with `Math.max`. The contradictory helper
+// has no production caller and must not come back. Accessed dynamically so the
+// test keeps compiling before and after the deletion.
+test('the retired ordered-stream helper is not exported', async () => {
+  const module = (await import('./protocol.ts')) as Record<string, unknown>;
+  assert.equal(module.decodeOrderedStream, undefined);
+});

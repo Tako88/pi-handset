@@ -1,0 +1,9 @@
+{
+  "protocolVersion": 1,
+  "type": "event",
+  "payload": {
+    "kind": "stream",
+    "seq": 0,
+    "text": "zero is not a valid seq"
+  }
+}
