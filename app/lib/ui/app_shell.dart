@@ -192,14 +192,18 @@ class _PiDroidAppState extends State<PiDroidApp> {
           tooltip: 'Sessions',
         ),
       ),
-      body: _withStatusBanner(
-        // Keyed on the session: a new session is a new view, so its scroll
-        // position and following state are not inherited from the last one.
-        TranscriptView(key: ValueKey(activeId), transcript: transcript),
-      ),
-      bottomNavigationBar: Column(
-        mainAxisSize: MainAxisSize.min,
+      // The composer lives in the BODY, not the bottomNavigationBar slot:
+      // resizeToAvoidBottomInset only resizes the body, so a nav bar stays
+      // pinned to the screen bottom and the keyboard covers it.
+      body: Column(
         children: [
+          Expanded(
+            child: _withStatusBanner(
+              // Keyed on the session: a new session is a new view, so its scroll
+              // position and following state are not inherited from the last one.
+              TranscriptView(key: ValueKey(activeId), transcript: transcript),
+            ),
+          ),
           StatusIndicator(transcript: transcript),
           ComposeBar(
             enabled: _state.status == HubConnectionStatus.connected,
