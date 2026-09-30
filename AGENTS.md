@@ -50,23 +50,12 @@ We develop test-first. No production code is written before a failing test deman
   test deliberately and say so.
 - Keep tests deterministic. No sleeps to "make it work"; await the actual condition.
 
-### Scaffolding carve-out
+### Scaffolding
 
-Bootstrapping a toolchain is the one thing the three laws cannot express: you cannot
-run the first real test until the runner is proven, and that proof needs *some* code.
-So each side carries exactly one **toolchain canary** —
-`pc/src/hello.ts` and `app/lib/toolchain_canary.dart`, both `answer() => 42`.
-
-They are not product code and are exempt from Law 1 only in this narrow sense: each
-was written *after* a test demanding it. Do not add a second canary.
-
-The retirement trigger — the first real module — was passed some time ago
-(`pc/src/protocol/protocol.ts` landed it). The PC canary is now dead weight; the app
-canary goes when the real UI replaces it in M8. Deleting them is a human step, since
-the agent may not remove files.
-
-Note that "What not to test" below already excludes framework wiring — so the canary
-tests prove the toolchain, and are not behaviour coverage. Do not grow them into it.
+Each side once carried a throwaway toolchain canary to prove its runner worked.
+Both are now retired, the first real module having long since arrived. **Do not add
+another** — the three laws apply without exception from here, and "What not to
+test" below already excludes framework wiring.
 
 ## Tooling — `pc/` (Node + TypeScript)
 

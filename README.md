@@ -35,10 +35,6 @@ The gap that matters: none of this has met a live `pi`. The bridge's handlers ar
 unit-tested against a stub, and the app has only ever talked to a fake socket.
 Both are exercised for real only by the two remaining milestones.
 
-The toolchain canaries (`pc/src/hello.ts`, `app/lib/toolchain_canary.dart`) are no
-longer referenced by production code and await removal — deleting files is a human
-step here.
-
 ## Repo layout
 
 ```
