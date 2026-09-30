@@ -130,6 +130,86 @@ void main() {
     );
   });
 
+  test('a reconnect requests history exactly once', () async {
+    // The automatic restore after a redial must re-request history, but only
+    // once: the re-subscribe itself must not add a second request.
+    await client.start('127.0.0.1');
+    await pumpEventQueue();
+    factory.last.receive(sessionsFrame());
+    await pumpEventQueue();
+    client.subscribe('s1');
+    expect(framesOfType(factory.last, 'history-request'), hasLength(1));
+
+    factory.last.remoteClose(1001);
+    await pumpEventQueue();
+    await reconnect();
+
+    final newSocket = factory.last;
+    newSocket.receive(sessionsFrame());
+    await pumpEventQueue();
+
+    expect(framesOfType(newSocket, 'subscribe'), hasLength(1));
+    expect(framesOfType(newSocket, 'history-request'), hasLength(1));
+    expect(
+      framesOfType(newSocket, 'history-request').single['sessionId'],
+      's1',
+    );
+  });
+
+  test('a reconnect must not discard the visible transcript', () async {
+    // The user was looking at a reply before the hub restarted. The client
+    // redials and re-subscribes automatically; if the agent has not
+    // re-registered yet the hub answers `session-gone`. That is a transient
+    // gap during a reconnect, not a deletion, so the visible transcript must
+    // survive it — whatever the hub does or does not send back afterwards.
+    await client.start('127.0.0.1');
+    await pumpEventQueue();
+    factory.last.receive(sessionsFrame());
+    await pumpEventQueue();
+    client.subscribe('s1');
+
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'event',
+      'payload': {'kind': 'stream', 'seq': 1, 'text': 'earlier reply'},
+    });
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'event',
+      'payload': {
+        'kind': 'message',
+        'message': {
+          'role': 'assistant',
+          'content': [
+            {'type': 'text', 'text': 'earlier reply'},
+          ],
+        },
+      },
+    });
+    await pumpEventQueue();
+    expect(client.transcript('s1')!.entries, hasLength(1));
+
+    factory.last.remoteClose(1001);
+    await pumpEventQueue();
+    await reconnect();
+
+    final newSocket = factory.last;
+    newSocket.receive(sessionsFrame());
+    await pumpEventQueue();
+    newSocket.receive({
+      'protocolVersion': 1,
+      'type': 'session-gone',
+      'sessionId': 's1',
+    });
+    await pumpEventQueue();
+
+    expect(
+      client.transcript('s1')?.entries,
+      hasLength(1),
+      reason: 'a reconnect must not discard the visible transcript',
+    );
+  });
+
   test('a rejected re-subscribe is retried when the session reappears', () async {
     // A hub restart: the client redials with the token, but the agent has not
     // re-registered yet, so the hub answers the re-subscribe with

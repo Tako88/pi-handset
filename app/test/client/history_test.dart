@@ -84,6 +84,8 @@ void main() {
     'reason': 'backpressure',
   });
 
+  // Counts every history-request the client sent, including the one opening a
+  // session now issues; the resync cap adds to that baseline.
   int historyRequests() => factory.last.sentFrames
       .where((frame) => frame['type'] == 'history-request')
       .length;
@@ -97,7 +99,7 @@ void main() {
     }
     await pumpEventQueue();
 
-    expect(historyRequests(), HubClient.maxConsecutiveResyncs);
+    expect(historyRequests(), HubClient.maxConsecutiveResyncs + 1);
     expect(client.state.lastError, isNotNull);
   });
 
@@ -123,7 +125,7 @@ void main() {
     }
     await pumpEventQueue();
 
-    expect(historyRequests(), HubClient.maxConsecutiveResyncs * 2);
+    expect(historyRequests(), HubClient.maxConsecutiveResyncs * 2 + 1);
     expect(client.state.lastError, isNull);
   });
 

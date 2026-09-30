@@ -134,4 +134,50 @@ void main() {
     expect(find.byKey(ObjectKey(a)), findsOneWidget);
     expect(find.byKey(ObjectKey(b)), findsOneWidget);
   });
+
+  testWidgets('a snapshot entry in the real pi session shape renders', (
+    tester,
+  ) async {
+    // pi's `sessionManager.getEntries()` returns `{type: 'message', message:
+    // {role, content}}` — not the flat `{type: 'assistant', text}` the fixtures
+    // use. A reconnect replaces the transcript with exactly this shape, so it
+    // must render; otherwise the pane goes blank until a new reply streams.
+    final snapshotEntry = {
+      'type': 'message',
+      'id': '9',
+      'parentId': '8',
+      'timestamp': '2026-09-30T17:07:24.664Z',
+      'message': {
+        'role': 'assistant',
+        'content': [
+          {'type': 'text', 'text': 'the earlier reply'},
+        ],
+      },
+    };
+
+    await tester.pumpWidget(wrap(SessionTranscript(entries: [snapshotEntry])));
+
+    expect(
+      find.textContaining('the earlier reply', findRichText: true),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('non-message snapshot entries take no row', (tester) async {
+    // A snapshot is the whole session log: bookkeeping entries and an empty
+    // system message must not each claim a blank bubble.
+    await tester.pumpWidget(
+      wrap(
+        const SessionTranscript(
+          entries: [
+            {'type': 'model_change', 'provider': 'faux', 'modelId': 'faux-1'},
+            {'type': 'thinking_level_change', 'thinkingLevel': 'off'},
+            {'type': 'message', 'message': {'role': 'system', 'content': ''}},
+          ],
+        ),
+      ),
+    );
+
+    expect(find.byType(MessageBubble), findsNothing);
+  });
 }

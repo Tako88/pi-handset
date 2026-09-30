@@ -233,6 +233,12 @@ class HubClient {
   /// user-initiated `subscribe`, or `disconnect`.
   final Map<String, int> _sessionGoneCounts = {};
 
+  /// Sessions whose current subscription was restored automatically after a
+  /// reconnect, rather than chosen by the user. A `session-gone` answering one
+  /// of these is the re-subscribe racing the agent's re-registration, not a
+  /// deletion, so its transcript is kept until the give-up cap.
+  final Set<String> _restoredSessions = {};
+
   Uri? _url;
   Map<String, Object?>? _credential;
   HubSocket? _socket;
@@ -344,11 +350,13 @@ class HubClient {
     _attempt = 0;
     _resyncCounts.clear();
     _sessionGoneCounts.clear();
+    _restoredSessions.clear();
     _state = const HubClientState();
     _flushNotify();
   }
 
-  /// Subscribes to [sessionId] and makes it the session events are attributed to.
+  /// Subscribes to [sessionId], makes it the session events are attributed to,
+  /// and requests its history so the prior conversation is visible on open.
   ///
   /// Relayed `event` frames carry no `sessionId`, so the client can only
   /// attribute them to the session it is currently viewing.
@@ -362,7 +370,7 @@ class HubClient {
   /// The shared body of [subscribe]. The automatic restore after a
   /// `session-gone` reuses it *without* clearing [_sessionGoneCounts], so
   /// consecutive rejections accumulate to the give-up cap.
-  void _subscribe(String sessionId) {
+  void _subscribe(String sessionId, {bool restoring = false}) {
     final previous = _state.activeSessionId;
     if (previous != null && previous != sessionId) {
       // The hub only ever adds subscribers, and relayed events carry no
@@ -377,6 +385,11 @@ class HubClient {
     }
     _resyncCounts.remove(sessionId);
     _desiredSessionId = sessionId;
+    if (restoring) {
+      _restoredSessions.add(sessionId);
+    } else {
+      _restoredSessions.remove(sessionId);
+    }
     _ensureTranscript(sessionId);
     _state = _state.copyWith(activeSessionId: sessionId);
     _trySend({
@@ -384,6 +397,10 @@ class HubClient {
       'type': 'subscribe',
       'sessionId': sessionId,
     });
+    // Subscribing alone yields live events only; the backlog needs an explicit
+    // request. Done here, in the shared body, so every open path (a user's
+    // choice and the automatic restore) requests it exactly once.
+    requestHistory(sessionId);
     _scheduleNotify();
   }
 
@@ -474,8 +491,9 @@ class HubClient {
     _resubscribed = true;
     final sessionId = _desiredSessionId ?? _state.activeSessionId;
     if (sessionId == null) return;
-    _subscribe(sessionId);
-    requestHistory(sessionId);
+    // `_subscribe` re-subscribes and re-requests history. Requesting it again
+    // here would send a duplicate frame.
+    _subscribe(sessionId, restoring: true);
   }
 
   // ---------------------------------------------------------------------------
@@ -787,10 +805,16 @@ class HubClient {
     final count = (_sessionGoneCounts[sessionId] ?? 0) + 1;
     _sessionGoneCounts[sessionId] = count;
     final gaveUp = count > _maxConsecutiveSessionGone;
+    // A `session-gone` answering an automatic restore is the re-subscribe
+    // racing the agent's re-registration; only once the cap is past — or when
+    // the user subscribed directly and the session is simply gone — is the
+    // transcript genuinely obsolete.
+    final keepTranscript = !gaveUp && _restoredSessions.contains(sessionId);
     if (gaveUp) {
       // The session is genuinely gone. Re-arming again would resend
       // subscribe+history on every registry push forever, so clear the desired
       // session and say so rather than looping silently.
+      _restoredSessions.remove(sessionId);
       if (_desiredSessionId == sessionId) _desiredSessionId = null;
     } else if (_desiredSessionId == sessionId) {
       // A gone session may come back (an agent restart, or a re-subscribe that
@@ -802,7 +826,8 @@ class HubClient {
     final sessions = _state.sessions
         .where((summary) => summary.sessionId != sessionId)
         .toList();
-    final transcripts = {..._state.transcripts}..remove(sessionId);
+    final transcripts = {..._state.transcripts};
+    if (!keepTranscript) transcripts.remove(sessionId);
     var next = _state.copyWith(
       sessions: sessions,
       transcripts: transcripts,
