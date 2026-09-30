@@ -147,6 +147,42 @@ the app. The phone then stores a token, so pairing happens once per phone and
 **restarting the hub does not de-pair**. The code is single-use and dies after 5
 failed attempts, so if you mistype it enough times, request a fresh one.
 
+### Loading the extension into your own pi
+
+The hub and the app are useless without the **bridge**, and the bridge is a pi
+extension: it only exists inside a running `pi`. Register its directory once, in
+`~/.pi/agent/settings.json`:
+
+```json
+"extensions": [
+  "/home/tako/dev/pi/extensions",
+  "/home/tako/dev/pi-droid/pc/extensions"
+]
+```
+
+Every `pi` you start after that attaches to the hub automatically — no flags. Start
+them in either order: if pi comes up first the bridge logs `no hub discovered` and
+retries on capped backoff until the hub appears.
+
+**Do not copy or symlink the bridge somewhere else.** It imports `../src/hub/auth.ts`,
+`../src/hub/discovery.ts` and `../src/protocol/protocol.ts`; a copy resolves those
+against the wrong root and fails to load. The path above is the only correct one.
+
+**The `.ignore` file in that directory is load-bearing.** pi loads *every* `.ts`/`.js`
+file in a registered directory as an extension — including `*.test.ts` — so
+`pc/extensions/.ignore` (containing `*.test.ts`) is what keeps
+`pi-droid-bridge.test.ts` from being loaded as a live extension. Files *inside a
+subdirectory* are different: only `index.ts` is an entry point there, which is why
+the existing `/home/tako/dev/pi/extensions` needs no equivalent.
+
+To confirm the bridge loaded without starting a hub, point the runtime dir at an
+empty one and watch for its complaint:
+
+```sh
+XDG_RUNTIME_DIR=/tmp/empty PI_DROID_DEBUG=1 pi --mode rpc --no-session -nc
+# pi-droid bridge: no hub discovered   <- loaded, and looking for a hub
+```
+
 ## Local setup
 
 This section describes the machine pi-droid is currently developed on. Paths are

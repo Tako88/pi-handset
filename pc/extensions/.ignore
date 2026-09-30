@@ -1,0 +1,4 @@
+# pi loads every .ts in a registered directory as an extension — loose test
+# files included — so discovery has to be told to skip them. Verified in a
+# throwaway agent dir. Subdirectories differ: only index.ts is an entry there.
+*.test.ts
