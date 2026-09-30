@@ -154,7 +154,9 @@ font-dependent by construction. A golden failure means "look at the diff".
 
 ## Commits
 
-- Imperative subject, ≤50 chars, no trailing period. What changed, at a glance.
+- Imperative subject, no trailing period. Aim for ≤50 chars: what changed, at a glance.
+- Slight overruns are fine when the extra words carry something worth conveying. The
+  limit is a readability target, not a gate.
 - Body only when the *why* isn't obvious from the subject: ≤3 short lines. Don't
   restate the diff, don't narrate the process.
 - No type prefixes (`feat:`, `fix:`) unless asked.
