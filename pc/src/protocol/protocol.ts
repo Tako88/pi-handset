@@ -205,7 +205,13 @@ export interface ResyncRequiredMessage {
   reason: string;
 }
 
-/** What each listener accepts besides `hello`; the listener *is* the role. */
+/**
+ * What each listener accepts besides `hello`; the listener *is* the role.
+ *
+ * These lists are canonical: the message unions and `decode`'s switch follow
+ * them, never the reverse. A type added here must decode, and the fixture suite
+ * fails until a minimal body and a golden fixture exist for it.
+ */
 export const AGENT_MESSAGE_TYPES = [
   'register',
   'event',
@@ -214,6 +220,7 @@ export const AGENT_MESSAGE_TYPES = [
 ] as const;
 export type AgentMessageType = (typeof AGENT_MESSAGE_TYPES)[number];
 
+/** Canonical viewer→hub list; see [AGENT_MESSAGE_TYPES]. */
 export const VIEWER_MESSAGE_TYPES = [
   'subscribe',
   'unsubscribe',
@@ -221,6 +228,35 @@ export const VIEWER_MESSAGE_TYPES = [
   'command',
 ] as const;
 export type ViewerMessageType = (typeof VIEWER_MESSAGE_TYPES)[number];
+
+/**
+ * The message types the hub sends to a viewer. Exported as a runtime list so
+ * the fixture completeness assertion can prove every defined type has a
+ * golden fixture (see `fixtures.test.ts`). Canonical; see
+ * [AGENT_MESSAGE_TYPES].
+ */
+export const HUB_TO_VIEWER_MESSAGE_TYPES = [
+  'paired',
+  'event',
+  'snapshot',
+  'command-result',
+  'resync-required',
+  'session-gone',
+] as const;
+export type HubToViewerMessageType = (typeof HUB_TO_VIEWER_MESSAGE_TYPES)[number];
+
+/**
+ * Every message type the protocol defines, in one list. A type added to any of
+ * the per-direction lists above appears here automatically, and the fixture
+ * suite fails until a valid fixture for it exists.
+ */
+export const ALL_MESSAGE_TYPES = [
+  'hello',
+  ...AGENT_MESSAGE_TYPES,
+  ...VIEWER_MESSAGE_TYPES,
+  ...HUB_TO_VIEWER_MESSAGE_TYPES,
+] as const;
+export type MessageType = (typeof ALL_MESSAGE_TYPES)[number];
 
 export type AgentToHubMessage =
   | HelloMessage
@@ -244,8 +280,21 @@ export type HubToViewerMessage =
   | ResyncRequiredMessage
   | SessionGoneMessage;
 
-/** The two message types `decode` understands in full. */
-export type Message = HelloMessage | EventMessage;
+/** Every message type `decode` understands. */
+export type Message =
+  | HelloMessage
+  | RegisterMessage
+  | EventMessage
+  | HistoryMessage
+  | CommandResultMessage
+  | SubscribeMessage
+  | UnsubscribeMessage
+  | HistoryRequestMessage
+  | CommandMessage
+  | PairedMessage
+  | SnapshotMessage
+  | ResyncRequiredMessage
+  | SessionGoneMessage;
 
 /** True when `type` is a message the agent listener accepts. */
 export function isAgentMessageType(type: unknown): type is AgentMessageType {
@@ -271,6 +320,26 @@ export function asObject(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+/** True when `value` is a JS safe integer. */
+function isSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value);
+}
+
+/** True when `value` is a positive safe integer (`stream.seq`, `sinceSeq`). */
+function isPositiveSeq(value: unknown): value is number {
+  return isSafeInteger(value) && value >= 1;
+}
+
+/** True when `value` is a non-negative safe integer (`snapshot.lastSeq`). */
+function isNonNegativeSeq(value: unknown): value is number {
+  return isSafeInteger(value) && value >= 0;
+}
+
+/** True when an optional field is absent or a string; a present `null` rejects. */
+function isOptionalString(value: unknown): boolean {
+  return value === undefined || typeof value === 'string';
+}
+
 /** Machine-readable failure reasons, stable enough for M5 to map and M7 to port. */
 export type DecodeErrorCode =
   | 'malformed-json'
@@ -281,7 +350,8 @@ export type DecodeErrorCode =
   | 'bad-payload'
   | 'bad-seq'
   | 'bad-text'
-  | 'bad-state';
+  | 'bad-state'
+  | 'bad-field';
 
 export type DecodeResult =
   | { ok: true; value: Message }
@@ -356,6 +426,114 @@ export function decode(text: string): DecodeResult {
         return { ok: true, value: parsed as EventMessage };
       }
       return fail('bad-payload', `unknown event payload kind: ${String(kind)}`);
+    }
+    case 'register': {
+      if (asString(message.sessionId) === null) {
+        return fail('bad-field', 'register sessionId must be a non-empty string');
+      }
+      for (const field of ['sessionFile', 'cwd', 'name', 'model', 'thinkingLevel', 'mode']) {
+        if (!isOptionalString(message[field])) {
+          return fail('bad-field', `register ${field} must be a string`);
+        }
+      }
+      if (message.pid !== undefined && !isSafeInteger(message.pid)) {
+        return fail('bad-field', 'register pid must be a safe integer');
+      }
+      return { ok: true, value: parsed as RegisterMessage };
+    }
+    case 'history': {
+      if (asString(message.sessionId) === null) {
+        return fail('bad-field', 'history sessionId must be a non-empty string');
+      }
+      if (!Array.isArray(message.entries)) {
+        return fail('bad-field', 'history entries must be an array');
+      }
+      if (typeof message.truncated !== 'boolean') {
+        return fail('bad-field', 'history truncated must be a boolean');
+      }
+      return { ok: true, value: parsed as HistoryMessage };
+    }
+    case 'command-result': {
+      if (asString(message.id) === null) {
+        return fail('bad-field', 'command-result id must be a non-empty string');
+      }
+      if (typeof message.ok !== 'boolean') {
+        return fail('bad-field', 'command-result ok must be a boolean');
+      }
+      if (!isOptionalString(message.error)) {
+        return fail('bad-field', 'command-result error must be a string');
+      }
+      return { ok: true, value: parsed as CommandResultMessage };
+    }
+    case 'subscribe': {
+      if (asString(message.sessionId) === null) {
+        return fail('bad-field', 'subscribe sessionId must be a non-empty string');
+      }
+      return { ok: true, value: parsed as SubscribeMessage };
+    }
+    case 'unsubscribe': {
+      if (asString(message.sessionId) === null) {
+        return fail('bad-field', 'unsubscribe sessionId must be a non-empty string');
+      }
+      return { ok: true, value: parsed as UnsubscribeMessage };
+    }
+    case 'history-request': {
+      if (asString(message.sessionId) === null) {
+        return fail('bad-field', 'history-request sessionId must be a non-empty string');
+      }
+      if (message.sinceSeq !== undefined && !isPositiveSeq(message.sinceSeq)) {
+        return fail('bad-seq', 'history-request sinceSeq must be a positive safe integer');
+      }
+      return { ok: true, value: parsed as HistoryRequestMessage };
+    }
+    case 'command': {
+      if (
+        asString(message.id) === null ||
+        asString(message.sessionId) === null ||
+        asString(message.name) === null
+      ) {
+        return fail('bad-field', 'command requires id, sessionId and name strings');
+      }
+      return { ok: true, value: parsed as CommandMessage };
+    }
+    case 'paired': {
+      if (asString(message.token) === null) {
+        return fail('bad-field', 'paired token must be a non-empty string');
+      }
+      return { ok: true, value: parsed as PairedMessage };
+    }
+    case 'snapshot': {
+      if (asString(message.sessionId) === null) {
+        return fail('bad-field', 'snapshot sessionId must be a non-empty string');
+      }
+      if (!isNonNegativeSeq(message.lastSeq)) {
+        return fail('bad-field', 'snapshot lastSeq must be a non-negative safe integer');
+      }
+      if (!(AGENT_STATES as readonly unknown[]).includes(message.agentState)) {
+        return fail('bad-state', 'snapshot agentState must be idle, running or settled');
+      }
+      if (!Array.isArray(message.entries)) {
+        return fail('bad-field', 'snapshot entries must be an array');
+      }
+      if (typeof message.truncated !== 'boolean') {
+        return fail('bad-field', 'snapshot truncated must be a boolean');
+      }
+      return { ok: true, value: parsed as SnapshotMessage };
+    }
+    case 'resync-required': {
+      if (asString(message.sessionId) === null) {
+        return fail('bad-field', 'resync-required sessionId must be a non-empty string');
+      }
+      if (asString(message.reason) === null) {
+        return fail('bad-field', 'resync-required reason must be a non-empty string');
+      }
+      return { ok: true, value: parsed as ResyncRequiredMessage };
+    }
+    case 'session-gone': {
+      if (asString(message.sessionId) === null) {
+        return fail('bad-field', 'session-gone sessionId must be a non-empty string');
+      }
+      return { ok: true, value: parsed as SessionGoneMessage };
     }
     default:
       return fail('unknown-type', `unknown message type: ${String(message.type)}`);

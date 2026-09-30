@@ -1,0 +1,9 @@
+{
+  "protocolVersion": 1,
+  "type": "snapshot",
+  "sessionId": "sess-1",
+  "lastSeq": 7,
+  "agentState": "done",
+  "entries": [],
+  "truncated": false
+}

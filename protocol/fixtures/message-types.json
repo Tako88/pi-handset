@@ -1,0 +1,28 @@
+{
+  "messageTypes": [
+    "hello",
+    "register",
+    "event",
+    "history",
+    "command-result",
+    "subscribe",
+    "unsubscribe",
+    "history-request",
+    "command",
+    "paired",
+    "snapshot",
+    "resync-required",
+    "session-gone"
+  ],
+  "eventPayloadKinds": ["stream", "message", "agent", "tool", "status"],
+  "agentMessageTypes": ["register", "event", "history", "command-result"],
+  "viewerMessageTypes": ["subscribe", "unsubscribe", "history-request", "command"],
+  "hubToViewerMessageTypes": [
+    "paired",
+    "event",
+    "snapshot",
+    "command-result",
+    "resync-required",
+    "session-gone"
+  ]
+}

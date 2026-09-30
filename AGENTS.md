@@ -13,7 +13,7 @@ root, so **every command runs from inside its own side**:
 ```
 pc/         Node + TypeScript — supervisor, pi extension, protocol codec
 app/        Flutter + Dart — the Android client
-protocol/   shared golden JSON fixtures, asserted by BOTH suites (not created yet)
+protocol/   shared golden JSON fixtures, asserted by BOTH suites
 ```
 
 There is deliberately no manifest at the repo root. `npm test` at the root fails
@@ -58,8 +58,12 @@ So each side carries exactly one **toolchain canary** —
 `pc/src/hello.ts` and `app/lib/toolchain_canary.dart`, both `answer() => 42`.
 
 They are not product code and are exempt from Law 1 only in this narrow sense: each
-was written *after* a test demanding it. Retirement trigger: the first real module
-replaces them, arriving with its own failing test. Do not add a second canary.
+was written *after* a test demanding it. Do not add a second canary.
+
+The retirement trigger — the first real module — was passed some time ago
+(`pc/src/protocol/protocol.ts` landed it). The PC canary is now dead weight; the app
+canary goes when the real UI replaces it in M8. Deleting them is a human step, since
+the agent may not remove files.
 
 Note that "What not to test" below already excludes framework wiring — so the canary
 tests prove the toolchain, and are not behaviour coverage. Do not grow them into it.
@@ -164,9 +168,9 @@ font-dependent by construction. A golden failure means "look at the diff".
 
 ## Not built yet
 
-- **`protocol/` does not exist.** Do not assume it; the app↔supervisor protocol is
-  undesigned and its supervisor↔pi transport is undecided.
-- **No git repository yet.** It becomes one only when explicitly asked; no commits
-  without being told.
+- **The app has no networking.** `app/lib/protocol/` is a pure codec; there is no
+  WebSocket client and no UI. The bridge has never run inside a real pi.
+- **Nothing has run end to end** — hub, bridge and app have not been exercised
+  together. Unit and integration tests are local only.
 
 Setup, status and the roadmap live in [`README.md`](README.md).

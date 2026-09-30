@@ -1,0 +1,17 @@
+{
+  "protocolVersion": 1,
+  "type": "event",
+  "payload": {
+    "kind": "message",
+    "message": {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "hi"
+        }
+      ]
+    },
+    "truncated": false
+  }
+}

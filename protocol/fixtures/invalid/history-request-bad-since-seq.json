@@ -1,0 +1,6 @@
+{
+  "protocolVersion": 1,
+  "type": "history-request",
+  "sessionId": "sess-1",
+  "sinceSeq": -1
+}

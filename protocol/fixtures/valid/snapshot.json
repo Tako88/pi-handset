@@ -1,0 +1,18 @@
+{
+  "protocolVersion": 1,
+  "type": "snapshot",
+  "sessionId": "sess-1",
+  "lastSeq": 7,
+  "agentState": "settled",
+  "entries": [
+    {
+      "type": "user",
+      "text": "hi"
+    },
+    {
+      "type": "assistant",
+      "text": "hello"
+    }
+  ],
+  "truncated": false
+}

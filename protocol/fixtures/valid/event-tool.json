@@ -1,0 +1,12 @@
+{
+  "protocolVersion": 1,
+  "type": "event",
+  "payload": {
+    "kind": "tool",
+    "name": "read",
+    "status": "running",
+    "args": {
+      "path": "/etc/hostname"
+    }
+  }
+}

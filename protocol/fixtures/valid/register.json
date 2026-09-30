@@ -1,0 +1,12 @@
+{
+  "protocolVersion": 1,
+  "type": "register",
+  "sessionId": "sess-1",
+  "sessionFile": "/home/user/.pi/sessions/1.jsonl",
+  "cwd": "/home/user/project",
+  "name": "my session",
+  "model": "claude-sonnet-4",
+  "thinkingLevel": "high",
+  "mode": "tui",
+  "pid": 4242
+}

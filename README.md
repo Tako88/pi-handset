@@ -10,38 +10,35 @@ This file is orientation, setup and status.
 
 ## Status
 
-Both sides are scaffolded with a proven toolchain and no product features yet.
+The PC side is a working relay; the app side is still a scaffold with only a
+protocol codec. Seven of ten milestones in the attach-protocol plan are done.
 
 | | `pc/` (Node + TypeScript) | `app/` (Flutter + Dart) |
 |---|---|---|
-| Suite | 2 tests passing | 2 tests passing |
+| Suite | 240 tests passing | 15 tests passing |
 | Static gate | `tsc --noEmit` clean | `flutter analyze` clean |
-| Product code | none — only a toolchain canary | none — only a toolchain canary |
+| Product code | hub, protocol codec, pi bridge | protocol codec |
 
-Each side carries exactly one deliberate canary (`pc/src/hello.ts`,
-`app/lib/toolchain_canary.dart`) whose only job was proving the runner works. Both
-are retired by the first real module.
+**Done:** the wire protocol and codec, single-use pairing tickets, the persisted
+pairing token, the discovery file and the lock that makes `serve` exclusive, the
+hub (two listeners, listener-bound capabilities, relay, backpressure), the pi
+bridge extension, and shared golden fixtures with a pure Dart codec.
 
 **Next up, in order:**
 
-1. **Decide the supervisor↔pi transport** — in-process SDK vs `pi --mode rpc`
-   (LF JSONL). Still undecided, and it gates everything below.
-2. **Design the app↔supervisor protocol** and write the architecture doc that
-   `AGENTS.md` refers to (not written yet).
-3. **Create `protocol/`** — shared golden JSON fixtures asserted by both suites.
-   Doesn't exist yet.
-4. **`pc/extensions/`** — the pi extension. Will be registered globally in
-   `~/.pi/agent/settings.json` so it loads in every project, and will add a
-   dev-only, type-only dependency on `@earendil-works/pi-coding-agent`.
+1. **The app** — WebSocket client, pairing screen, session list, transcript.
+2. **The bridge inside a real pi** — a faux provider, no network, no spend.
+3. **End to end** — hub, a real pi, the app on the emulator.
 
-Not a git repository yet. It becomes one when explicitly asked.
+The toolchain canaries (`pc/src/hello.ts`, `app/lib/toolchain_canary.dart`) have
+outlived their purpose now that real modules exist, and retire as the app UI lands.
 
 ## Repo layout
 
 ```
 pc/         Node + TypeScript — supervisor, pi extension, protocol codec
 app/        Flutter + Dart — the Android client
-protocol/   shared golden JSON fixtures (not created yet)
+protocol/   shared golden JSON fixtures, asserted by BOTH suites
 AGENTS.md   rules and conventions
 .pi/plans/  design record — plans, adversarial reviews, execution logs (gitignored, local only)
 ```

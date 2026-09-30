@@ -1,0 +1,23 @@
+{
+  "cases": [
+    { "file": "unknown-version.json", "code": "bad-version" },
+    { "file": "truncated.json", "code": "malformed-json" },
+    { "file": "not-an-object.json", "code": "not-an-object" },
+    { "file": "wrong-typed-field.json", "code": "bad-field" },
+    { "file": "bad-seq.json", "code": "bad-seq" },
+    { "file": "history-request-bad-since-seq.json", "code": "bad-seq" },
+    { "file": "bad-text.json", "code": "bad-text" },
+    { "file": "bad-payload.json", "code": "bad-payload" },
+    { "file": "bad-state.json", "code": "bad-state" },
+    { "file": "snapshot-bad-state.json", "code": "bad-state" },
+    { "file": "bad-credential-both.json", "code": "bad-credential" },
+    { "file": "bad-credential-neither.json", "code": "bad-credential" },
+    { "file": "unknown-type.json", "code": "unknown-type" },
+    { "file": "command-bad-id.json", "code": "bad-field" },
+    { "file": "register-bad-pid.json", "code": "bad-field" },
+    { "file": "history-bad-entries.json", "code": "bad-field" },
+    { "file": "paired-bad-token.json", "code": "bad-field" },
+    { "file": "command-result-bad-ok.json", "code": "bad-field" },
+    { "file": "resync-bad-reason.json", "code": "bad-field" }
+  ]
+}

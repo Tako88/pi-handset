@@ -1,0 +1,111 @@
+{
+  "_comment": "Hand-authored decoded fields each valid fixture must produce. The fixtures stay pure wire data; this file is the oracle that stops a decoder echoing its input from passing. Keys beginning with '_' are comments, not fixtures. event-tool.json is envelope-only and forward-looking: the M6 bridge ignores every toolcall_*, so no producer emits kind:'tool' yet.",
+
+  "command.json": {
+    "type": "command",
+    "id": "cmd-9",
+    "sessionId": "sess-1",
+    "name": "prompt",
+    "args": { "text": "hi" }
+  },
+  "command-result.json": {
+    "type": "command-result",
+    "id": "cmd-1",
+    "ok": false,
+    "error": "unknown command"
+  },
+  "event-agent.json": {
+    "type": "event",
+    "payload": { "kind": "agent", "state": "running" }
+  },
+  "event-message.json": {
+    "type": "event",
+    "payload": {
+      "kind": "message",
+      "message": {
+        "role": "assistant",
+        "content": [{ "type": "text", "text": "hi" }]
+      },
+      "truncated": false
+    }
+  },
+  "event-status.json": {
+    "type": "event",
+    "payload": { "kind": "status", "event": "error", "message": "model overloaded" }
+  },
+  "event-stream.json": {
+    "type": "event",
+    "payload": { "kind": "stream", "seq": 1, "text": "hello " }
+  },
+  "event-tool.json": {
+    "type": "event",
+    "payload": {
+      "kind": "tool",
+      "name": "read",
+      "status": "running",
+      "args": { "path": "/etc/hostname" }
+    }
+  },
+  "hello-ticket.json": {
+    "type": "hello",
+    "ticket": "ABCD2345"
+  },
+  "hello-token.json": {
+    "type": "hello",
+    "token": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  },
+  "history.json": {
+    "type": "history",
+    "sessionId": "sess-1",
+    "entries": [{ "type": "user", "text": "hi" }],
+    "truncated": false
+  },
+  "history-request.json": {
+    "type": "history-request",
+    "sessionId": "sess-1",
+    "sinceSeq": 3
+  },
+  "paired.json": {
+    "type": "paired",
+    "token": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  },
+  "register.json": {
+    "type": "register",
+    "sessionId": "sess-1",
+    "sessionFile": "/home/user/.pi/sessions/1.jsonl",
+    "cwd": "/home/user/project",
+    "name": "my session",
+    "model": "claude-sonnet-4",
+    "thinkingLevel": "high",
+    "mode": "tui",
+    "pid": 4242
+  },
+  "resync-required.json": {
+    "type": "resync-required",
+    "sessionId": "sess-1",
+    "reason": "backpressure"
+  },
+  "session-gone.json": {
+    "type": "session-gone",
+    "sessionId": "sess-1"
+  },
+  "snapshot.json": {
+    "type": "snapshot",
+    "sessionId": "sess-1",
+    "lastSeq": 7,
+    "agentState": "settled",
+    "entries": [
+      { "type": "user", "text": "hi" },
+      { "type": "assistant", "text": "hello" }
+    ],
+    "truncated": false
+  },
+  "subscribe.json": {
+    "type": "subscribe",
+    "sessionId": "sess-1"
+  },
+  "unsubscribe.json": {
+    "type": "unsubscribe",
+    "sessionId": "sess-1"
+  }
+}
