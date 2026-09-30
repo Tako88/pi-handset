@@ -203,8 +203,8 @@ export interface PairedMessage {
 
 /**
  * One registered session, summarised for a phone's session list. `label` is
- * derived once at register time from the session's `name`, or a viewer-safe
- * basename of `sessionFile`/`cwd`, or the `sessionId`.
+ * the bridge's explicit `name` when pi has one, else the last user prompt,
+ * else a viewer-safe basename of `sessionFile`/`cwd`, else the `sessionId`.
  * Deliberately narrower than the register record: `pid`/`cwd`/`model`/
  * `sessionFile` never travel as fields, and the hub invents no state —
  * `agentState` is the same value a `snapshot` reports. `lastSeq` is absent on

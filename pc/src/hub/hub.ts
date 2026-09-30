@@ -397,8 +397,12 @@ function handleRegister(
       closeWith(existing.agent, CLOSE_PROTOCOL, 'session taken over');
     }
     existing.agent = connection;
-    existing.label = label;
-    broadcastSessions(state);
+    // Only a label change is worth a broadcast: the bridge re-registers on
+    // every reconnect, and non-bridge agents may re-register unchanged too.
+    if (existing.label !== label) {
+      existing.label = label;
+      broadcastSessions(state);
+    }
     return;
   }
   state.sessions.set(sessionId, {
