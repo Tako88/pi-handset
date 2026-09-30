@@ -294,6 +294,38 @@ class HubClient {
     if (!_changesController.isClosed) await _changesController.close();
   }
 
+  /// Like [stop], but leaves [changes] open so the app can point at a different
+  /// hub and [start] again. Resets the client to its initial snapshot.
+  ///
+  /// [stop] closes [changes] forever, so it cannot be used to change hubs.
+  Future<void> disconnect() async {
+    _stopped = true;
+    _cancelReconnect();
+    _cancelAuthWatchdog();
+    _failPending('disconnected');
+    final socket = _socket;
+    _socket = null;
+    final subscription = _subscription;
+    _subscription = null;
+    // Not awaited: closing the socket below ends delivery, and awaiting a
+    // subscription cancel leaves the UI's change-hub action pending under a
+    // widget-test clock.
+    unawaited(subscription?.cancel() ?? Future<void>.value());
+    if (socket != null) {
+      try {
+        await socket.close(1000, 'disconnected');
+      } catch (_) {
+        // Already gone; nothing to do.
+      }
+    }
+    _credential = null;
+    _resubscribed = false;
+    _attempt = 0;
+    _resyncCounts.clear();
+    _state = const HubClientState();
+    _flushNotify();
+  }
+
   /// Subscribes to [sessionId] and makes it the session events are attributed to.
   ///
   /// Relayed `event` frames carry no `sessionId`, so the client can only
@@ -448,9 +480,14 @@ class HubClient {
     final close = await socket.closed;
     if (_socket != socket) return;
     _socket = null;
+    final wasAuthenticating =
+        _state.status == HubConnectionStatus.authenticating;
     _cancelAuthWatchdog();
-    await _subscription?.cancel();
+    // Not awaited: the socket is already done, and awaiting a subscription
+    // cancel leaves the close path (and the error it records) pending.
+    final subscription = _subscription;
     _subscription = null;
+    unawaited(subscription?.cancel() ?? Future<void>.value());
     if (_stopped) return;
     // A lost socket can never deliver a result; fail rather than hang.
     _failPending('connection lost');
@@ -458,10 +495,31 @@ class HubClient {
       _setStatus(HubConnectionStatus.disconnected);
       return;
     }
+    if (close.code == closeRateLimited) {
+      // The hub delayed this close on purpose; say so, or the longer wait looks
+      // like a generic reconnect loop.
+      _state = _state.copyWith(
+        lastError:
+            'the hub is rate-limiting authentication; retrying in '
+            '${rateLimitedReconnectDelay.inSeconds} seconds',
+      );
+      _scheduleNotify();
+      _setStatus(HubConnectionStatus.connecting);
+      _scheduleReconnect(fixed: rateLimitedReconnectDelay);
+      return;
+    }
+    if (wasAuthenticating && _state.lastError == null) {
+      // A rejected ticket closes without a `paired` and cancels the watchdog, so
+      // unless an error is recorded here the pairing form spins forever.
+      _state = _state.copyWith(
+        lastError:
+            'the hub closed the connection before authenticating; the pairing '
+            'code may be invalid — enter a new one',
+      );
+      _scheduleNotify();
+    }
     _setStatus(HubConnectionStatus.connecting);
-    _scheduleReconnect(
-      fixed: close.code == closeRateLimited ? rateLimitedReconnectDelay : null,
-    );
+    _scheduleReconnect();
   }
 
   void _armAuthWatchdog() {
@@ -611,12 +669,16 @@ class HubClient {
         );
       case 'agent':
         final agentState = payload['state']! as String;
+        // Terminal state is `settled`, never a message-level end. Clearing the
+        // buffer too keeps a settle-without-message from hiding the text and
+        // leaving the next stream appending to a stale buffer.
+        final running = agentState == 'running';
         _putTranscript(
           sessionId,
           transcript.copyWith(
             agentState: agentState,
-            // Terminal state is `settled`, never a message-level end.
-            streaming: agentState == 'running' ? transcript.streaming : false,
+            streaming: running ? transcript.streaming : false,
+            streamingText: running ? transcript.streamingText : '',
           ),
         );
       case 'message':

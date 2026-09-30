@@ -158,5 +158,19 @@ void main() {
     expect(scheduler.reconnectDelays.single, rateLimitedReconnectDelay);
     expect(rateLimitedReconnectDelay, const Duration(milliseconds: 30000));
     expect(client.state.status, HubConnectionStatus.connecting);
+    // A deliberate 30s backoff must not look like a generic reconnect loop.
+    expect(client.state.lastError, contains('rate'));
+  });
+
+  test('a socket that closes before authenticating surfaces an error', () async {
+    await client.start('127.0.0.1', ticket: 'ABCD2345');
+    await pumpEventQueue();
+
+    // The hub rejects a bad ticket by closing without a `paired`; the watchdog
+    // is cancelled by the close, so without this the client would spin forever.
+    factory.last.remoteClose(1001);
+    await pumpEventQueue();
+
+    expect(client.state.lastError, isNotNull);
   });
 }

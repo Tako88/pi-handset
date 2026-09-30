@@ -81,4 +81,22 @@ void main() {
     expect(states, isNotEmpty);
     expect(states.last.status, HubConnectionStatus.disconnected);
   });
+
+  test('disconnect resets the state and allows a later start', () async {
+    await client.disconnect();
+
+    expect(client.state.status, HubConnectionStatus.disconnected);
+    expect(client.state.lastError, isNull);
+
+    // `stop()` closes `changes`; a disconnect must leave it open so the app can
+    // point at a different hub and connect again.
+    final states = <HubClientState>[];
+    client.changes.listen(states.add);
+    await client.start('127.0.0.1');
+    await pumpEventQueue();
+    scheduler.flushNotifications();
+
+    expect(factory.sockets, hasLength(2));
+    expect(states, isNotEmpty);
+  });
 }
