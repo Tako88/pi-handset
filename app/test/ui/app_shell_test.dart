@@ -158,6 +158,31 @@ void main() {
     expect(find.text('pi sessions'), findsOneWidget);
   });
 
+  testWidgets('the keyboard does not cover the composer', (tester) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+    await tester.tap(find.text('api refactor'));
+    await settle(tester, h.scheduler);
+
+    // The keyboard, as the engine reports it: a bottom view inset. Scaffold's
+    // resizeToAvoidBottomInset only promises to resize the BODY, so anything in
+    // the bottomNavigationBar slot stays pinned under the keyboard. viewInsets
+    // is in PHYSICAL pixels, hence the devicePixelRatio conversion.
+    const keyboard = 300.0;
+    final dpr = tester.view.devicePixelRatio;
+    tester.view.viewInsets = FakeViewPadding(bottom: keyboard * dpr);
+    addTearDown(tester.view.resetViewInsets);
+    await tester.pump();
+
+    final screen = tester.view.physicalSize.height / dpr;
+    final compose = tester.getRect(find.byKey(const Key('compose-field')));
+    expect(compose.bottom, lessThanOrEqualTo(screen - keyboard));
+  });
+
   testWidgets('switching sessions does not carry over the scroll position', (
     tester,
   ) async {
