@@ -11,13 +11,13 @@ This file is orientation, setup and status.
 ## Status
 
 Both sides are built and tested, and the whole path has been exercised for real:
-a real `pi`, a real hub, the **real** Dart client, and the app on an emulator
-driving a live model. All ten attach-protocol milestones are done; transcript
-parity with the pi TUI is now in progress (M1 of three).
+a real `pi`, a real hub, the **real** Dart client, and the app on an emulator and
+then on a phone, driving a live model. All ten attach-protocol milestones are done,
+and so is transcript parity with the pi TUI (M1–M3).
 
 | | `pc/` (Node + TypeScript) | `app/` (Flutter + Dart) |
 |---|---|---|
-| Suite | 284 tests passing | 198 tests passing |
+| Suite | 284 tests passing | 200 tests passing |
 | Static gate | `tsc --noEmit` clean | `flutter analyze` clean |
 | Product code | hub, protocol codec, pi bridge | protocol codec, client, UI |
 
@@ -46,11 +46,49 @@ a real hub with a real `pi` behind it, and the manual pass: pairing through the 
 a live model streaming into a rendered transcript, and a hub restart survived
 without re-pairing.
 
-**What is left** is not milestone work: links in a rendered reply are styled but
-not tappable (that needs `url_launcher`, deliberately not taken), the reinstall of
-a rebuilt APK drops the stored pairing because the keystore-wrapped credential can
-no longer be decrypted, and `tool` payloads still have no producer — the bridge
-ignores tool-call frames by design.
+**What is left** is not milestone work — it is an agenda, listed next.
+
+### What is left
+
+An agenda, not a roadmap: nothing here blocks using the app today. Each item says
+what it would cost, so it can be picked up cold.
+
+**Bugs, diagnosed and unfixed**
+
+- **Pairing against an unreachable host spins forever.** `HubClient` awaits
+  `_socketFactory(url)` with no deadline, and the 10s watchdog is armed only *after*
+  the socket exists — so a typo'd or unroutable address hangs until Android's own TCP
+  timeout, which is minutes rather than seconds. Fix: race the connect against a ~10s
+  deadline, name the host in the error, and close a socket that arrives late. Test
+  first: a factory that never completes.
+- **The transcript disables Android's predictive-back preview.** The system back button
+  is wired with `PopScope(canPop: false)`, which is what stops it exiting the app — but
+  the same flag suppresses the peek-at-the-previous-screen gesture preview. The honest
+  fix is real routes (a `Navigator` back stack) instead of the state-driven widget swap
+  the shell uses; that is a rewrite, which is why it was not done.
+
+**Product gaps**
+
+- **Thinking content is not streamed live.** Only the content-free `thinking` phase
+  frame is relayed; the text arrives when the assistant message commits. Streaming it
+  would double the bytes already relayed.
+- **Tool rendering is generic.** Every tool gets the same collapsed block; there are no
+  per-tool renderers — no diff, no file, no table.
+- **Images are `[image]` placeholders**, and **links are styled but not tappable** (the
+  latter needs `url_launcher`, deliberately not taken).
+- **No discovery.** The address is typed by hand. Tailscale needs none — its MagicDNS
+  name is typed once — but there is no LAN beacon or mDNS path. The emulator can only
+  reach the host as `10.0.2.2`, because its NAT hides the LAN entirely.
+- **Reinstalling a rebuilt APK drops the pairing**, because the keystore-wrapped
+  credential can no longer be decrypted. A normal reboot does not.
+
+**Known residuals, accepted at the time**
+
+- `lstat` TOCTOU on the token file; a reused PID; `token.tmp.*` left behind by a crash.
+- A dropped `sessions` frame is silent — the app shows a stale list rather than saying so.
+- The bridge's pi types are a hand-declared structural slice, not pi's real ones.
+- `app/test/integration/attach_path_test.dart`'s restart case asserts a stable end
+  state, not the restart itself — a non-deterministic regression gate.
 
 ### What the manual pass actually found
 
@@ -72,6 +110,24 @@ One more was introduced by the fix for the reconnect race and caught in review:
 re-arming the retry without a cap pinned the client to a session that could never
 return. Every one of these lives where design meets reality, which is the argument
 for the manual pass, not against it.
+
+### What the second pass found, on real hardware
+
+The emulator was never enough, so the app went onto a phone. Three more faults, none
+of them reachable from the suite as it stood:
+
+| Fault | Why the suite could not see it |
+|---|---|
+| The session list never repainted — only the *first* push of a connection notified | the client tests asserted `client.state`, not the `changes` stream, so a state change with no notification passed |
+| The system back button exited the app instead of returning to the session list | the tests drive the app through widgets, and no test ever delivered a platform `popRoute` |
+| The keyboard covered the composer | no test set a bottom `viewInsets`, so the layout was never exercised with a keyboard present |
+
+The middle one is the sharpest: the app already had a working back affordance in the
+AppBar, wired to the same function the system button should have called. Nothing
+connected them, and nothing tested the connection. The pattern across both passes is
+that tests asserting **internal state** stay green while the **screen** is wrong —
+which is the argument for a widget-level assertion that reads geometry and rendered
+text, not just the client's fields.
 
 ## Repo layout
 
@@ -146,6 +202,22 @@ Enter the PC's address, the viewer port (`--port`, default 8787) and that code i
 the app. The phone then stores a token, so pairing happens once per phone and
 **restarting the hub does not de-pair**. The code is single-use and dies after 5
 failed attempts, so if you mistype it enough times, request a fresh one.
+
+**If pairing just spins, suspect the firewall.** With `ufw` on its default `DROP`
+input policy, a phone's connection to port 8787 over the LAN is silently dropped.
+Tailscale traffic is not dropped, so pairing over the tailnet address needs no rule at
+all. Test it **from the phone** — the PC connecting to itself proves nothing:
+
+```sh
+adb shell 'timeout 5 toybox nc 192.168.1.100 8787 < /dev/null; echo exit=$?'
+# exit=0 -> connected;  exit=124 -> dropped (the firewall)
+```
+
+Then, to open the LAN path — scoped to the subnet rather than the world:
+
+```sh
+sudo ufw allow from 192.168.1.0/24 to any port 8787 proto tcp
+```
 
 ### Loading the extension into your own pi
 
