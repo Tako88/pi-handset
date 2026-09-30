@@ -721,6 +721,12 @@ class HubClient {
     // token-authenticated connection is confirmed (there is no `paired`).
     _markConnected();
     _restoreSubscription();
+    // Explicitly, and not left to `_markConnected`: `_setStatus` early-returns
+    // when the status is unchanged, so it notifies only on the first push of a
+    // connection. Without this line every later registry change (a session
+    // registering, dying, or changing agent state) updates the list in memory
+    // and never reaches the UI.
+    _scheduleNotify();
   }
 
   void _onEvent(Map<String, Object?> payload) {

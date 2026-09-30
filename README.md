@@ -17,7 +17,7 @@ parity with the pi TUI is now in progress (M1 of three).
 
 | | `pc/` (Node + TypeScript) | `app/` (Flutter + Dart) |
 |---|---|---|
-| Suite | 284 tests passing | 197 tests passing |
+| Suite | 284 tests passing | 198 tests passing |
 | Static gate | `tsc --noEmit` clean | `flutter analyze` clean |
 | Product code | hub, protocol codec, pi bridge | protocol codec, client, UI |
 

@@ -47,6 +47,47 @@ void main() {
     expect(client.state.status, HubConnectionStatus.connected);
   });
 
+  // Regression: `_onSessions` mutated the list and then relied on
+  // `_markConnected()`'s status change to notify. `_setStatus` early-returns
+  // when the status is unchanged, so that only ever fires once per connection —
+  // every later push updated the state and never told the widget. A session
+  // could register or die and the visible list would not budge until some
+  // unrelated action repainted it. Asserted on the change stream, not on
+  // `state`, because `state` was always correct: only the notification was
+  // missing, which is why the existing test above never caught it.
+  test('a second sessions push notifies, not just the first', () async {
+    final states = <HubClientState>[];
+    client.changes.listen(states.add);
+
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'sessions',
+      'sessions': [
+        {'sessionId': 's1', 'label': 'one', 'agentState': 'idle'},
+      ],
+    });
+    await pumpEventQueue();
+    scheduler.flushNotifications();
+    expect(states, isNotEmpty);
+    expect(states.last.sessions.map((s) => s.sessionId), ['s1']);
+
+    // The connection is `connected` now, so this push changes nothing about the
+    // status: it must notify on its own or the widget never rebuilds.
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'sessions',
+      'sessions': const [],
+    });
+    await pumpEventQueue();
+    scheduler.flushNotifications();
+
+    expect(
+      states.last.sessions,
+      isEmpty,
+      reason: 'a later list must reach the UI, not only the first one',
+    );
+  });
+
   test('session-gone removes the session and its transcript', () async {
     factory.last.receive({
       'protocolVersion': 1,
