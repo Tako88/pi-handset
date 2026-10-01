@@ -29,6 +29,15 @@ void main() {
     expect(find.text('hello pi'), findsNothing);
   });
 
+  testWidgets('the compose field asks the keyboard for a newline, not a send',
+      (tester) async {
+    await tester.pumpWidget(wrap(ComposeBar(onSend: ok, onAbort: () {})));
+
+    final field =
+        tester.widget<TextField>(find.byKey(const Key('compose-field')));
+    expect(field.textInputAction, TextInputAction.newline);
+  });
+
   testWidgets('compose does not send an empty prompt', (tester) async {
     var calls = 0;
     await tester.pumpWidget(
