@@ -911,7 +911,15 @@ class Bridge {
         if (text === null) return { ok: false, error: 'missing text' };
         // `prompt` is plain; `steer` and `followup` queue during streaming.
         const deliverAs = name === 'steer' ? 'steer' : name === 'followup' ? 'followUp' : undefined;
-        this.pi.sendUserMessage(text, deliverAs === undefined ? {} : { deliverAs });
+        // `expandPromptTemplates` is what makes `/name` a command. pi's
+        // extension API defaults it to FALSE, which injects the text verbatim
+        // and leaves the model to read a command name as prose; pi's own
+        // interactive path defaults it to true. Opting in is also what expands
+        // `/skill:name`, and matches pi's steer, which expands templates too.
+        this.pi.sendUserMessage(text, {
+          expandPromptTemplates: true,
+          ...(deliverAs === undefined ? {} : { deliverAs }),
+        });
         return { ok: true };
       }
       case 'abort':

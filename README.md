@@ -73,6 +73,16 @@ is gated on a `capabilities` array the hub sends with the first `sessions` frame
 older hub that lacks it never receives the new frames, and the FAB keeps its old
 direct-start behaviour instead.
 
+**Slash commands.** Typing `/name` in the composer runs the command in the session's own
+`pi`, rather than sending the text to the model. pi expands prompt templates
+(`/implement-vetted`), extension commands (`/review`) and skills (`/skill:name`) before
+the text enters the agent, so the transcript shows the expansion. Which commands exist
+is pi's business and per session — the bridge asks pi rather than keeping a list. The
+trap is that pi's *built-in* editor commands (`/model`, `/resume`, `/tree`, `/compact`,
+…) are not commands over this path: pi excludes them from its command list and lets the
+text through to the model, so a typed `/model` asks the model a question. The composer
+has no completion yet; both are on the agenda below.
+
 **What is left** is not milestone work — it is an agenda, listed next.
 
 ### What is left
@@ -90,6 +100,14 @@ what it would cost, so it can be picked up cold.
 
 **Product gaps**
 
+- **No `/` completion in the composer, and the built-in commands are unreachable.**
+  A command has to be typed from memory, and `/model`, `/compact`, `/tree` and friends
+  are handled only by pi's interactive editor — sent from the app they reach the model
+  as prose, so a mistyped command reads as a question. pi already exposes the list
+  (`pi.getCommands()`: name, description, source, per session), so completion is a
+  bridge→hub→app round trip plus an overlay in the composer; the built-ins are a
+  different fix — real affordances in the app (a model picker, a compact action) over
+  commands the bridge already carries.
 - **History is a fixed window, not a paged log.** A `snapshot` carries at most
   `HISTORY_MAX_BYTES` (768 KiB) of the *newest* entries; older ones are simply not
   sent, and the app says so above the oldest row it has. A single entry larger than
