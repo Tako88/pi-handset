@@ -17,7 +17,7 @@ and so is transcript parity with the pi TUI (M1–M3).
 
 | | `pc/` (Node + TypeScript) | `app/` (Flutter + Dart) |
 |---|---|---|
-| Suite | 418 tests passing | 362 tests passing |
+| Suite | 423 tests passing | 362 tests passing |
 | Static gate | `tsc --noEmit` clean | `flutter analyze` clean |
 | Product code | hub, protocol codec, pi bridge | protocol codec, client, UI |
 
@@ -121,14 +121,6 @@ what it would cost, so it can be picked up cold.
   carries, the built-ins are excluded from pi's own command list, so reaching them is a
   different fix: real affordances in the app (a model picker, a compact action) rather
   than completion.
-- **A message sent while pi is working is refused, not queued.** The composer is enabled
-  whenever the socket is connected, regardless of the agent's state, so a send mid-turn
-  goes out as `prompt` with no delivery mode and pi rejects it with `Agent is already
-  processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.`
-  — surfaced verbatim in a snackbar. The bridge already carries `steer` and `followup`,
-  and the app already knows the agent state (it drives the status indicator and the live
-  row), so the work is client-side: pick the delivery mode from that state, and decide
-  what a send during a turn should mean.
 - **Four bridge commands have no UI.** `setModel`, `setThinkingLevel`, `compact` and
   `setSessionName` are allowlisted and implemented in the bridge, but the app sends only
   `prompt` and `abort` — so there is no way to switch model, change the thinking level,
@@ -156,6 +148,39 @@ what it would cost, so it can be picked up cold.
 
 **Known residuals, accepted at the time**
 
+- **A mid-turn send steers, and the phone has no follow-up affordance.** A plain send
+  during a turn is queued as a `steer`, mirroring the TUI's Enter, so it enters after the
+  current assistant turn and its tool calls. The TUI's Alt+Enter follow-up
+  (`app.message.followUp`) has no phone equivalent, so a message the user meant to run
+  *after* the current work redirects it instead. Upgrade path: long-press the send
+  button → `client.sendCommand(sessionId, 'followup', args: {'text': text})`; the bridge
+  already maps it. Not built.
+- **A queued (steered) message is invisible until pi delivers it.** The composer clears
+  its draft on send and the reply is `ok:true` immediately, but the message does not
+  appear until pi injects it — after the current turn *and its tool calls* — so the user
+  can wait minutes, assume the send failed, and resend into a duplicate steer.
+  `queue_update` is an RPC/interactive session event, not an extension event, and
+  `hasPendingMessages()` is a bare boolean, so relaying it needs a hub restart and a new
+  payload kind. Recommended upgrade: an optional queued flag on the existing
+  `command-result`, the same optional-field pattern as `commands` — no new frame type,
+  no capability gate. Not built.
+- **A send during compaction is still silently dropped.** `isIdle()` is false while
+  compacting, so the bridge sends `deliverAs:'steer'`, but pi's compaction check runs
+  before its streaming check and throws regardless of `streamingBehavior`; the refusal
+  only reaches pi's stdout, which the hub drains. `ExtensionContext` has no `isStreaming`
+  or `isCompacting`, so the bridge cannot detect compaction. Pre-existing, not made
+  worse. Not built.
+- **Extension commands sent mid-turn execute immediately.** pi runs
+  `_tryExecuteExtensionCommand` *before* its compaction and streaming checks, so a
+  registered command like `/review` runs now rather than queuing, while a prompt
+  template like `/implement-vetted` expands and then steers. This is pi's design,
+  inherited by the `/` slash-completion; documented, not fixed.
+- **Correction:** the earlier claim that pi's mid-turn refusal was "surfaced verbatim in
+  a snackbar" was wrong. `sendUserMessage` is fire-and-forget, so the refusal never
+  reached the app and the message was silently lost; the successful `command-result`
+  said `ok:true` regardless. Reading `isIdle()` at dispatch is what fixes the loss.
+  Single check at dispatch: a run starting between the check and pi's own re-read still
+  drops, as today — never worse, not race-free.
 - **A rejected credential still redials in the background until you re-pair.** Bounded
   and payload-free (capped backoff, one connect plus one `hello` per attempt), but it
   does not stop on its own. Stopping it needs a terminal "credential rejected" signal,
