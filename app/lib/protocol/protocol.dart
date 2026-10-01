@@ -319,6 +319,12 @@ DecodeResult decode(String text) {
           }
         }
       }
+      if (message.containsKey('queued') && message['queued'] is! bool) {
+        return const DecodeResult.fail(
+          'bad-field',
+          'command-result queued must be a boolean',
+        );
+      }
       return DecodeResult.ok(message);
     case 'subscribe':
       if (_nonEmptyString(message['sessionId']) == null) {

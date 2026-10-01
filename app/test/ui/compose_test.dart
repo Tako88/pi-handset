@@ -127,6 +127,81 @@ void main() {
     expect(find.byType(SnackBar), findsNothing);
   });
 
+  testWidgets(
+      'a queued send tells the user the send was queued for the running turn',
+      (tester) async {
+    final controller = TextEditingController();
+    final focusNode = FocusNode();
+    addTearDown(controller.dispose);
+    addTearDown(focusNode.dispose);
+    await tester.pumpWidget(
+      wrap(ComposeBar(
+        controller: controller,
+        focusNode: focusNode,
+        onSend: (_) async => const CommandResult(ok: true, queued: true),
+        onAbort: () {},
+      )),
+    );
+
+    await tester.enterText(find.byKey(const Key('compose-field')), 'hi');
+    await tester.tap(find.byKey(const Key('compose-send')));
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.text('Queued for the running turn'), findsOneWidget);
+  });
+
+  testWidgets('a send the bridge did not queue shows no notice',
+      (tester) async {
+    final controller = TextEditingController();
+    final focusNode = FocusNode();
+    addTearDown(controller.dispose);
+    addTearDown(focusNode.dispose);
+    await tester.pumpWidget(
+      wrap(ComposeBar(
+        controller: controller,
+        focusNode: focusNode,
+        onSend: (_) async => const CommandResult(ok: true, queued: null),
+        onAbort: () {},
+      )),
+    );
+
+    await tester.enterText(find.byKey(const Key('compose-field')), 'hi');
+    await tester.tap(find.byKey(const Key('compose-send')));
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.byType(SnackBar), findsNothing);
+  });
+
+  testWidgets('a refused send shows its error, not a queued notice',
+      (tester) async {
+    final controller = TextEditingController();
+    final focusNode = FocusNode();
+    addTearDown(controller.dispose);
+    addTearDown(focusNode.dispose);
+    await tester.pumpWidget(
+      wrap(ComposeBar(
+        controller: controller,
+        focusNode: focusNode,
+        onSend: (_) async => const CommandResult(
+          ok: false,
+          error: 'not connected',
+          queued: true,
+        ),
+        onAbort: () {},
+      )),
+    );
+
+    await tester.enterText(find.byKey(const Key('compose-field')), 'hi');
+    await tester.tap(find.byKey(const Key('compose-send')));
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.textContaining('not connected'), findsOneWidget);
+    expect(find.text('Queued for the running turn'), findsNothing);
+  });
+
   testWidgets('abort invokes the abort callback', (tester) async {
     final controller = TextEditingController();
     final focusNode = FocusNode();

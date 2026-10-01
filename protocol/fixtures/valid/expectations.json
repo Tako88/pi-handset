@@ -23,6 +23,12 @@
       { "name": "implement-vetted" }
     ]
   },
+  "command-result-queued.json": {
+    "type": "command-result",
+    "id": "cmd-1",
+    "ok": true,
+    "queued": true
+  },
   "event-agent.json": {
     "type": "event",
     "payload": { "kind": "agent", "state": "running" }

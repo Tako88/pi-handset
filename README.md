@@ -17,7 +17,7 @@ and so is transcript parity with the pi TUI (M1–M3).
 
 | | `pc/` (Node + TypeScript) | `app/` (Flutter + Dart) |
 |---|---|---|
-| Suite | 423 tests passing | 362 tests passing |
+| Suite | 428 tests passing | 367 tests passing |
 | Static gate | `tsc --noEmit` clean | `flutter analyze` clean |
 | Product code | hub, protocol codec, pi bridge | protocol codec, client, UI |
 
@@ -155,26 +155,46 @@ what it would cost, so it can be picked up cold.
   *after* the current work redirects it instead. Upgrade path: long-press the send
   button → `client.sendCommand(sessionId, 'followup', args: {'text': text})`; the bridge
   already maps it. Not built.
-- **A queued (steered) message is invisible until pi delivers it.** The composer clears
-  its draft on send and the reply is `ok:true` immediately, but the message does not
-  appear until pi injects it — after the current turn *and its tool calls* — so the user
-  can wait minutes, assume the send failed, and resend into a duplicate steer.
-  `queue_update` is an RPC/interactive session event, not an extension event, and
-  `hasPendingMessages()` is a bare boolean, so relaying it needs a hub restart and a new
-  payload kind. Recommended upgrade: an optional queued flag on the existing
-  `command-result`, the same optional-field pattern as `commands` — no new frame type,
-  no capability gate. Not built.
+- **A queued (steered) message is still invisible until pi injects it — but the send is
+  now acknowledged.** The composer shows a transient **`Queued for the running turn`**
+  SnackBar when the bridge reports the send was queued, so the immediate "did it send?"
+  doubt is answered; the message itself still does not appear until pi injects it, after
+  the current turn *and its tool calls*, so a user who looks only at the transcript
+  minutes later still sees no marker and can resend into a duplicate steer. The notice
+  reports **the bridge's dispatch decision**, not pi's acceptance: `sendUserMessage` is
+  fire-and-forget, so the optional `queued` key on `command-result` is a claim about what
+  the bridge chose, not proof pi took it. It can be wrong in four known ways — during
+  compaction, when an input handler swallows the prompt, when a registered extension
+  command ran immediately, and when pi throws inside its internal steer queueing
+  (unverifiable read-only; swallowed by the fire-and-forget send). The first three are
+  documented below; the fourth is an accepted unknown. A session-scoped marker would
+  need a signal pi does not expose (`queue_update` is RPC/interactive-only; `hasPendingMessages()`
+  is a bare boolean) and a clearing rule with no clean trigger, so it is deliberately not
+  built.
+- **An extension input handler can swallow a prompt while the notice says it was
+  queued.** If any extension's `input` handler returns `"handled"`, pi's `prompt()`
+  returns early with no queue and no throw, so the message never lands while the bridge
+  has already reported `queued:true`. Latent in this deployment — the only configured
+  `input` handler (`test-runner`) returns `"continue"` — but live for any deployment that
+  returns `"handled"`, and there is no reachable detector.
 - **A send during compaction is still silently dropped.** `isIdle()` is false while
   compacting, so the bridge sends `deliverAs:'steer'`, but pi's compaction check runs
   before its streaming check and throws regardless of `streamingBehavior`; the refusal
   only reaches pi's stdout, which the hub drains. `ExtensionContext` has no `isStreaming`
-  or `isCompacting`, so the bridge cannot detect compaction. Pre-existing, not made
-  worse. Not built.
-- **Extension commands sent mid-turn execute immediately.** pi runs
-  `_tryExecuteExtensionCommand` *before* its compaction and streaming checks, so a
-  registered command like `/review` runs now rather than queuing, while a prompt
-  template like `/implement-vetted` expands and then steers. This is pi's design,
-  inherited by the `/` slash-completion; documented, not fixed.
+  or `isCompacting`, so the bridge cannot detect compaction. The bridge reports
+  `queued:true` and the notice appears anyway. Pre-existing, not made worse. Not built.
+- **Extension commands sent mid-turn execute immediately, so the queued notice is wrong
+  for them.** pi runs `_tryExecuteExtensionCommand` *before* its compaction and streaming
+  checks, so a registered command like `/review` runs now rather than queuing while the
+  bridge reports `queued:true`; a prompt template like `/implement-vetted` expands and
+  then steers. This is pi's design, inherited by the `/` slash-completion; the command
+  did run, so only the wording is wrong. Documented, not fixed.
+- **Deploy gate for the queued signal: APK rebuild + install and pi `/reload`, but no
+  hub restart.** `compose_bar.dart`, `hub_client.dart` and `protocol.dart` are compiled
+  into the app, so without a rebuilt APK the notice never appears; the bridge is read
+  from disk by pi, so a running pi needs `/reload` (or a restart) to send the flag. The
+  hub does not decode agent frames and forwards the parsed object verbatim, so no hub
+  restart is needed.
 - **Correction:** the earlier claim that pi's mid-turn refusal was "surfaced verbatim in
   a snackbar" was wrong. `sendUserMessage` is fire-and-forget, so the refusal never
   reached the app and the message was silently lost; the successful `command-result`

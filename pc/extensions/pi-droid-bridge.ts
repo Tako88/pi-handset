@@ -585,6 +585,7 @@ interface CommandOutcome {
   ok: boolean;
   error?: string;
   commands?: SlashCommand[];
+  queued?: boolean;
 }
 
 class Bridge {
@@ -909,7 +910,13 @@ class Bridge {
         return;
       }
       const outcome = await this.dispatchCommand(ctx, command.name, command.args);
-      this.sendCommandResult(command.id, outcome.ok, outcome.error, outcome.commands);
+      this.sendCommandResult(
+        command.id,
+        outcome.ok,
+        outcome.error,
+        outcome.commands,
+        outcome.queued,
+      );
     } catch (error) {
       this.sendCommandResult(
         command.id,
@@ -941,12 +948,17 @@ class Bridge {
         // guarantee is "never worse than today", not race-free. Steer-on-idle
         // is benign — pi ignores `streamingBehavior` when not streaming.
         let deliverAs: 'steer' | 'followUp' | undefined;
+        // Only the automatic branch reports `queued`: explicit `steer`/`followup`
+        // name their mode, so they are not the bridge deciding to queue a plain
+        // prompt mid-turn. `false` is never emitted — absent is the default.
+        let queued = false;
         if (name === 'steer') {
           deliverAs = 'steer';
         } else if (name === 'followup') {
           deliverAs = 'followUp';
         } else {
           deliverAs = ctx.isIdle() ? undefined : 'steer';
+          queued = deliverAs === 'steer';
         }
         // `expandPromptTemplates` is what makes `/name` a command. pi's
         // extension API defaults it to FALSE, which injects the text verbatim
@@ -957,7 +969,7 @@ class Bridge {
           expandPromptTemplates: true,
           ...(deliverAs === undefined ? {} : { deliverAs }),
         });
-        return { ok: true };
+        return queued ? { ok: true, queued: true } : { ok: true };
       }
       case 'abort':
         ctx.abort();
@@ -1062,6 +1074,7 @@ class Bridge {
     ok: boolean,
     error?: string,
     commands?: SlashCommand[],
+    queued?: boolean,
   ): void {
     const message: CommandResultMessage = {
       protocolVersion: PROTOCOL_VERSION,
@@ -1071,6 +1084,7 @@ class Bridge {
     };
     if (error !== undefined) message.error = error;
     if (commands !== undefined) message.commands = commands;
+    if (queued !== undefined) message.queued = queued;
     this.send(message);
   }
 }

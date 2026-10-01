@@ -231,7 +231,17 @@ class CommandResult {
   /// Present only on a `listCommands` result.
   final List<SlashCommand>? commands;
 
-  const CommandResult({required this.ok, this.error, this.commands});
+  /// Tri-state: absent (`null`) = the bridge did not queue this (unknown /
+  /// not-queued); `true` = accepted and dispatched as a mid-turn `steer`;
+  /// `false` = never sent. The bridge only ever emits `true` or omits the key.
+  final bool? queued;
+
+  const CommandResult({
+    required this.ok,
+    this.error,
+    this.commands,
+    this.queued,
+  });
 }
 
 /// One slash command pi offers for a session, as it crosses the wire: `name`
@@ -1300,6 +1310,8 @@ class HubClient {
                   )
                   .toList()
             : null,
+        // Absent maps to null ("unknown"), never false.
+        queued: message['queued'] as bool?,
       ),
     );
   }

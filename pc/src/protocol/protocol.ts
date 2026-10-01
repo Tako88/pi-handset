@@ -226,6 +226,13 @@ export interface CommandResultMessage {
   error?: string;
   /** Present only on a `listCommands` result; validated if present. */
   commands?: SlashCommand[];
+  /**
+   * Tri-state: absent = the bridge did not queue this (unknown / not-queued);
+   * `true` = accepted and dispatched as a mid-turn `steer`; `false` = never sent.
+   * The bridge only ever emits `true` or omits the key; `false` exists so a future
+   * producer can state "not sent" explicitly.
+   */
+  queued?: boolean;
 }
 
 export interface SubscribeMessage {
@@ -698,6 +705,9 @@ export function decode(text: string): DecodeResult {
             return fail('bad-field', 'command-result command description must be a string');
           }
         }
+      }
+      if (message.queued !== undefined && typeof message.queued !== 'boolean') {
+        return fail('bad-field', 'command-result queued must be a boolean');
       }
       return { ok: true, value: parsed as CommandResultMessage };
     }
