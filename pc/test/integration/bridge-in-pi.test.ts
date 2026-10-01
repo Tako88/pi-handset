@@ -405,6 +405,12 @@ interface Collected {
   assistantBeforeSettled: boolean;
   /** True when a phase frame preceded the first assistant message. */
   phaseBeforeAssistant: boolean;
+  /** Context-usage readings, in arrival order. */
+  usages: Array<{ tokens: number | null; contextWindow: number }>;
+  /** True when a reading arrived before any turn ran — i.e. on attach. */
+  attachUsage: boolean;
+  /** True when a reading arrived after the terminal state, i.e. the turn refresh. */
+  settledUsage: boolean;
   result: Record<string, unknown> | null;
 }
 
@@ -422,11 +428,16 @@ async function collectPrompt(viewer: Viewer, id: string, timeoutMs: number): Pro
     messages: [],
     assistantBeforeSettled: false,
     phaseBeforeAssistant: false,
+    usages: [],
+    attachUsage: false,
+    settledUsage: false,
     result: null,
   };
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (collected.result !== null && collected.settled) break;
+    // The turn's reading lands immediately after the terminal state, so settling
+    // alone is not the end of what this test asserts.
+    if (collected.result !== null && collected.settled && collected.settledUsage) break;
     const message = await viewer.tryNext(Math.min(1000, Math.max(1, deadline - Date.now())));
     if (message === undefined) continue;
     if (message.type === 'command-result' && message.id === id) {
@@ -455,6 +466,13 @@ async function collectPrompt(viewer: Viewer, id: string, timeoutMs: number): Pro
     } else if (payload.kind === 'agent') {
       if (payload.state === 'running') collected.running = true;
       if (payload.state === 'settled') collected.settled = true;
+    } else if (payload.kind === 'usage') {
+      collected.usages.push({
+        tokens: payload.tokens as number | null,
+        contextWindow: payload.contextWindow as number,
+      });
+      if (!collected.running) collected.attachUsage = true;
+      if (collected.settled) collected.settledUsage = true;
     }
   }
   return collected;
@@ -494,6 +512,13 @@ async function drivePrompt(extraEnv: Record<string, string> = {}): Promise<Colle
   assert.ok(session.sessionId.length > 0, 'the register must carry a session id');
   assert.ok(session.label.length > 0, 'the register must produce a viewer-safe label');
   viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'subscribe', sessionId: session.sessionId });
+  // The real app asks for history the moment it subscribes, and that replay is
+  // where an attaching phone learns the context usage.
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'history-request',
+    sessionId: session.sessionId,
+  });
 
   const id = 'prompt-1';
   viewer.send({
@@ -528,6 +553,18 @@ test('a real pi with the bridge registers and a hub prompt streams from the faux
   assert.equal(collected.result.ok, true, `prompt was refused: ${String(collected.result.error)}`);
   assert.ok(collected.running, 'the agent never reported the running state');
   assert.ok(collected.settled, 'the agent never settled');
+
+  // Context usage rides the history replay, so a phone that attaches before any
+  // turn has a number to show, and then refreshes when the turn settles.
+  assert.ok(
+    collected.attachUsage,
+    'a context-usage reading must arrive on attach, before any turn runs',
+  );
+  assert.ok(collected.settledUsage, 'the reading must refresh after the turn');
+  const latest = collected.usages.at(-1)!;
+  assert.equal(typeof latest.tokens, 'number', 'a settled turn must report a token count');
+  assert.ok((latest.tokens ?? 0) > 0, 'the token count must be positive after a real reply');
+  assert.ok(latest.contextWindow > 0, 'the model must report a context window');
 
   // Per-role counts, not a single total. M2 added a THIRD relayed role,
   // `toolResult`; this recipe runs no tools, so its count must be zero — an

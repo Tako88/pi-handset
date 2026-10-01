@@ -39,6 +39,7 @@ import '../protocol/protocol.dart';
 import 'hub_socket.dart';
 import 'scheduler.dart';
 import 'token_store.dart';
+import 'context_usage.dart';
 import 'transcript.dart';
 
 /// Where the connection is in its lifecycle.
@@ -99,6 +100,11 @@ class SessionTranscript {
   final bool historyLoaded;
   final bool truncated;
 
+  /// The model's context usage for this session, or null while the bridge has
+  /// not reported one. Ambient state rather than a transcript row: it is
+  /// rendered in the app bar, never in the message list.
+  final ContextUsage? contextUsage;
+
   const SessionTranscript({
     this.entries = const [],
     this.blocks = const [],
@@ -110,6 +116,7 @@ class SessionTranscript {
     this.lastSeq = 0,
     this.historyLoaded = false,
     this.truncated = false,
+    this.contextUsage,
   });
 
   SessionTranscript copyWith({
@@ -123,6 +130,7 @@ class SessionTranscript {
     int? lastSeq,
     bool? historyLoaded,
     bool? truncated,
+    ContextUsage? contextUsage,
   }) => SessionTranscript(
     entries: entries ?? this.entries,
     blocks: blocks ?? this.blocks,
@@ -134,6 +142,7 @@ class SessionTranscript {
     lastSeq: lastSeq ?? this.lastSeq,
     historyLoaded: historyLoaded ?? this.historyLoaded,
     truncated: truncated ?? this.truncated,
+    contextUsage: contextUsage ?? this.contextUsage,
   );
 }
 
@@ -787,6 +796,23 @@ class HubClient {
             ),
           );
         }
+      case 'usage':
+        // State, not a row: an explicit case keeps it out of `entries`, where an
+        // unknown payload would otherwise be appended and then ignored by the
+        // renderer.
+        final window = payload['contextWindow'];
+        final tokens = payload['tokens'];
+        if (window is num && window > 0) {
+          _putTranscript(
+            sessionId,
+            transcript.copyWith(
+              contextUsage: ContextUsage(
+                tokens: tokens is num ? tokens.toInt() : null,
+                contextWindow: window.toInt(),
+              ),
+            ),
+          );
+        }
       case 'agent':
         final agentState = payload['state']! as String;
         // Terminal state is `settled`, never a message-level end. Clearing the
@@ -858,6 +884,10 @@ class HubClient {
         agentState: message['agentState']! as String,
         truncated: message['truncated']! as bool,
         historyLoaded: true,
+        // A snapshot re-baselines the transcript, so the usage reading has to be
+        // carried across explicitly — and from THIS session's transcript, never
+        // from whatever is currently active.
+        contextUsage: _state.transcripts[sessionId]?.contextUsage,
       ),
     );
     _scheduleNotify();

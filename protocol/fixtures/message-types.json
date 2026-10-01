@@ -15,7 +15,7 @@
     "resync-required",
     "session-gone"
   ],
-  "eventPayloadKinds": ["stream", "message", "agent", "tool", "status"],
+  "eventPayloadKinds": ["stream", "message", "agent", "tool", "status", "usage"],
   "streamPhases": ["thinking"],
   "agentMessageTypes": ["register", "event", "history", "command-result"],
   "viewerMessageTypes": ["subscribe", "unsubscribe", "history-request", "command"],

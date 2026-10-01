@@ -101,7 +101,7 @@ export const AGENT_STATES = ['idle', 'running', 'settled'] as const;
 export type AgentState = (typeof AGENT_STATES)[number];
 
 /** The normalized payload kinds an `event` may carry. */
-export const EVENT_PAYLOAD_KINDS = ['stream', 'message', 'agent', 'tool', 'status'] as const;
+export const EVENT_PAYLOAD_KINDS = ['stream', 'message', 'agent', 'tool', 'status', 'usage'] as const;
 export type EventPayloadKind = (typeof EVENT_PAYLOAD_KINDS)[number];
 
 /** A token-stream delta, ordered by `seq`. Carried inside an `event`. A frame
@@ -126,6 +126,19 @@ export interface StreamPayload {
 export const STREAM_PHASES = ['thinking'] as const;
 export type StreamPhase = (typeof STREAM_PHASES)[number];
 
+/**
+ * The agent's context-usage reading, sampled at turn boundaries. `tokens` is an
+ * estimate and is `null` right after a compaction, until the next model response
+ * gives pi something to measure; `contextWindow` is the model's window. The
+ * percentage is deliberately absent — it is exactly `tokens / contextWindow`,
+ * and the app derives it rather than trusting a second source of truth.
+ */
+export interface ContextUsagePayload {
+  kind: 'usage';
+  tokens: number | null;
+  contextWindow: number;
+}
+
 /** The agent's lifecycle transition. Carried inside an `event`. */
 export interface AgentPayload {
   kind: 'agent';
@@ -143,7 +156,7 @@ export interface PassthroughPayload {
   [key: string]: unknown;
 }
 
-export type EventPayload = StreamPayload | AgentPayload | PassthroughPayload;
+export type EventPayload = StreamPayload | AgentPayload | ContextUsagePayload | PassthroughPayload;
 
 /** The single agent↔hub event, carrying a normalized payload. */
 export interface EventMessage {
@@ -489,8 +502,10 @@ export function decode(text: string): DecodeResult {
         return { ok: true, value: parsed as EventMessage };
       }
       // `message`/`tool`/`status` are M6-owned shapes the hub only relays, so
-      // their fields are accepted as-is once `kind` is recognized.
-      if (kind === 'message' || kind === 'tool' || kind === 'status') {
+      // their fields are accepted as-is once `kind` is recognized. `usage` is
+      // the same deal: it is produced by our own bridge, and the hub neither
+      // reads nor interprets it.
+      if (kind === 'message' || kind === 'tool' || kind === 'status' || kind === 'usage') {
         return { ok: true, value: parsed as EventMessage };
       }
       return fail('bad-payload', `unknown event payload kind: ${String(kind)}`);

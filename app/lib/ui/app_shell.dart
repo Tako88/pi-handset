@@ -14,6 +14,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../client/endpoint_store.dart';
+import '../client/context_usage.dart';
 import '../client/hub_client.dart';
 import '../client/token_store.dart';
 import 'compose_bar.dart';
@@ -199,9 +200,53 @@ class _PiDroidAppState extends State<PiDroidApp> {
 
     final transcript =
         _state.transcripts[activeId] ?? const SessionTranscript();
+    final usage = transcript.contextUsage;
+    final usageLabel = usage == null ? null : formatContextUsage(usage);
     final view = Scaffold(
       appBar: AppBar(
-        title: Text(_sessionLabel(activeId)),
+        // The reading takes priority over the name: the name is a reminder of
+        // which session this is, while the reading is a number you cannot guess
+        // from anything else on screen. So the name is the flexible half, and it
+        // is the one that gets cut when the two compete for room.
+        //
+        // The reading is laid out before the name (non-flex children are measured
+        // first) and is never ellipsized. At a large text scale it can want more
+        // room than the title has at all, which would overflow the row — so it is
+        // capped to the available width and scaled down rather than truncated:
+        // a slightly smaller number beats a cut-off one.
+        title: LayoutBuilder(
+          builder: (context, constraints) => Row(
+            children: [
+              Expanded(
+                child: Text(
+                  _sessionLabel(activeId),
+                  key: const Key('session-name'),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              if (usageLabel != null)
+                ConstrainedBox(
+                  constraints: BoxConstraints(maxWidth: constraints.maxWidth),
+                  // The gap lives inside the cap, so the padding cannot push the
+                  // row past the width the label was measured against.
+                  child: Padding(
+                    padding: const EdgeInsets.only(left: 8),
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      alignment: Alignment.centerRight,
+                      child: Text(
+                        usageLabel,
+                        key: const Key('context-usage'),
+                        maxLines: 1,
+                        softWrap: false,
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           onPressed: _close,
