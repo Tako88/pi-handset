@@ -61,8 +61,7 @@ class _ComposeBarState extends State<ComposeBar> {
                 enabled: widget.enabled,
                 minLines: 1,
                 maxLines: 4,
-                textInputAction: TextInputAction.send,
-                onSubmitted: (_) => _send(),
+                textInputAction: TextInputAction.newline,
                 decoration: const InputDecoration(
                   hintText: 'Message pi',
                   border: OutlineInputBorder(),
