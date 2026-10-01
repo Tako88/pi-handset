@@ -56,6 +56,15 @@
     "type": "event",
     "payload": { "kind": "usage", "tokens": 23400, "contextWindow": 128000 }
   },
+  "event-usage-thinking-level.json": {
+    "type": "event",
+    "payload": {
+      "kind": "usage",
+      "tokens": 23400,
+      "contextWindow": 128000,
+      "thinkingLevel": "high"
+    }
+  },
   "event-settled.json": {
     "type": "event",
     "payload": { "kind": "settled", "text": "Done.", "truncated": false }

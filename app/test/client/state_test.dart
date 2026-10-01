@@ -200,6 +200,180 @@ void main() {
     expect(client.transcript('s2')!.contextUsage, isNull);
   });
 
+  test('a usage event records the session thinking level', () async {
+    client.subscribe('s1');
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'event',
+      'payload': {
+        'kind': 'usage',
+        'tokens': 23400,
+        'contextWindow': 128000,
+        'thinkingLevel': 'high',
+      },
+    });
+    await pumpEventQueue();
+
+    expect(client.transcript('s1')!.thinkingLevel, 'high');
+  });
+
+  test('a usage event without a level leaves the last one', () async {
+    client.subscribe('s1');
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'event',
+      'payload': {
+        'kind': 'usage',
+        'tokens': 23400,
+        'contextWindow': 128000,
+        'thinkingLevel': 'high',
+      },
+    });
+    await pumpEventQueue();
+
+    // An older bridge omits the field; the menu must keep the level it had.
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'event',
+      'payload': {'kind': 'usage', 'tokens': 23400, 'contextWindow': 128000},
+    });
+    await pumpEventQueue();
+    expect(client.transcript('s1')!.thinkingLevel, 'high');
+  });
+
+  test('a snapshot keeps this session\'s level and does not borrow another\'s', () async {
+    client.subscribe('s1');
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'event',
+      'payload': {
+        'kind': 'usage',
+        'tokens': 23400,
+        'contextWindow': 128000,
+        'thinkingLevel': 'high',
+      },
+    });
+    await pumpEventQueue();
+
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'snapshot',
+      'sessionId': 's1',
+      'lastSeq': 0,
+      'agentState': 'idle',
+      'entries': <Object?>[],
+      'truncated': false,
+    });
+    await pumpEventQueue();
+    expect(client.transcript('s1')!.thinkingLevel, 'high');
+
+    // A different session's snapshot must not inherit s1's level.
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'snapshot',
+      'sessionId': 's2',
+      'lastSeq': 0,
+      'agentState': 'idle',
+      'entries': <Object?>[],
+      'truncated': false,
+    });
+    await pumpEventQueue();
+    expect(client.transcript('s2')!.thinkingLevel, isNull);
+  });
+
+  test('a compaction announcement is state, not a row', () async {
+    client.subscribe('s1');
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'event',
+      'payload': {'kind': 'status', 'event': 'compacting', 'active': true},
+    });
+    await pumpEventQueue();
+
+    expect(client.transcript('s1')!.compacting, isTrue);
+    // A status payload is normally a notice row. This one carries no message and
+    // would render nothing — and a row cannot be cleared when the compaction it
+    // describes is over, so it would sit in the transcript forever.
+    expect(client.transcript('s1')!.entries, isEmpty);
+  });
+
+  test('a completed compaction clears the announcement', () async {
+    client.subscribe('s1');
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'event',
+      'payload': {'kind': 'status', 'event': 'compacting', 'active': true},
+    });
+    await pumpEventQueue();
+    expect(client.transcript('s1')!.compacting, isTrue);
+
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'event',
+      'payload': {'kind': 'status', 'event': 'compacting', 'active': false},
+    });
+    await pumpEventQueue();
+    expect(client.transcript('s1')!.compacting, isFalse);
+  });
+
+  test('a compaction failure clears the announcement and shows the notice', () async {
+    client.subscribe('s1');
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'event',
+      'payload': {'kind': 'status', 'event': 'compacting', 'active': true},
+    });
+    await pumpEventQueue();
+
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'event',
+      'payload': {'kind': 'status', 'event': 'compacting', 'active': false},
+    });
+    await pumpEventQueue();
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'event',
+      'payload': {
+        'kind': 'status',
+        'event': 'error',
+        'message': 'Compaction failed: no model',
+      },
+    });
+    await pumpEventQueue();
+
+    // The clear is state and the error is a row: the failure must both retire the
+    // indicator and leave exactly one notice behind.
+    expect(client.transcript('s1')!.compacting, isFalse);
+    expect(client.transcript('s1')!.entries, hasLength(1));
+  });
+
+  test('a snapshot keeps the compaction indicator', () async {
+    client.subscribe('s1');
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'event',
+      'payload': {'kind': 'status', 'event': 'compacting', 'active': true},
+    });
+    await pumpEventQueue();
+
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'snapshot',
+      'sessionId': 's1',
+      'lastSeq': 0,
+      'agentState': 'idle',
+      'entries': <Object?>[],
+      'truncated': false,
+    });
+    await pumpEventQueue();
+
+    // A snapshot says nothing about compaction, so resetting to false would drop
+    // the indicator for the rest of a long compaction that emits no further frame.
+    expect(client.transcript('s1')!.compacting, isTrue);
+    expect(client.transcript('s1')!.contextUsage, isNull);
+  });
+
   test('disconnect resets the state and allows a later start', () async {
     await client.disconnect();
 

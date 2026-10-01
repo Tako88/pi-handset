@@ -91,6 +91,14 @@ and treated as terminal. The panel floats over the transcript and
 is capped to the space actually available, so it takes no `Column` slot and cannot
 overflow. The built-ins are still unreachable — see issue #3.
 
+**Session menu.** The transcript's ⋮ menu is the supported way to compact a session,
+rename it and choose its thinking level. The menu shows the active level, which rides the
+existing `usage` event payload. Compacting asks for confirmation first, because it
+summarizes the session, drops older history and interrupts a running turn. While one runs
+the app bar reads `Compacting…` in place of the context reading, and a failure to compact
+(including an automatic one) reaches the transcript as an error notice. A *typed*
+`/compact` is still not a command over this path — see the built-ins trap above.
+
 **What is left** is not milestone work — actionable items are tracked as issues, and
 deliberate limits are recorded separately.
 

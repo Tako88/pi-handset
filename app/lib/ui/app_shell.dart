@@ -26,6 +26,7 @@ import 'compose_bar.dart';
 import 'folder_browser.dart';
 import 'pairing_screen.dart';
 import 'session_list.dart';
+import 'session_menu.dart';
 import 'status_indicator.dart';
 import 'transcript_view.dart';
 
@@ -346,6 +347,57 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
     );
   }
 
+  /// Compacts the session after a confirmation. The messenger and session id
+  /// are captured before the dialog's await, because the dialog's own context
+  /// is gone once it closes.
+  Future<void> _compact(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final activeId = _state.activeSessionId;
+    if (activeId == null) return;
+    final confirmed = await confirmCompact(context);
+    if (!mounted || !confirmed) return;
+    final result = await widget.client.sendCommand(activeId, 'compact');
+    if (!mounted || result.ok) return;
+    messenger.showSnackBar(
+      SnackBar(content: Text(result.error ?? 'could not compact')),
+    );
+  }
+
+  /// Renames the session. The display updates when pi reports the new label.
+  Future<void> _rename(String activeId, BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final name = await promptRename(context, _sessionLabel(activeId));
+    if (!mounted || name == null) return;
+    final result = await widget.client.sendCommand(
+      activeId,
+      'setSessionName',
+      args: {'name': name.trim()},
+    );
+    if (!mounted || result.ok) return;
+    messenger.showSnackBar(
+      SnackBar(content: Text(result.error ?? 'could not rename the session')),
+    );
+  }
+
+  /// Sends the picked thinking level. No optimistic update: the shown value
+  /// comes from the next `usage` event, so an unsupported level snaps back to
+  /// the clamped one pi actually applied.
+  Future<void> _setThinkingLevel(String activeId, BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final transcript = _state.transcripts[activeId] ?? const SessionTranscript();
+    final level = await pickThinkingLevel(context, transcript.thinkingLevel);
+    if (!mounted || level == null) return;
+    final result = await widget.client.sendCommand(
+      activeId,
+      'setThinkingLevel',
+      args: {'level': level},
+    );
+    if (!mounted || result.ok) return;
+    messenger.showSnackBar(
+      SnackBar(content: Text(result.error ?? 'could not set the thinking level')),
+    );
+  }
+
   void _close() {
     final active = _state.activeSessionId;
     if (active != null) widget.client.unsubscribe(active);
@@ -436,6 +488,10 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
         _state.transcripts[activeId] ?? const SessionTranscript();
     final usage = transcript.contextUsage;
     final usageLabel = usage == null ? null : formatContextUsage(usage);
+    // A running compaction takes the reading's slot: the number is exactly what
+    // the compaction is about to invalidate, and an app bar that sits unchanged
+    // for the length of a summarization call reads as a hang.
+    final barLabel = transcript.compacting ? 'Compacting…' : usageLabel;
     final view = Scaffold(
       appBar: AppBar(
         // The reading takes priority over the name: the name is a reminder of
@@ -459,7 +515,7 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
-              if (usageLabel != null)
+              if (barLabel != null)
                 ConstrainedBox(
                   constraints: BoxConstraints(maxWidth: constraints.maxWidth),
                   // The gap lives inside the cap, so the padding cannot push the
@@ -470,8 +526,10 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
                       fit: BoxFit.scaleDown,
                       alignment: Alignment.centerRight,
                       child: Text(
-                        usageLabel,
-                        key: const Key('context-usage'),
+                        barLabel,
+                        key: Key(
+                          transcript.compacting ? 'compacting' : 'context-usage',
+                        ),
                         maxLines: 1,
                         softWrap: false,
                       ),
@@ -486,6 +544,14 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
           onPressed: _close,
           tooltip: 'Sessions',
         ),
+        actions: [
+          SessionMenuButton(
+            thinkingLevel: transcript.thinkingLevel,
+            onCompact: () => _compact(context),
+            onRename: () => _rename(activeId, context),
+            onThinkingLevel: () => _setThinkingLevel(activeId, context),
+          ),
+        ],
       ),
       // The composer lives in the BODY, not the bottomNavigationBar slot:
       // resizeToAvoidBottomInset only resizes the body, so a nav bar stays

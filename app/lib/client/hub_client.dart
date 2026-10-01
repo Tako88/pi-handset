@@ -128,6 +128,16 @@ class SessionTranscript {
   /// rendered in the app bar, never in the message list.
   final ContextUsage? contextUsage;
 
+  /// The thinking level pi reports as active for this session, or null while
+  /// the bridge has not reported one (an older bridge omits the field). The
+  /// menu displays it; it is never a transcript row.
+  final String? thinkingLevel;
+
+  /// True while pi is compacting this session's context. Ambient state, like
+  /// [contextUsage]: the app bar shows it in place of the context reading,
+  /// which is exactly what compaction is about to change.
+  final bool compacting;
+
   const SessionTranscript({
     this.entries = const [],
     this.blocks = const [],
@@ -140,6 +150,8 @@ class SessionTranscript {
     this.historyLoaded = false,
     this.truncated = false,
     this.contextUsage,
+    this.thinkingLevel,
+    this.compacting = false,
   });
 
   SessionTranscript copyWith({
@@ -154,6 +166,8 @@ class SessionTranscript {
     bool? historyLoaded,
     bool? truncated,
     ContextUsage? contextUsage,
+    String? thinkingLevel,
+    bool? compacting,
   }) => SessionTranscript(
     entries: entries ?? this.entries,
     blocks: blocks ?? this.blocks,
@@ -166,6 +180,8 @@ class SessionTranscript {
     historyLoaded: historyLoaded ?? this.historyLoaded,
     truncated: truncated ?? this.truncated,
     contextUsage: contextUsage ?? this.contextUsage,
+    thinkingLevel: thinkingLevel ?? this.thinkingLevel,
+    compacting: compacting ?? this.compacting,
   );
 }
 
@@ -1195,6 +1211,7 @@ class HubClient {
                 tokens: tokens is num ? tokens.toInt() : null,
                 contextWindow: window.toInt(),
               ),
+              thinkingLevel: payload['thinkingLevel'] as String?,
             ),
           );
         }
@@ -1237,18 +1254,33 @@ class HubClient {
             thinking: fromAssistant ? false : transcript.thinking,
           ),
         );
-      default:
-        // `status`/`tool` are relayed raw so the renderer can decide. An error
+      case 'status':
+        // A compaction announcement is transient state, not transcript content:
+        // it carries no message, and appending it would leave a row that renders
+        // nothing and then outlives the compaction it describes.
+        if (payload['event'] == 'compacting') {
+          _putTranscript(
+            sessionId,
+            transcript.copyWith(compacting: payload['active'] == true),
+          );
+          break;
+        }
+        // Any other `status` is relayed raw so the renderer can decide. An error
         // status ends the turn without a settle, so clear the thinking phase
         // here or `Thinking…` would stick forever.
-        final isErrorStatus =
-            payload['kind'] == 'status' && payload['event'] == 'error';
+        final isErrorStatus = payload['event'] == 'error';
         _putTranscript(
           sessionId,
           _withEntries(transcript, [...transcript.entries, payload]).copyWith(
             thinking: isErrorStatus ? false : transcript.thinking,
             streamingThinking: isErrorStatus ? '' : transcript.streamingThinking,
           ),
+        );
+      default:
+        // `tool` is relayed raw so the renderer can decide.
+        _putTranscript(
+          sessionId,
+          _withEntries(transcript, [...transcript.entries, payload]),
         );
     }
     _scheduleNotify();
@@ -1271,8 +1303,11 @@ class HubClient {
         historyLoaded: true,
         // A snapshot re-baselines the transcript, so the usage reading has to be
         // carried across explicitly — and from THIS session's transcript, never
-        // from whatever is currently active.
+        // from whatever is currently active. The thinking level is the same. So
+        // is the compaction indicator, which the snapshot says nothing about.
         contextUsage: _state.transcripts[sessionId]?.contextUsage,
+        thinkingLevel: _state.transcripts[sessionId]?.thinkingLevel,
+        compacting: _state.transcripts[sessionId]?.compacting ?? false,
       ),
     );
     _scheduleNotify();

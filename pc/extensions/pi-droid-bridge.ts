@@ -642,9 +642,41 @@ class Bridge {
         this.sendSettleEvent();
       }),
     );
+    // Compaction is an LLM summarization call, so without this the app sits
+    // silent from the tap until it finishes. `session_before_compact` is the
+    // only extension-visible "starting" signal: pi emits it ahead of the
+    // summarization call from BOTH entry points, for all three reasons (manual,
+    // threshold, overflow) — so an automatic compaction is announced too.
+    // Registering a handler makes pi await it, so it stays cheap and returns
+    // undefined, which pi reads as "no cancel, no custom compaction".
+    this.pi.on('session_before_compact', () =>
+      this.guard(() => this.sendCompactingEvent(true)),
+    );
     // Compaction invalidates the token count — pi reports it as unknown until the
     // next model response — so the reading is re-taken rather than left stale.
-    this.pi.on('session_compact', () => this.guard(() => this.sendUsageEvent()));
+    // Clearing the indicator in the same handler keeps the two from overlapping.
+    this.pi.on('session_compact', () =>
+      this.guard(() => {
+        this.sendCompactingEvent(false);
+        this.sendUsageEvent();
+      }),
+    );
+    // Any effective thinking-level change: the app's own `setThinkingLevel`, a
+    // PC-side `/thinking`, or a clamp during `setModel`. Re-reporting usage keeps
+    // the level the menu shows current without waiting for the next turn.
+    this.pi.on('thinking_level_select', () => this.guard(() => this.sendUsageEvent()));
+    // `ctx.compact()` is fire-and-forget and passes no `onError`, so a failed
+    // compaction is otherwise invisible. Surface every reason (manual, overflow,
+    // threshold) — an auto-compaction failure is more consequential, not less.
+    // pi emits this from the `catch` of both compaction paths, so the indicator
+    // raised above is always cleared — including when the compaction was aborted
+    // rather than failed.
+    this.pi.on('session_compact_failed', (event) =>
+      this.guard(() => {
+        this.sendCompactingEvent(false);
+        this.onCompactFailed(event);
+      }),
+    );
   }
 
   /**
@@ -1057,7 +1089,53 @@ class Bridge {
       return;
     }
     if (usage === null) return;
+    const level = ctx.thinkingLevel;
+    if (typeof level === 'string') {
+      this.sendEvent({
+        kind: 'usage',
+        tokens: usage.tokens,
+        contextWindow: usage.contextWindow,
+        thinkingLevel: level,
+      });
+      return;
+    }
     this.sendEvent({ kind: 'usage', tokens: usage.tokens, contextWindow: usage.contextWindow });
+  }
+
+  /**
+   * Announces that a compaction is running, so the app can show it rather than
+   * sitting silent through a summarization call.
+   *
+   * Rides a `status` payload — an existing kind, so no new frame type and no hub
+   * restart. This is the one status the app reads as transient state rather than
+   * as a transcript notice, so it deliberately carries no `message`: a notice is
+   * a row, and a row would outlive the compaction it describes.
+   *
+   * Paired by construction: every `session_before_compact` is followed by
+   * exactly one of `session_compact` or `session_compact_failed`, and both
+   * clear it. A hard-killed pi is the one way to leave it stuck. The one
+   * theoretical hole is that pi gates the success emit on re-finding the
+   * compaction entry it just appended, so a missed lookup would return success
+   * having emitted neither — unreachable in practice, recorded so it is not
+   * mistaken for a bug if it ever shows up.
+   */
+  private sendCompactingEvent(active: boolean): void {
+    this.sendEvent({ kind: 'status', event: 'compacting', active });
+  }
+
+  /**
+   * Surfaces a failed compaction as an error notice. Gated on a non-empty
+   * `errorMessage`, which also excludes a deliberately aborted compaction (pi
+   * leaves `errorMessage` undefined for those). No `reason` filter: manual,
+   * overflow and threshold failures are all reported.
+   */
+  private onCompactFailed(event: unknown): void {
+    const errorMessage =
+      typeof event === 'object' && event !== null
+        ? (event as { errorMessage?: unknown }).errorMessage
+        : undefined;
+    if (typeof errorMessage !== 'string' || errorMessage.length === 0) return;
+    this.sendEvent({ kind: 'status', event: 'error', message: errorMessage });
   }
 
   /** Emits the cached turn snippet, after the terminal state and usage. */

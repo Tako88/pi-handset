@@ -87,6 +87,30 @@ Map<String, Object?> usageFrame(int? tokens, int contextWindow) => {
   'payload': {'kind': 'usage', 'tokens': tokens, 'contextWindow': contextWindow},
 };
 
+/// A usage frame carrying the active thinking level, as the bridge sends it.
+Map<String, Object?> usageFrameWithLevel(
+  int? tokens,
+  int contextWindow,
+  String level,
+) => {
+  'protocolVersion': 1,
+  'type': 'event',
+  'payload': {
+    'kind': 'usage',
+    'tokens': tokens,
+    'contextWindow': contextWindow,
+    'thinkingLevel': level,
+  },
+};
+
+/// A compaction announcement, as the bridge sends it: a `status` payload with no
+/// message, which the app reads as transient state rather than as a notice row.
+Map<String, Object?> compactingFrame(bool active) => {
+  'protocolVersion': 1,
+  'type': 'event',
+  'payload': {'kind': 'status', 'event': 'compacting', 'active': active},
+};
+
 Map<String, Object?> sessionsFrame(List<Map<String, Object?>> sessions) => {
   'protocolVersion': 1,
   'type': 'sessions',
@@ -352,6 +376,213 @@ void main() {
     // is the failure a plain `Row` would produce.
     expect(tester.takeException(), isNull);
     expect(find.byKey(const Key('context-usage')), findsOneWidget);
+    // The action sits in the same bar and must not push it into overflow either.
+    expect(find.byKey(const Key('session-menu')), findsOneWidget);
+  });
+
+  testWidgets('choosing compact confirms before sending the command', (
+    tester,
+  ) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+    await tester.tap(find.text('api refactor'));
+    await settle(tester, h.scheduler);
+
+    await tester.tap(find.byKey(const Key('session-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('session-menu-compact')));
+    await tester.pumpAndSettle();
+
+    // The negative control: nothing is sent while the confirmation is up.
+    expect(find.text('Compact session?'), findsOneWidget);
+    expect(
+      h.factory.last.sentFrames.where((f) => f['name'] == 'compact'),
+      isEmpty,
+    );
+
+    await tester.tap(find.byKey(const Key('compact-confirm-yes')));
+    await settle(tester, h.scheduler);
+    expect(
+      h.factory.last.sentFrames.where((f) => f['name'] == 'compact'),
+      hasLength(1),
+    );
+  });
+
+  testWidgets('cancelling compact sends nothing', (tester) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+    await tester.tap(find.text('api refactor'));
+    await settle(tester, h.scheduler);
+
+    await tester.tap(find.byKey(const Key('session-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('session-menu-compact')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('compact-confirm-no')));
+    await settle(tester, h.scheduler);
+
+    expect(
+      h.factory.last.sentFrames.where((f) => f['name'] == 'compact'),
+      isEmpty,
+    );
+  });
+
+  testWidgets('renaming sends the typed name', (tester) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+    await tester.tap(find.text('api refactor'));
+    await settle(tester, h.scheduler);
+
+    await tester.tap(find.byKey(const Key('session-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('session-menu-rename')));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('rename-field')), 'new name');
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('rename-submit')));
+    await settle(tester, h.scheduler);
+
+    final frame = h.factory.last.sentFrames.last;
+    expect(frame['name'], 'setSessionName');
+    expect((frame['args']! as Map)['name'], 'new name');
+  });
+
+  testWidgets('choosing a thinking level sends it', (tester) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+    await tester.tap(find.text('api refactor'));
+    await settle(tester, h.scheduler);
+
+    await tester.tap(find.byKey(const Key('session-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('session-menu-thinking')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('thinking-low')));
+    await settle(tester, h.scheduler);
+
+    final frame = h.factory.last.sentFrames.last;
+    expect(frame['name'], 'setThinkingLevel');
+    expect((frame['args']! as Map)['level'], 'low');
+  });
+
+  testWidgets('the menu shows the level from a usage frame', (tester) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+    await tester.tap(find.text('api refactor'));
+    await settle(tester, h.scheduler);
+
+    h.factory.last.receive(usageFrameWithLevel(23400, 128000, 'high'));
+    await settle(tester, h.scheduler);
+
+    await tester.tap(find.byKey(const Key('session-menu')));
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<Text>(find.byKey(const Key('session-menu-thinking-level')))
+          .data,
+      'high',
+    );
+  });
+
+  testWidgets('a later usage frame updates the level shown', (tester) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+    await tester.tap(find.text('api refactor'));
+    await settle(tester, h.scheduler);
+
+    h.factory.last.receive(usageFrameWithLevel(23400, 128000, 'high'));
+    await settle(tester, h.scheduler);
+    h.factory.last.receive(usageFrameWithLevel(23400, 128000, 'low'));
+    await settle(tester, h.scheduler);
+
+    await tester.tap(find.byKey(const Key('session-menu')));
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<Text>(find.byKey(const Key('session-menu-thinking-level')))
+          .data,
+      'low',
+    );
+  });
+
+  testWidgets('a compaction shows in the app bar in place of the reading', (tester) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+    await tester.tap(find.text('api refactor'));
+    await settle(tester, h.scheduler);
+
+    h.factory.last.receive(usageFrame(23400, 128000));
+    await settle(tester, h.scheduler);
+    expect(find.byKey(const Key('context-usage')), findsOneWidget);
+
+    h.factory.last.receive(compactingFrame(true));
+    await settle(tester, h.scheduler);
+
+    // What the user sees: the app bar says what is happening, in the slot the
+    // reading occupied — the number is what the compaction is about to change.
+    expect(tester.widget<Text>(find.byKey(const Key('compacting'))).data, 'Compacting…');
+    expect(find.byKey(const Key('context-usage')), findsNothing);
+  });
+
+  testWidgets('the reading returns when the compaction ends', (tester) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+    await tester.tap(find.text('api refactor'));
+    await settle(tester, h.scheduler);
+
+    h.factory.last.receive(usageFrame(23400, 128000));
+    await settle(tester, h.scheduler);
+    h.factory.last.receive(compactingFrame(true));
+    await settle(tester, h.scheduler);
+    h.factory.last.receive(compactingFrame(false));
+    await settle(tester, h.scheduler);
+
+    // The indicator is transient state: it must clear itself, or the app bar
+    // would claim a compaction is running forever.
+    expect(find.byKey(const Key('compacting')), findsNothing);
+    expect(find.byKey(const Key('context-usage')), findsOneWidget);
+  });
+
+  testWidgets('a compaction shows even with no reading yet', (tester) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+    await tester.tap(find.text('api refactor'));
+    await settle(tester, h.scheduler);
+
+    // No usage frame has arrived, so the slot is empty. The announcement must
+    // still be visible — an auto-compaction can be the first thing that happens.
+    expect(find.byKey(const Key('context-usage')), findsNothing);
+    h.factory.last.receive(compactingFrame(true));
+    await settle(tester, h.scheduler);
+
+    expect(tester.widget<Text>(find.byKey(const Key('compacting'))).data, 'Compacting…');
   });
 
   testWidgets('a remembered endpoint and token auto-connect and list sessions', (

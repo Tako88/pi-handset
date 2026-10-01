@@ -1,0 +1,10 @@
+{
+  "protocolVersion": 1,
+  "type": "event",
+  "payload": {
+    "kind": "usage",
+    "tokens": 23400,
+    "contextWindow": 128000,
+    "thinkingLevel": 5
+  }
+}

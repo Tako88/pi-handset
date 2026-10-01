@@ -218,8 +218,12 @@ DecodeResult decode(String text) {
         }
         return DecodeResult.ok(message);
       }
-      // `message`/`tool`/`status`/`usage` are bridge-owned shapes the hub only
-      // relays.
+      // `message`/`tool`/`status` are bridge-owned shapes the hub only relays,
+      // so their fields are accepted as-is. `usage` is the same deal except for
+      // its `thinkingLevel`: the numbers stay opaque, but the level is validated
+      // because the app reads it directly. This is contract-pinning, not runtime
+      // defence — the hub never decodes an event — so the shared fixtures and
+      // this hand-port are what keep the branch honest.
       if (kind == 'settled') {
         if (body['text'] is! String) {
           return const DecodeResult.fail('bad-text', 'settled text must be a string');
@@ -232,7 +236,13 @@ DecodeResult decode(String text) {
         }
         return DecodeResult.ok(message);
       }
-      if (kind == 'message' || kind == 'tool' || kind == 'status' || kind == 'usage') {
+      if (kind == 'message' || kind == 'tool' || kind == 'status') {
+        return DecodeResult.ok(message);
+      }
+      if (kind == 'usage') {
+        if (!_isOptionalString(body, 'thinkingLevel')) {
+          return const DecodeResult.fail('bad-field', 'usage thinkingLevel must be a string');
+        }
         return DecodeResult.ok(message);
       }
       return DecodeResult.fail(
