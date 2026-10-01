@@ -87,4 +87,52 @@ void main() {
     expect(result.ok, isFalse);
     expect(result.code, 'bad-state');
   });
+
+  test('a sessions entry with an app origin decodes and preserves it', () {
+    final result = decode(
+      jsonEncode(
+        _message([
+          {
+            'sessionId': 'sess-1',
+            'label': 'one',
+            'agentState': 'idle',
+            'origin': 'app',
+          },
+        ]),
+      ),
+    );
+    expect(result.ok, isTrue);
+    final entry = (result.value!['sessions'] as List).single as Map;
+    expect(entry['origin'], 'app');
+  });
+
+  test('rejects a sessions entry with an unknown origin', () {
+    final result = decode(
+      jsonEncode(
+        _message([
+          {
+            'sessionId': 'sess-1',
+            'label': 'one',
+            'agentState': 'idle',
+            'origin': 'nope',
+          },
+        ]),
+      ),
+    );
+    expect(result.ok, isFalse);
+    expect(result.code, 'bad-field');
+  });
+
+  test('a sessions entry with no origin decodes without inventing one', () {
+    final result = decode(
+      jsonEncode(
+        _message([
+          {'sessionId': 'sess-1', 'label': 'one', 'agentState': 'idle'},
+        ]),
+      ),
+    );
+    expect(result.ok, isTrue);
+    final entry = (result.value!['sessions'] as List).single as Map;
+    expect(entry.containsKey('origin'), isFalse);
+  });
 }

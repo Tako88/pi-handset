@@ -12,6 +12,7 @@ import {
   createHub,
 } from '../../src/hub/hub.ts';
 import { createTicketStore } from '../../src/hub/pairing.ts';
+import type { Spawner } from '../../src/hub/spawner.ts';
 import { PROTOCOL_VERSION } from '../../src/protocol/protocol.ts';
 
 const TOKEN = 'a'.repeat(64);
@@ -48,6 +49,57 @@ async function startHub(
   });
   running.push(hub);
   return hub;
+}
+
+/** A controllable in-process spawner; no child process is ever created. */
+interface FakeSpawner extends Spawner {
+  spawnCalls: number;
+  killCalls: number;
+  closeCalls: number;
+  confirmed: number[];
+  killed: number[];
+  /** Pids `owns` reports as live. */
+  owned: Set<number>;
+  spawnImpl: () => Promise<number>;
+  closeDelayMs: number;
+  /** True once `close()` has fully resolved (proves the hub awaited it). */
+  closeFinished: boolean;
+}
+
+function makeFakeSpawner(): FakeSpawner {
+  const fake: FakeSpawner = {
+    spawnCalls: 0,
+    killCalls: 0,
+    closeCalls: 0,
+    confirmed: [],
+    killed: [],
+    owned: new Set<number>(),
+    spawnImpl: async () => 4242,
+    closeDelayMs: 0,
+    closeFinished: false,
+    async spawn() {
+      fake.spawnCalls += 1;
+      return fake.spawnImpl();
+    },
+    owns(pid) {
+      return typeof pid === 'number' && fake.owned.has(pid);
+    },
+    confirm(pid) {
+      fake.confirmed.push(pid);
+    },
+    kill(pid) {
+      fake.killCalls += 1;
+      fake.killed.push(pid);
+    },
+    async close() {
+      fake.closeCalls += 1;
+      if (fake.closeDelayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, fake.closeDelayMs));
+      }
+      fake.closeFinished = true;
+    },
+  };
+  return fake;
 }
 
 interface Client {
@@ -964,7 +1016,7 @@ test('a viewer that pairs with a ticket is also pushed the session list', async 
   viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'hello', ticket });
   assert.equal((await viewer.next(2000)).type, 'paired');
   assert.deepEqual((await viewer.nextSessions(2000)).sessions, [
-    { sessionId: 's1', label: 'ticketed', agentState: 'idle' },
+    { sessionId: 's1', label: 'ticketed', agentState: 'idle', origin: 'pc' },
   ]);
 });
 
@@ -985,7 +1037,7 @@ test('a viewer that authenticates after a session registered is pushed it', asyn
   const viewer = await connect(hub.viewerPort);
   viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'hello', token: TOKEN });
   assert.deepEqual((await viewer.nextSessions(2000)).sessions, [
-    { sessionId: 's1', label: 'late', agentState: 'idle' },
+    { sessionId: 's1', label: 'late', agentState: 'idle', origin: 'pc' },
   ]);
 });
 
@@ -1008,7 +1060,7 @@ test('registering an agent pushes an updated session list to every authenticated
   const expected = {
     protocolVersion: PROTOCOL_VERSION,
     type: 'sessions',
-    sessions: [{ sessionId: 's1', label: 'my session', agentState: 'idle' }],
+    sessions: [{ sessionId: 's1', label: 'my session', agentState: 'idle', origin: 'pc' }],
   };
   assert.deepEqual(await first.nextSessions(2000), expected);
   assert.deepEqual(await second.nextSessions(2000), expected);
@@ -1028,7 +1080,7 @@ test('a re-register with an unchanged label does not push the session list again
     name: 'same',
   });
   assert.deepEqual((await viewer.nextSessions(2000)).sessions, [
-    { sessionId: 's1', label: 'same', agentState: 'idle' },
+    { sessionId: 's1', label: 'same', agentState: 'idle', origin: 'pc' },
   ]);
 
   // The bridge re-registers on every reconnect and on every unchanged prompt;
@@ -1049,7 +1101,7 @@ test('a re-register with an unchanged label does not push the session list again
     name: 'changed',
   });
   assert.deepEqual((await viewer.nextSessions(2000)).sessions, [
-    { sessionId: 's1', label: 'changed', agentState: 'idle' },
+    { sessionId: 's1', label: 'changed', agentState: 'idle', origin: 'pc' },
   ]);
 });
 
@@ -1068,7 +1120,7 @@ test('stream events do not push the session list; an agent-state transition does
   // The registration push is the anchor that the viewer is receiving registry
   // traffic at all.
   assert.deepEqual((await viewer.nextSessions(2000)).sessions, [
-    { sessionId: 's1', label: 'streamer', agentState: 'idle' },
+    { sessionId: 's1', label: 'streamer', agentState: 'idle', origin: 'pc' },
   ]);
 
   // A burst of stream deltas bumps `lastSeq` but is not a registry change: no
@@ -1091,7 +1143,7 @@ test('stream events do not push the session list; an agent-state transition does
     payload: { kind: 'agent', state: 'running' },
   });
   assert.deepEqual((await viewer.nextSessions(2000)).sessions, [
-    { sessionId: 's1', label: 'streamer', agentState: 'running' },
+    { sessionId: 's1', label: 'streamer', agentState: 'running', origin: 'pc' },
   ]);
 
   // A second transition pushes again, so the first push was not a one-off.
@@ -1101,7 +1153,7 @@ test('stream events do not push the session list; an agent-state transition does
     payload: { kind: 'agent', state: 'settled' },
   });
   assert.deepEqual((await viewer.nextSessions(2000)).sessions, [
-    { sessionId: 's1', label: 'streamer', agentState: 'settled' },
+    { sessionId: 's1', label: 'streamer', agentState: 'settled', origin: 'pc' },
   ]);
 });
 
@@ -1138,7 +1190,7 @@ test('a takeover replaces the label but preserves the tracked session state', as
     name: 'first',
   });
   assert.deepEqual((await viewer.nextSessions(2000)).sessions, [
-    { sessionId: 's1', label: 'first', agentState: 'idle' },
+    { sessionId: 's1', label: 'first', agentState: 'idle', origin: 'pc' },
   ]);
 
   // A distinct, non-default state before the takeover: with both sides `idle`
@@ -1149,7 +1201,7 @@ test('a takeover replaces the label but preserves the tracked session state', as
     payload: { kind: 'agent', state: 'running' },
   });
   assert.deepEqual((await viewer.nextSessions(2000)).sessions, [
-    { sessionId: 's1', label: 'first', agentState: 'running' },
+    { sessionId: 's1', label: 'first', agentState: 'running', origin: 'pc' },
   ]);
 
   secondAgent.send({
@@ -1159,7 +1211,7 @@ test('a takeover replaces the label but preserves the tracked session state', as
     name: 'second',
   });
   assert.deepEqual((await viewer.nextSessions(2000)).sessions, [
-    { sessionId: 's1', label: 'second', agentState: 'running' },
+    { sessionId: 's1', label: 'second', agentState: 'running', origin: 'pc' },
   ]);
 });
 
@@ -1196,7 +1248,7 @@ test('the session list is delivered when it fits and dropped whole when it does 
     name: 'budgeted',
   });
   assert.deepEqual((await roomyViewer.nextSessions(2000)).sessions, [
-    { sessionId: 's1', label: 'budgeted', agentState: 'idle' },
+    { sessionId: 's1', label: 'budgeted', agentState: 'idle', origin: 'pc' },
   ]);
 
   // The identical push under a budget too small for it is dropped whole, not
@@ -1243,7 +1295,7 @@ test('the session list is every registered session, in sessionId order, with no 
     pid: 4242,
   });
   assert.deepEqual((await viewer.nextSessions(2000)).sessions, [
-    { sessionId: 's2', label: 'beta', agentState: 'idle' },
+    { sessionId: 's2', label: 'beta', agentState: 'idle', origin: 'pc' },
   ]);
 
   agentA.send({
@@ -1260,8 +1312,9 @@ test('the session list is every registered session, in sessionId order, with no 
       sessionId: 's1',
       label: '1.jsonl',
       agentState: 'idle',
+      origin: 'pc',
     },
-    { sessionId: 's2', label: 'beta', agentState: 'idle' },
+    { sessionId: 's2', label: 'beta', agentState: 'idle', origin: 'pc' },
   ]);
 });
 
@@ -1301,4 +1354,389 @@ test('a label derived from a path is a basename, never a full path', async () =>
   }>).find((session) => session.sessionId === 's2')!;
   assert.equal(fromCwd.label, 'beta');
   assert.ok(!fromCwd.label.includes('/'), 'a cwd label must carry no path separator');
+});
+
+// ---------------------------------------------------------------------------
+// App-started sessions: start/kill and origin derivation
+// ---------------------------------------------------------------------------
+
+/** A helper to read a session entry out of a `sessions` push. */
+function sessionEntry(
+  push: Record<string, unknown>,
+  sessionId: string,
+): Record<string, unknown> {
+  const sessions = push.sessions as Array<Record<string, unknown>>;
+  const entry = sessions.find((session) => session.sessionId === sessionId);
+  assert.ok(entry !== undefined, `no session ${sessionId} in the push`);
+  return entry;
+}
+
+test('a viewer start-session invokes the spawner and acks ok', async () => {
+  const spawner = makeFakeSpawner();
+  const hub = await startHub({ spawner });
+  const viewer = await connect(hub.viewerPort);
+  await helloViewer(viewer);
+
+  viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'start-session', id: 'start-1' });
+
+  const result = await viewer.next(2000);
+  assert.equal(result.type, 'command-result');
+  assert.equal(result.id, 'start-1');
+  assert.equal(result.ok, true);
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(result, 'error'),
+    false,
+    'an ok result must carry no error field',
+  );
+  assert.equal(spawner.spawnCalls, 1);
+});
+
+test('a start-session with no spawner configured is refused', async () => {
+  const hub = await startHub();
+  const viewer = await connect(hub.viewerPort);
+  await helloViewer(viewer);
+
+  viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'start-session', id: 'start-1' });
+
+  const result = await viewer.next(2000);
+  assert.equal(result.type, 'command-result');
+  assert.equal(result.ok, false);
+  assert.match(String(result.error), /not available/i);
+});
+
+test('a spawn rejection returns its message', async () => {
+  const spawner = makeFakeSpawner();
+  spawner.spawnImpl = async () => {
+    throw new Error('boom');
+  };
+  const hub = await startHub({ spawner });
+  const viewer = await connect(hub.viewerPort);
+  await helloViewer(viewer);
+
+  viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'start-session', id: 'start-1' });
+
+  const result = await viewer.next(2000);
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'boom');
+});
+
+test('a spawn rejection that is not an Error still maps to a string', async () => {
+  const spawner = makeFakeSpawner();
+  spawner.spawnImpl = () => Promise.reject('boom');
+  const hub = await startHub({ spawner });
+  const viewer = await connect(hub.viewerPort);
+  await helloViewer(viewer);
+
+  viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'start-session', id: 'start-1' });
+
+  const result = await viewer.next(2000);
+  assert.equal(result.ok, false);
+  assert.equal(
+    result.error,
+    'boom',
+    'a non-Error rejection must still serialize a verbatim string, not drop the field',
+  );
+});
+
+test("exceeding the cap surfaces 'too many app sessions' verbatim", async () => {
+  const spawner = makeFakeSpawner();
+  spawner.spawnImpl = async () => {
+    throw new Error('too many app sessions');
+  };
+  const hub = await startHub({ spawner });
+  const viewer = await connect(hub.viewerPort);
+  await helloViewer(viewer);
+
+  viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'start-session', id: 'start-1' });
+
+  const result = await viewer.next(2000);
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'too many app sessions');
+});
+
+test('the sessions payload carries origin derived from the spawner', async () => {
+  const spawner = makeFakeSpawner();
+  spawner.owned.add(4242);
+  const hub = await startHub({ spawner });
+  const appAgent = await connect(hub.agentPort);
+  const pcAgent = await connect(hub.agentPort);
+  const viewer = await connect(hub.viewerPort);
+  await helloViewer(viewer);
+  await helloTokened(appAgent);
+  await helloTokened(pcAgent);
+
+  appAgent.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'register',
+    sessionId: 's1',
+    pid: 4242,
+    name: 'app one',
+  });
+  const first = await viewer.nextSessions(2000);
+  assert.equal(sessionEntry(first, 's1').origin, 'app');
+  assert.deepEqual(spawner.confirmed, [4242], 'the register must confirm the pid');
+
+  pcAgent.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'register',
+    sessionId: 's2',
+    pid: 777,
+    name: 'pc one',
+  });
+  const second = await viewer.nextSessions(2000);
+  assert.equal(sessionEntry(second, 's2').origin, 'pc');
+});
+
+test('a re-register whose origin changes broadcasts the list', async () => {
+  const spawner = makeFakeSpawner();
+  spawner.owned.add(4242);
+  const hub = await startHub({ spawner });
+  const agent = await connect(hub.agentPort);
+  const viewer = await connect(hub.viewerPort);
+  await helloViewer(viewer);
+  await helloTokened(agent);
+
+  agent.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'register',
+    sessionId: 's1',
+    pid: 4242,
+    name: 'same',
+  });
+  assert.equal(sessionEntry(await viewer.nextSessions(2000), 's1').origin, 'app');
+
+  // The orphan case: the child is no longer owned (e.g. a restarted hub), so
+  // the same pid now derives `pc`.
+  spawner.owned.delete(4242);
+  agent.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'register',
+    sessionId: 's1',
+    pid: 4242,
+    name: 'same',
+  });
+  assert.equal(sessionEntry(await viewer.nextSessions(2000), 's1').origin, 'pc');
+});
+
+test('kill-session kills an app session', async () => {
+  const spawner = makeFakeSpawner();
+  spawner.owned.add(4242);
+  const hub = await startHub({ spawner });
+  const agent = await connect(hub.agentPort);
+  const viewer = await connect(hub.viewerPort);
+  await helloViewer(viewer);
+  await helloTokened(agent);
+  agent.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'register',
+    sessionId: 's1',
+    pid: 4242,
+  });
+  await barrier(agent);
+  await viewer.nextSessions(2000);
+
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'kill-session',
+    id: 'k1',
+    sessionId: 's1',
+  });
+
+  const result = await viewer.next(2000);
+  assert.equal(result.type, 'command-result');
+  assert.equal(result.ok, true);
+  assert.deepEqual(spawner.killed, [4242]);
+});
+
+test('kill-session refuses a pc session', async () => {
+  const spawner = makeFakeSpawner();
+  const hub = await startHub({ spawner });
+  const agent = await connect(hub.agentPort);
+  const viewer = await connect(hub.viewerPort);
+  await helloViewer(viewer);
+  await helloTokened(agent);
+  agent.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'register',
+    sessionId: 's1',
+    pid: 777,
+  });
+  await barrier(agent);
+  await viewer.nextSessions(2000);
+
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'kill-session',
+    id: 'k1',
+    sessionId: 's1',
+  });
+
+  const result = await viewer.next(2000);
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'not an app session');
+  assert.equal(spawner.killCalls, 0);
+});
+
+test('kill-session on an unknown session is refused', async () => {
+  const spawner = makeFakeSpawner();
+  const hub = await startHub({ spawner });
+  const viewer = await connect(hub.viewerPort);
+  await helloViewer(viewer);
+
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'kill-session',
+    id: 'k1',
+    sessionId: 'ghost',
+  });
+
+  const result = await viewer.next(2000);
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'unknown session');
+});
+
+test('kill-session with a missing sessionId closes as a protocol violation', async () => {
+  const hub = await startHub();
+  const viewer = await connect(hub.viewerPort);
+  await helloViewer(viewer);
+
+  viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'kill-session', id: 'k1' });
+
+  assert.equal((await closed(viewer)).code, CLOSE_PROTOCOL);
+});
+
+test('kill-session with an empty sessionId closes as a protocol violation', async () => {
+  const hub = await startHub();
+  const viewer = await connect(hub.viewerPort);
+  await helloViewer(viewer);
+
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'kill-session',
+    id: 'k1',
+    sessionId: '',
+  });
+
+  assert.equal((await closed(viewer)).code, CLOSE_PROTOCOL);
+});
+
+test('kill-session with a missing id closes as a protocol violation', async () => {
+  const hub = await startHub();
+  const viewer = await connect(hub.viewerPort);
+  await helloViewer(viewer);
+
+  viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'kill-session', sessionId: 's1' });
+
+  assert.equal((await closed(viewer)).code, CLOSE_PROTOCOL);
+});
+
+test('an agent listener cannot send start-session', async () => {
+  const hub = await startHub();
+  const agent = await connect(hub.agentPort);
+  await helloTokened(agent);
+
+  agent.send({ protocolVersion: PROTOCOL_VERSION, type: 'start-session', id: 'x' });
+
+  assert.equal((await closed(agent)).code, CLOSE_CAPABILITY);
+});
+
+test('an agent listener cannot send kill-session', async () => {
+  const hub = await startHub();
+  const agent = await connect(hub.agentPort);
+  await helloTokened(agent);
+
+  agent.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'kill-session',
+    id: 'x',
+    sessionId: 's1',
+  });
+
+  assert.equal((await closed(agent)).code, CLOSE_CAPABILITY);
+});
+
+test('closing the hub awaits the spawner', async () => {
+  const spawner = makeFakeSpawner();
+  spawner.closeDelayMs = 20;
+  const hub = await createHub({
+    token: TOKEN,
+    tickets: createTicketStore(),
+    viewerPort: 0,
+    viewerHost: '127.0.0.1',
+    spawner,
+  });
+
+  await hub.close();
+
+  assert.equal(spawner.closeCalls, 1);
+  assert.equal(
+    spawner.closeFinished,
+    true,
+    'hub.close must await spawner.close, not fire and forget',
+  );
+});
+
+test('two viewers issuing the same start id each get their own result', async () => {
+  const spawner = makeFakeSpawner();
+  const hub = await startHub({ spawner });
+  const first = await connect(hub.viewerPort);
+  const second = await connect(hub.viewerPort);
+  await helloViewer(first);
+  await helloViewer(second);
+
+  const start = { protocolVersion: PROTOCOL_VERSION, type: 'start-session', id: 'x' };
+  first.send(start);
+  second.send(start);
+
+  const firstResult = await first.next(2000);
+  const secondResult = await second.next(2000);
+  assert.equal(firstResult.id, 'x');
+  assert.equal(firstResult.ok, true);
+  assert.equal(secondResult.id, 'x');
+  assert.equal(secondResult.ok, true);
+  assert.equal(spawner.spawnCalls, 2, 'each viewer gets its own spawn attempt');
+});
+
+test('a fresh app session is labelled New session', async () => {
+  const spawner = makeFakeSpawner();
+  spawner.owned.add(4242);
+  const hub = await startHub({ spawner });
+  const appAgent = await connect(hub.agentPort);
+  const pcAgent = await connect(hub.agentPort);
+  const viewer = await connect(hub.viewerPort);
+  await helloViewer(viewer);
+  await helloTokened(appAgent);
+  await helloTokened(pcAgent);
+
+  appAgent.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'register',
+    sessionId: 's1',
+    pid: 4242,
+    cwd: '/tmp/pi-droid-session-x',
+    sessionFile: '/tmp/pi-droid-session-x/s.jsonl',
+  });
+  assert.equal(sessionEntry(await viewer.nextSessions(2000), 's1').label, 'New session');
+
+  pcAgent.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'register',
+    sessionId: 's2',
+    pid: 777,
+    cwd: '/tmp/pi-droid-session-x',
+    sessionFile: '/tmp/pi-droid-session-x/s.jsonl',
+  });
+  assert.equal(sessionEntry(await viewer.nextSessions(2000), 's2').label, 's.jsonl');
+
+  // An app session that later gets an explicit name shows it.
+  appAgent.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'register',
+    sessionId: 's1',
+    pid: 4242,
+    name: 'renamed',
+    cwd: '/tmp/pi-droid-session-x',
+    sessionFile: '/tmp/pi-droid-session-x/s.jsonl',
+  });
+  assert.equal(sessionEntry(await viewer.nextSessions(2000), 's1').label, 'renamed');
 });

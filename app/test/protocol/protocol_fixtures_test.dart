@@ -186,6 +186,17 @@ void main() {
         'sessionId': 'sess',
         'name': 'prompt',
       },
+      'start-session': {
+        'protocolVersion': 1,
+        'type': 'start-session',
+        'id': 'start-1',
+      },
+      'kill-session': {
+        'protocolVersion': 1,
+        'type': 'kill-session',
+        'id': 'kill-1',
+        'sessionId': 'sess',
+      },
       'paired': {'protocolVersion': 1, 'type': 'paired', 'token': 'tok'},
       'sessions': {
         'protocolVersion': 1,
@@ -235,6 +246,7 @@ void main() {
       hubToViewerMessageTypes.toSet(),
       (shared['hubToViewerMessageTypes'] as List).toSet(),
     );
+    expect(sessionOrigins.toSet(), (shared['sessionOrigins'] as List).toSet());
   });
 
   test('every invalid fixture is rejected for the right reason', () {

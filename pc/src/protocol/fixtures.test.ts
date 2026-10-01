@@ -24,6 +24,7 @@ import {
   AGENT_MESSAGE_TYPES,
   EVENT_PAYLOAD_KINDS,
   HUB_TO_VIEWER_MESSAGE_TYPES,
+  SESSION_ORIGINS,
   STREAM_PHASES,
   VIEWER_MESSAGE_TYPES,
   decode,
@@ -199,6 +200,13 @@ test('every message type in the canonical lists decodes from a minimal body', ()
     unsubscribe: { protocolVersion: 1, type: 'unsubscribe', sessionId: 'sess' },
     'history-request': { protocolVersion: 1, type: 'history-request', sessionId: 'sess' },
     command: { protocolVersion: 1, type: 'command', id: 'id', sessionId: 'sess', name: 'prompt' },
+    'start-session': { protocolVersion: 1, type: 'start-session', id: 'start-1' },
+    'kill-session': {
+      protocolVersion: 1,
+      type: 'kill-session',
+      id: 'kill-1',
+      sessionId: 'sess',
+    },
     paired: { protocolVersion: 1, type: 'paired', token: 'tok' },
     sessions: { protocolVersion: 1, type: 'sessions', sessions: [] },
     snapshot: {
@@ -233,6 +241,7 @@ test('the canonical message-type and payload-kind lists match the shared fixture
     agentMessageTypes: string[];
     viewerMessageTypes: string[];
     hubToViewerMessageTypes: string[];
+    sessionOrigins: string[];
   };
   assert.deepEqual(new Set(ALL_MESSAGE_TYPES), new Set(shared.messageTypes));
   assert.deepEqual(new Set(EVENT_PAYLOAD_KINDS), new Set(shared.eventPayloadKinds));
@@ -240,6 +249,7 @@ test('the canonical message-type and payload-kind lists match the shared fixture
   assert.deepEqual(new Set(AGENT_MESSAGE_TYPES), new Set(shared.agentMessageTypes));
   assert.deepEqual(new Set(VIEWER_MESSAGE_TYPES), new Set(shared.viewerMessageTypes));
   assert.deepEqual(new Set(HUB_TO_VIEWER_MESSAGE_TYPES), new Set(shared.hubToViewerMessageTypes));
+  assert.deepEqual(new Set(SESSION_ORIGINS), new Set(shared.sessionOrigins));
 });
 
 test('every invalid fixture is rejected for the right reason', () => {

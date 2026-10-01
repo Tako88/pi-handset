@@ -85,4 +85,92 @@ void main() {
 
     expect(opened?.sessionId, 's2');
   });
+
+  testWidgets('app and pc sessions render under their own headers', (tester) async {
+    final mixed = [
+      const SessionSummary(
+        sessionId: 's1',
+        label: 'from phone',
+        agentState: 'idle',
+        origin: 'app',
+      ),
+      const SessionSummary(
+        sessionId: 's2',
+        label: 'from pc',
+        agentState: 'idle',
+        origin: 'pc',
+      ),
+    ];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: SessionList(sessions: mixed, onOpen: (_) {})),
+      ),
+    );
+
+    expect(find.text(SessionList.appSectionHeader), findsOneWidget);
+    expect(find.text(SessionList.pcSectionHeader), findsOneWidget);
+    expect(find.text('from phone'), findsOneWidget);
+    expect(find.text('from pc'), findsOneWidget);
+  });
+
+  testWidgets('the app header is absent when there are no app sessions', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: SessionList(sessions: sessions, onOpen: (_) {}))),
+    );
+
+    expect(find.text(SessionList.appSectionHeader), findsNothing);
+    expect(find.text(SessionList.pcSectionHeader), findsOneWidget);
+  });
+
+  testWidgets('an app row shows a kill button whose tap calls onKill', (
+    tester,
+  ) async {
+    SessionSummary? killed;
+    final mixed = [
+      const SessionSummary(
+        sessionId: 's1',
+        label: 'from phone',
+        agentState: 'idle',
+        origin: 'app',
+      ),
+    ];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SessionList(
+            sessions: mixed,
+            onOpen: (_) {},
+            onKill: (session) => killed = session,
+          ),
+        ),
+      ),
+    );
+
+    expect(find.byKey(const Key('kill-s1')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('kill-s1')));
+    await tester.pump();
+    expect(killed?.sessionId, 's1');
+  });
+
+  testWidgets('a pc row shows no kill button', (tester) async {
+    final mixed = [
+      const SessionSummary(
+        sessionId: 's2',
+        label: 'from pc',
+        agentState: 'idle',
+        origin: 'pc',
+      ),
+    ];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SessionList(sessions: mixed, onOpen: (_) {}, onKill: (_) {}),
+        ),
+      ),
+    );
+
+    expect(find.byKey(const Key('kill-s2')), findsNothing);
+  });
 }

@@ -41,10 +41,11 @@ import {
   isAgentMessageType,
   isViewerMessageType,
 } from '../protocol/protocol.ts';
-import type { AgentState, SessionsMessage } from '../protocol/protocol.ts';
+import type { AgentState, SessionOrigin, SessionsMessage } from '../protocol/protocol.ts';
 import { compareToken } from './auth.ts';
 import { ByteBudget } from './backpressure.ts';
 import type { TicketStore } from './pairing.ts';
+import type { Spawner } from './spawner.ts';
 
 /**
  * Application close codes (4000–4999). The full table and the message shapes
@@ -97,6 +98,8 @@ export interface HubOptions {
   maxViewerBytes?: number;
   /** Maximum size of a single inbound frame, in bytes. Defaults to 1 MiB. */
   maxPayload?: number;
+  /** The process supervisor for app-started sessions, when one is configured. */
+  spawner?: Spawner;
 }
 
 export interface Hub {
@@ -128,6 +131,10 @@ interface Session {
   agent: Connection;
   lastSeq: number;
   agentState: AgentState;
+  /** The register's reported pid, when present; used to derive `origin`. */
+  pid?: number;
+  /** Who started this session: `app` when the spawner owns its pid, else `pc`. */
+  origin: SessionOrigin;
   readonly subscribers: Set<Connection>;
   readonly pendingHistory: Set<Connection>;
   /** `id` -> viewers awaiting its result, in issue order. */
@@ -141,6 +148,7 @@ interface State {
     maxAuthAttempts: number;
     authCloseDelayMs: number;
     maxViewerBytes: number;
+    spawner?: Spawner;
   };
   readonly sessions: Map<string, Session>;
   /** Authenticated viewer connections; the broadcast audience for `sessions`. */
@@ -177,13 +185,20 @@ function send(connection: Connection, message: unknown): void {
 }
 
 /**
- * A viewer-safe label: the session's `name` verbatim, otherwise the basename of
- * its `sessionFile` or `cwd`, otherwise the opaque `sessionId`. A full
- * filesystem path is never exposed as a label.
+ * A viewer-safe label: the session's `name` verbatim; for an app-started
+ * session with no name, the placeholder `New session` (its temp cwd/session
+ * path is meaningless to a viewer); otherwise the basename of its
+ * `sessionFile` or `cwd`; otherwise the opaque `sessionId`. A full filesystem
+ * path is never exposed as a label.
  */
-function registerLabel(message: Record<string, unknown>, sessionId: string): string {
+function registerLabel(
+  message: Record<string, unknown>,
+  sessionId: string,
+  origin: SessionOrigin,
+): string {
   const name = asString(message.name);
   if (name !== null) return name;
+  if (origin === 'app') return 'New session';
   for (const candidate of [message.sessionFile, message.cwd]) {
     const value = asString(candidate);
     if (value === null) continue;
@@ -211,6 +226,7 @@ function sessionsMessage(state: State): SessionsMessage {
         sessionId: session.sessionId,
         label: session.label,
         agentState: session.agentState,
+        origin: session.origin,
       })),
   };
 }
@@ -381,7 +397,12 @@ function handleRegister(
     closeWith(connection, CLOSE_PROTOCOL);
     return;
   }
-  const label = registerLabel(message, sessionId);
+  const pid = typeof message.pid === 'number' ? message.pid : undefined;
+  const spawner = state.config.spawner;
+  const owned = pid !== undefined && spawner !== undefined && spawner.owns(pid);
+  const origin: SessionOrigin = owned ? 'app' : 'pc';
+  if (owned && pid !== undefined) spawner!.confirm(pid);
+  const label = registerLabel(message, sessionId, origin);
   // Switch/fork: one connection owns at most one session; registering a new id
   // retires the old one and tells its subscribers it is gone.
   const previous = ownedSession(state, connection);
@@ -397,10 +418,14 @@ function handleRegister(
       closeWith(existing.agent, CLOSE_PROTOCOL, 'session taken over');
     }
     existing.agent = connection;
-    // Only a label change is worth a broadcast: the bridge re-registers on
-    // every reconnect, and non-bridge agents may re-register unchanged too.
-    if (existing.label !== label) {
+    existing.pid = pid;
+    // Only a label or origin change is worth a broadcast: the bridge
+    // re-registers on every reconnect, and non-bridge agents may re-register
+    // unchanged too. An origin change matters because it flips whether the app
+    // offers a kill affordance.
+    if (existing.label !== label || existing.origin !== origin) {
       existing.label = label;
+      existing.origin = origin;
       broadcastSessions(state);
     }
     return;
@@ -411,6 +436,8 @@ function handleRegister(
     agent: connection,
     lastSeq: 0,
     agentState: 'idle',
+    pid,
+    origin,
     subscribers: new Set(),
     pendingHistory: new Set(),
     pendingCommands: new Map(),
@@ -487,6 +514,84 @@ function relayToViewer(viewer: Connection, message: unknown, sessionId: string):
 
 function commandResult(id: string, ok: boolean, error: string): unknown {
   return { protocolVersion: PROTOCOL_VERSION, type: 'command-result', id, ok, error };
+}
+
+/** An `ok` result deliberately carries no `error` field. */
+function commandOk(id: string): unknown {
+  return { protocolVersion: PROTOCOL_VERSION, type: 'command-result', id, ok: true };
+}
+
+/**
+ * A viewer asks the hub to spawn a headless pi session. Answered directly to
+ * the issuing connection: the result is produced locally, not by an agent
+ * round-trip, so there is no per-session pending map to key it into. Two
+ * viewers using the same id each receive their own reply.
+ */
+function handleStartSession(
+  state: State,
+  connection: Connection,
+  message: Record<string, unknown>,
+): void {
+  const id = asString(message.id);
+  if (id === null) {
+    closeWith(connection, CLOSE_PROTOCOL);
+    return;
+  }
+  const spawner = state.config.spawner;
+  if (spawner === undefined) {
+    sendToViewer(
+      connection,
+      commandResult(id, false, 'starting sessions is not available on this hub'),
+      null,
+    );
+    return;
+  }
+  spawner.spawn().then(
+    () => sendToViewer(connection, commandOk(id), null),
+    (error: unknown) =>
+      sendToViewer(
+        connection,
+        commandResult(id, false, String((error as Error)?.message ?? error)),
+        null,
+      ),
+  );
+}
+
+/**
+ * A viewer asks the hub to kill an app-started session. Only a session the
+ * spawner still owns may be killed; a PC-started session is refused. Answered
+ * directly to the issuing connection.
+ */
+function handleKillSession(
+  state: State,
+  connection: Connection,
+  message: Record<string, unknown>,
+): void {
+  const id = asString(message.id);
+  const sessionId = asString(message.sessionId);
+  if (id === null || sessionId === null) {
+    closeWith(connection, CLOSE_PROTOCOL);
+    return;
+  }
+  const session = state.sessions.get(sessionId);
+  if (session === undefined) {
+    sendToViewer(connection, commandResult(id, false, 'unknown session'), null);
+    return;
+  }
+  const spawner = state.config.spawner;
+  if (
+    session.origin !== 'app' ||
+    session.pid === undefined ||
+    spawner === undefined ||
+    !spawner.owns(session.pid)
+  ) {
+    sendToViewer(connection, commandResult(id, false, 'not an app session'), null);
+    return;
+  }
+  // Reply before signalling: the app's pending kill completes on the result,
+  // not on the session-gone the kill will eventually provoke.
+  sendToViewer(connection, commandOk(id), null);
+  spawner.kill(session.pid);
 }
 
 function handleCommand(
@@ -682,6 +787,8 @@ function dispatch(
   else if (type === 'unsubscribe') handleUnsubscribe(state, connection, message);
   else if (type === 'command') handleCommand(state, connection, message);
   else if (type === 'history-request') handleHistoryRequest(state, connection, message);
+  else if (type === 'start-session') handleStartSession(state, connection, message);
+  else if (type === 'kill-session') handleKillSession(state, connection, message);
   else closeWith(connection, CLOSE_PROTOCOL);
 }
 
@@ -713,6 +820,7 @@ export async function createHub(options: HubOptions): Promise<Hub> {
       maxAuthAttempts: options.maxAuthAttempts ?? DEFAULT_MAX_AUTH_ATTEMPTS,
       authCloseDelayMs: options.authCloseDelayMs ?? DEFAULT_AUTH_CLOSE_DELAY_MS,
       maxViewerBytes: options.maxViewerBytes ?? MAX_RELAY_BYTES,
+      ...(options.spawner === undefined ? {} : { spawner: options.spawner }),
     },
     sessions: new Map(),
     viewers: new Set(),
@@ -771,6 +879,7 @@ export async function createHub(options: HubOptions): Promise<Hub> {
       for (const socket of sockets) socket.terminate();
       sockets.clear();
       await Promise.all([closeServer(agent), closeServer(viewer)]);
+      await state.config.spawner?.close();
     },
   };
 }

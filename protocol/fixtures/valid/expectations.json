@@ -83,9 +83,25 @@
       {
         "sessionId": "sess-1",
         "label": "my session",
-        "agentState": "settled"
+        "agentState": "settled",
+        "origin": "app"
+      },
+      {
+        "sessionId": "sess-2",
+        "label": "project work",
+        "agentState": "idle",
+        "origin": "pc"
       }
     ]
+  },
+  "start-session.json": {
+    "type": "start-session",
+    "id": "start-1"
+  },
+  "kill-session.json": {
+    "type": "kill-session",
+    "id": "kill-1",
+    "sessionId": "sess-1"
   },
   "register.json": {
     "type": "register",

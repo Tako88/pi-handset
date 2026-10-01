@@ -32,6 +32,7 @@ let runtimeDir: string;
 let configDir: string;
 let spawned: ChildProcess[];
 let sockets: WebSocket[];
+const scratchShimDirs: string[] = [];
 
 beforeEach(() => {
   runtimeDir = mkdtempSync(join(tmpdir(), 'pi-droid-serve-'));
@@ -54,7 +55,19 @@ afterEach(() => {
   }
   rmSync(runtimeDir, { recursive: true, force: true });
   rmSync(configDir, { recursive: true, force: true });
+  for (const dir of scratchShimDirs) rmSync(dir, { recursive: true, force: true });
+  scratchShimDirs.length = 0;
 });
+
+/** True while the pid is alive; `process.kill(pid, 0)` throws ESRCH once dead. */
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 interface ServeHandle {
   child: ChildProcess;
@@ -62,13 +75,17 @@ interface ServeHandle {
   stderr: () => string;
 }
 
-function startServe(args: string[] = []): ServeHandle {
+function startServe(
+  args: string[] = [],
+  extraEnv: Record<string, string> = {},
+): ServeHandle {
   const child = spawn(process.execPath, [serveEntry, ...args], {
     cwd: pcRoot,
     env: {
       ...process.env,
       PI_DROID_RUNTIME_DIR: runtimeDir,
       XDG_CONFIG_HOME: configDir,
+      ...extraEnv,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -246,6 +263,47 @@ async function redeem(port: number, code: string): Promise<Record<string, unknow
 /** The token serve persisted in the temp config dir. */
 function persistedToken(): string {
   return readFileSync(join(configDir, 'pi-droid', 'token'), 'utf8').trim();
+}
+
+/** Authenticates a viewer with the persisted token and drains its auth push. */
+async function authViewer(port: number): Promise<WebSocket> {
+  const socket = await connectViewer(port);
+  const ready = new Promise<void>((resolve) => {
+    socket.on('message', (data) => {
+      const message = JSON.parse(String(data)) as Record<string, unknown>;
+      if (message.type === 'sessions') resolve();
+    });
+  });
+  socket.send(
+    JSON.stringify({
+      protocolVersion: PROTOCOL_VERSION,
+      type: 'hello',
+      token: persistedToken(),
+    }),
+  );
+  await ready;
+  return socket;
+}
+
+/** Resolves with the next message matching `type`, rejecting after a bound. */
+function awaitMessage(
+  socket: WebSocket,
+  type: string,
+  timeoutMs = 5000,
+): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`timed out waiting for ${type}`)),
+      timeoutMs,
+    );
+    socket.on('message', (data) => {
+      const message = JSON.parse(String(data)) as Record<string, unknown>;
+      if (message.type === type) {
+        clearTimeout(timer);
+        resolve(message);
+      }
+    });
+  });
 }
 
 test('serve announces how to request a pairing code, naming the pid', async () => {
@@ -446,4 +504,63 @@ test('a hub whose close rejects yields a non-zero exit, not an unhandled rejecti
   );
 
   assert.equal(code, 1);
+});
+
+test('serve spawns bare pi on start-session and SIGTERM kills the group', async () => {
+  const port = await freePort();
+  const shimDir = mkdtempSync(join(tmpdir(), 'pi-droid-serve-shim-'));
+  scratchShimDirs.push(shimDir);
+  const marker = join(shimDir, 'args.txt');
+  const pidMarker = join(shimDir, 'pid.txt');
+  writeFileSync(
+    join(shimDir, 'pi'),
+    '#!/bin/sh\n' +
+      'echo "$$" > "$PI_DROID_SHIM_PID"\n' +
+      'echo "$@" > "$PI_DROID_SHIM_ARGS"\n' +
+      'pwd >> "$PI_DROID_SHIM_ARGS"\n' +
+      'sleep 30\n',
+    { mode: 0o755 },
+  );
+
+  const serve = startServe(['--port', String(port)], {
+    PATH: `${shimDir}:${process.env.PATH ?? ''}`,
+    PI_DROID_SHIM_ARGS: marker,
+    PI_DROID_SHIM_PID: pidMarker,
+  });
+  await waitFor(() => readPid() === serve.child.pid, 'the discovery file');
+
+  const viewer = await authViewer(port);
+  viewer.send(
+    JSON.stringify({
+      protocolVersion: PROTOCOL_VERSION,
+      type: 'start-session',
+      id: 'start-1',
+    }),
+  );
+
+  const result = await awaitMessage(viewer, 'command-result');
+  assert.equal(result.ok, true, `start was refused: ${String(result.error)}`);
+  await waitFor(() => existsSync(marker) && existsSync(pidMarker), 'the shim to run');
+
+  const recorded = readFileSync(marker, 'utf8').trimEnd().split('\n');
+  assert.equal(
+    recorded[0],
+    '--mode rpc --no-session',
+    'production must spawn bare pi --mode rpc --no-session',
+  );
+  assert.ok(
+    recorded[1]!.startsWith(tmpdir()),
+    `the child cwd must be under ${tmpdir()}, got ${recorded[1]}`,
+  );
+
+  const shimPid = Number(readFileSync(pidMarker, 'utf8').trim());
+  assert.equal(alive(shimPid), true, 'the shim must be running before the stop');
+
+  // SIGTERM the supervisor. Its own graceful stop must group-kill the child.
+  // The 5s bound is strictly below DEFAULT_REGISTRATION_TIMEOUT_MS, so the
+  // registration reaper cannot be what kills it.
+  const exited = waitExit(serve.child);
+  serve.child.kill('SIGTERM');
+  await exited;
+  await waitFor(() => !alive(shimPid), 'the shim to die with the supervisor', 5000);
 });

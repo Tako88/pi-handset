@@ -17,6 +17,10 @@ const int maxRelayBytes = 256 * 1024;
 /// The agent's reported lifecycle state.
 const List<String> agentStates = ['idle', 'running', 'settled'];
 
+/// Who started a session: the app (`app`) or the PC (`pc`). Derived hub-side
+/// from the spawner's live children, never from a client claim.
+const List<String> sessionOrigins = ['app', 'pc'];
+
 /// The normalized payload kinds an `event` may carry.
 const List<String> eventPayloadKinds = ['stream', 'message', 'agent', 'tool', 'status', 'usage'];
 
@@ -48,6 +52,8 @@ const List<String> viewerMessageTypes = [
   'unsubscribe',
   'history-request',
   'command',
+  'start-session',
+  'kill-session',
 ];
 
 /// What the hub sends to a viewer. Canonical; see [agentMessageTypes].
@@ -288,6 +294,28 @@ DecodeResult decode(String text) {
         );
       }
       return DecodeResult.ok(message);
+    case 'start-session':
+      if (_nonEmptyString(message['id']) == null) {
+        return const DecodeResult.fail(
+          'bad-field',
+          'start-session id must be a non-empty string',
+        );
+      }
+      return DecodeResult.ok(message);
+    case 'kill-session':
+      if (_nonEmptyString(message['id']) == null) {
+        return const DecodeResult.fail(
+          'bad-field',
+          'kill-session id must be a non-empty string',
+        );
+      }
+      if (_nonEmptyString(message['sessionId']) == null) {
+        return const DecodeResult.fail(
+          'bad-field',
+          'kill-session sessionId must be a non-empty string',
+        );
+      }
+      return DecodeResult.ok(message);
     case 'paired':
       if (_nonEmptyString(message['token']) == null) {
         return const DecodeResult.fail(
@@ -325,6 +353,13 @@ DecodeResult decode(String text) {
           return const DecodeResult.fail(
             'bad-state',
             'sessions agentState must be idle, running or settled',
+          );
+        }
+        if (summary.containsKey('origin') &&
+            !sessionOrigins.contains(summary['origin'])) {
+          return const DecodeResult.fail(
+            'bad-field',
+            'sessions origin must be app or pc',
           );
         }
       }

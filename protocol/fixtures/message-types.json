@@ -9,6 +9,8 @@
     "unsubscribe",
     "history-request",
     "command",
+    "start-session",
+    "kill-session",
     "paired",
     "sessions",
     "snapshot",
@@ -17,8 +19,16 @@
   ],
   "eventPayloadKinds": ["stream", "message", "agent", "tool", "status", "usage"],
   "streamPhases": ["thinking"],
+  "sessionOrigins": ["app", "pc"],
   "agentMessageTypes": ["register", "event", "history", "command-result"],
-  "viewerMessageTypes": ["subscribe", "unsubscribe", "history-request", "command"],
+  "viewerMessageTypes": [
+    "subscribe",
+    "unsubscribe",
+    "history-request",
+    "command",
+    "start-session",
+    "kill-session"
+  ],
   "hubToViewerMessageTypes": [
     "paired",
     "sessions",
