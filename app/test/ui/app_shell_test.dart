@@ -17,6 +17,7 @@ import 'package:pi_droid/client/token_store.dart';
 import 'package:pi_droid/ui/app_shell.dart';
 import 'package:pi_droid/ui/folder_browser.dart';
 import 'package:pi_droid/ui/pairing_screen.dart';
+import 'package:pi_droid/ui/transcript_view.dart';
 
 import '../client/support/fakes.dart';
 
@@ -438,6 +439,135 @@ void main() {
     final screen = tester.view.physicalSize.height / dpr;
     final compose = tester.getRect(find.byKey(const Key('compose-field')));
     expect(compose.bottom, lessThanOrEqualTo(screen - keyboard));
+  });
+
+  testWidgets('typing / lists the session\'s commands and tapping one sends it',
+      (tester) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+    await tester.tap(find.text('api refactor'));
+    await settle(tester, h.scheduler);
+
+    // Reply to the per-open listCommands fetch with one command.
+    final listId = h.factory.last.sentFrames.firstWhere(
+      (frame) => frame['type'] == 'command' && frame['name'] == 'listCommands',
+    )['id'];
+    h.factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'command-result',
+      'id': listId,
+      'ok': true,
+      'commands': [
+        {'name': 'review', 'description': 'Review the working tree'},
+      ],
+    });
+    await settle(tester, h.scheduler);
+
+    // Nothing to suggest until the draft starts with a slash.
+    expect(find.byKey(const Key('compose-suggestions')), findsNothing);
+
+    await tester.enterText(find.byKey(const Key('compose-field')), '/');
+    await tester.pump();
+
+    expect(
+      find.byKey(const Key('compose-suggestion-0-review')),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.byKey(const Key('compose-suggestion-0-review')));
+    await tester.pump();
+
+    // Picking inserts; it must not also send. The field shows the inserted name
+    // with a trailing space, and nothing has gone out yet.
+    expect(
+      tester.widget<TextField>(find.byKey(const Key('compose-field'))).controller!.text,
+      '/review ',
+    );
+    expect(
+      h.factory.last.sentFrames.where((f) => f['name'] == 'prompt'),
+      isEmpty,
+    );
+
+    await tester.tap(find.byKey(const Key('compose-send')));
+    await tester.pump();
+
+    final command = h.factory.last.sentFrames.last;
+    expect(command['type'], 'command');
+    expect(command['name'], 'prompt');
+    expect(command['args'], {'text': '/review'});
+  });
+
+  testWidgets('the floating panel never overflows with the keyboard up at 2x',
+      (tester) async {
+    tester.view.physicalSize = const Size(360 * 3, 640 * 3);
+    tester.view.devicePixelRatio = 3;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    // Copy the ambient MediaQuery rather than supplying a fresh one: a fresh
+    // `MediaQueryData` zeroes `viewInsets`, and the keyboard assertion below
+    // would then be vacuous.
+    await tester.pumpWidget(
+      Builder(
+        builder: (context) => MediaQuery(
+          data: MediaQuery.of(context).copyWith(
+            textScaler: const TextScaler.linear(2),
+          ),
+          child: h.app(),
+        ),
+      ),
+    );
+    await pumpBootstrap(tester);
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+    await tester.tap(find.text('api refactor'));
+    await settle(tester, h.scheduler);
+
+    final listId = h.factory.last.sentFrames.firstWhere(
+      (frame) => frame['type'] == 'command' && frame['name'] == 'listCommands',
+    )['id'];
+    h.factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'command-result',
+      'id': listId,
+      'ok': true,
+      'commands': [
+        for (var i = 0; i < 10; i++)
+          {
+            'name': 'command-$i',
+            'description':
+                'A long description that wraps at twice the text scale ' * 2,
+          },
+      ],
+    });
+    await settle(tester, h.scheduler);
+
+    await tester.enterText(find.byKey(const Key('compose-field')), '/');
+    await tester.pump();
+
+    const keyboard = 300.0;
+    final dpr = tester.view.devicePixelRatio;
+    tester.view.viewInsets = FakeViewPadding(bottom: keyboard * dpr);
+    addTearDown(tester.view.resetViewInsets);
+    await tester.pump();
+
+    expect(tester.takeException(), isNull);
+    expect(find.byKey(const Key('compose-suggestions')), findsOneWidget);
+
+    final panel = tester.getSize(find.byKey(const Key('compose-suggestions')));
+    final transcript = tester.getSize(find.byType(TranscriptView));
+    // The panel shrinks to the transcript area rather than a fixed 200dp, which
+    // is what makes the floating construction overflow-proof.
+    expect(panel.height, lessThanOrEqualTo(transcript.height));
+
+    final send = tester.getRect(find.byKey(const Key('compose-send')));
+    final screen = tester.view.physicalSize.height / dpr;
+    expect(send.bottom, lessThanOrEqualTo(screen - keyboard));
   });
 
   testWidgets('switching sessions does not carry over the scroll position', (

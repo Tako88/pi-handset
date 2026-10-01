@@ -10,6 +10,7 @@
 library;
 
 import 'dart:async';
+import 'dart:math';
 
 import 'package:flutter/material.dart';
 
@@ -20,6 +21,7 @@ import '../client/notification_presenter.dart';
 import '../client/settle_notification.dart';
 import '../client/token_store.dart';
 import '../protocol/protocol.dart';
+import 'command_suggestions.dart';
 import 'compose_bar.dart';
 import 'folder_browser.dart';
 import 'pairing_screen.dart';
@@ -84,6 +86,14 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
   /// The last error the user dismissed, so the banner does not re-show it.
   String? _dismissedError;
 
+  /// The composer draft. The shell owns it because the suggestion panel reads
+  /// the text to filter and writes a picked `/name ` back into the field.
+  final TextEditingController _composer = TextEditingController();
+
+  /// The composer field's focus, held here so a command pick can return focus
+  /// to the field.
+  final FocusNode _composerFocus = FocusNode();
+
   @override
   void initState() {
     super.initState();
@@ -102,6 +112,8 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
     _subscription?.cancel();
     _openRequests?.cancel();
     _settlesSub?.cancel();
+    _composer.dispose();
+    _composerFocus.dispose();
     super.dispose();
   }
 
@@ -339,6 +351,19 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
     if (active != null) widget.client.unsubscribe(active);
   }
 
+  /// Writes a picked command into the draft and returns focus to the field.
+  ///
+  /// It inserts rather than sends: the user may still want to add arguments, and
+  /// phase-1's `expandPromptTemplates` runs the command on send.
+  void _pickCommand(String name) {
+    final text = '/$name ';
+    _composer.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
+    _composerFocus.requestFocus();
+  }
+
   @override
   Widget build(BuildContext context) => MaterialApp(
     title: 'pi',
@@ -468,14 +493,54 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
       body: Column(
         children: [
           Expanded(
-            child: _withStatusBanner(
-              // Keyed on the session: a new session is a new view, so its scroll
-              // position and following state are not inherited from the last one.
-              TranscriptView(key: ValueKey(activeId), transcript: transcript),
+            child: LayoutBuilder(
+              builder: (context, constraints) => Stack(
+                children: [
+                  _withStatusBanner(
+                    // Keyed on the session: a new session is a new view, so its
+                    // scroll position and following state are not inherited from
+                    // the last one.
+                    TranscriptView(
+                      key: ValueKey(activeId),
+                      transcript: transcript,
+                    ),
+                  ),
+                  // The suggestions float over the transcript instead of taking
+                  // a Column slot, so there is no `Flex` here to overflow. The
+                  // real safety is the `min(200, ...)` cap: an oversized
+                  // `Positioned` would be hard-clipped, not resized.
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    // Inside the `Positioned`, so typing rebuilds only the
+                    // panel — never the transcript.
+                    child: ValueListenableBuilder<TextEditingValue>(
+                      valueListenable: _composer,
+                      builder: (context, value, _) {
+                        final suggestions = suggestionsFor(
+                          _state.commands[activeId] ?? const <SlashCommand>[],
+                          value.text,
+                        );
+                        if (suggestions.isEmpty) {
+                          return const SizedBox.shrink();
+                        }
+                        return CommandSuggestionPanel(
+                          commands: suggestions,
+                          maxHeight: min(200, constraints.maxHeight),
+                          onPick: _pickCommand,
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
           StatusIndicator(transcript: transcript),
           ComposeBar(
+            controller: _composer,
+            focusNode: _composerFocus,
             enabled: _state.status == HubConnectionStatus.connected,
             onSend: (text) => widget.client.sendCommand(
               activeId,

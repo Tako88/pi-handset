@@ -13,12 +13,21 @@ Future<CommandResult> ok(String _) async => const CommandResult(ok: true);
 
 void main() {
   testWidgets('compose sends the typed prompt', (tester) async {
+    final controller = TextEditingController();
+    final focusNode = FocusNode();
+    addTearDown(controller.dispose);
+    addTearDown(focusNode.dispose);
     String? sent;
     await tester.pumpWidget(
-      wrap(ComposeBar(onSend: (text) async {
-        sent = text;
-        return const CommandResult(ok: true);
-      }, onAbort: () {})),
+      wrap(ComposeBar(
+        controller: controller,
+        focusNode: focusNode,
+        onSend: (text) async {
+          sent = text;
+          return const CommandResult(ok: true);
+        },
+        onAbort: () {},
+      )),
     );
 
     await tester.enterText(find.byKey(const Key('compose-field')), 'hello pi');
@@ -31,7 +40,18 @@ void main() {
 
   testWidgets('the compose field asks the keyboard for a newline, not a send',
       (tester) async {
-    await tester.pumpWidget(wrap(ComposeBar(onSend: ok, onAbort: () {})));
+    final controller = TextEditingController();
+    final focusNode = FocusNode();
+    addTearDown(controller.dispose);
+    addTearDown(focusNode.dispose);
+    await tester.pumpWidget(
+      wrap(ComposeBar(
+        controller: controller,
+        focusNode: focusNode,
+        onSend: ok,
+        onAbort: () {},
+      )),
+    );
 
     final field =
         tester.widget<TextField>(find.byKey(const Key('compose-field')));
@@ -39,12 +59,21 @@ void main() {
   });
 
   testWidgets('compose does not send an empty prompt', (tester) async {
+    final controller = TextEditingController();
+    final focusNode = FocusNode();
+    addTearDown(controller.dispose);
+    addTearDown(focusNode.dispose);
     var calls = 0;
     await tester.pumpWidget(
-      wrap(ComposeBar(onSend: (text) async {
-        calls++;
-        return const CommandResult(ok: true);
-      }, onAbort: () {})),
+      wrap(ComposeBar(
+        controller: controller,
+        focusNode: focusNode,
+        onSend: (text) async {
+          calls++;
+          return const CommandResult(ok: true);
+        },
+        onAbort: () {},
+      )),
     );
 
     await tester.tap(find.byKey(const Key('compose-send')));
@@ -54,8 +83,14 @@ void main() {
   });
 
   testWidgets('a failed send surfaces its error', (tester) async {
+    final controller = TextEditingController();
+    final focusNode = FocusNode();
+    addTearDown(controller.dispose);
+    addTearDown(focusNode.dispose);
     await tester.pumpWidget(
       wrap(ComposeBar(
+        controller: controller,
+        focusNode: focusNode,
         onSend: (_) async =>
             const CommandResult(ok: false, error: 'not connected'),
         onAbort: () {},
@@ -71,8 +106,17 @@ void main() {
   });
 
   testWidgets('a successful send shows no error', (tester) async {
+    final controller = TextEditingController();
+    final focusNode = FocusNode();
+    addTearDown(controller.dispose);
+    addTearDown(focusNode.dispose);
     await tester.pumpWidget(
-      wrap(ComposeBar(onSend: ok, onAbort: () {})),
+      wrap(ComposeBar(
+        controller: controller,
+        focusNode: focusNode,
+        onSend: ok,
+        onAbort: () {},
+      )),
     );
 
     await tester.enterText(find.byKey(const Key('compose-field')), 'hi');
@@ -84,9 +128,18 @@ void main() {
   });
 
   testWidgets('abort invokes the abort callback', (tester) async {
+    final controller = TextEditingController();
+    final focusNode = FocusNode();
+    addTearDown(controller.dispose);
+    addTearDown(focusNode.dispose);
     var aborted = false;
     await tester.pumpWidget(
-      wrap(ComposeBar(onSend: ok, onAbort: () => aborted = true)),
+      wrap(ComposeBar(
+        controller: controller,
+        focusNode: focusNode,
+        onSend: ok,
+        onAbort: () => aborted = true,
+      )),
     );
 
     await tester.tap(find.byKey(const Key('compose-abort')));
