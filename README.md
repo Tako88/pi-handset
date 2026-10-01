@@ -17,7 +17,7 @@ and so is transcript parity with the pi TUI (M1–M3).
 
 | | `pc/` (Node + TypeScript) | `app/` (Flutter + Dart) |
 |---|---|---|
-| Suite | 409 tests passing | 323 tests passing |
+| Suite | 418 tests passing | 362 tests passing |
 | Static gate | `tsc --noEmit` clean | `flutter analyze` clean |
 | Product code | hub, protocol codec, pi bridge | protocol codec, client, UI |
 
@@ -81,7 +81,15 @@ is pi's business and per session — the bridge asks pi rather than keeping a li
 trap is that pi's *built-in* editor commands (`/model`, `/resume`, `/tree`, `/compact`,
 …) are not commands over this path: pi excludes them from its command list and lets the
 text through to the model, so a typed `/model` asks the model a question. The composer
-has no completion yet; both are on the agenda below.
+completes commands: typing `/` shows the session's real commands, filtered as you type,
+and tapping one inserts `/name ` rather than sending it. The list rides the existing
+`command`/`command-result` pair as a `listCommands` request — deliberately no new frame
+type, and therefore no capability gate: an old hub answers `ok:false "unknown
+command"`, a stale bridge behind a new hub answers `ok:false "command not allowed"`,
+and either way the panel just stays empty, where a new frame type would be closed `4003`
+and treated as terminal. The panel floats over the transcript and
+is capped to the space actually available, so it takes no `Column` slot and cannot
+overflow. The built-ins are still unreachable; see the agenda below.
 
 **What is left** is not milestone work — it is an agenda, listed next.
 
@@ -100,14 +108,12 @@ what it would cost, so it can be picked up cold.
 
 **Product gaps**
 
-- **No `/` completion in the composer, and the built-in commands are unreachable.**
-  A command has to be typed from memory, and `/model`, `/compact`, `/tree` and friends
+- **The built-in commands are unreachable.** `/model`, `/compact`, `/tree` and friends
   are handled only by pi's interactive editor — sent from the app they reach the model
-  as prose, so a mistyped command reads as a question. pi already exposes the list
-  (`pi.getCommands()`: name, description, source, per session), so completion is a
-  bridge→hub→app round trip plus an overlay in the composer; the built-ins are a
-  different fix — real affordances in the app (a model picker, a compact action) over
-  commands the bridge already carries.
+  as prose, so a mistyped command reads as a question. Unlike the commands the bridge
+  carries, the built-ins are excluded from pi's own command list, so reaching them is a
+  different fix: real affordances in the app (a model picker, a compact action) rather
+  than completion.
 - **History is a fixed window, not a paged log.** A `snapshot` carries at most
   `HISTORY_MAX_BYTES` (768 KiB) of the *newest* entries; older ones are simply not
   sent, and the app says so above the oldest row it has. A single entry larger than
@@ -195,6 +201,26 @@ what it would cost, so it can be picked up cold.
   it without a restart. Whether that came from a session replacement or something else
   is unverified; a `pi` restart is the sure path, and a stale bridge shows up as the
   phone missing a behaviour the code claims.
+- **The command list is fetched on session open and on reconnect-restore only.** A
+  `/reload` that changes the commands while the session stays open is reflected only
+  after the session is re-opened or the connection redials. The fetch rides the same
+  per-open cadence as `requestHistory`.
+- **Delivering `listCommands` needs the hub restarted and pi `/reload`ed or restarted.**
+  The hub's allowlist is code read at import, and the bridge is read from disk per
+  load. Unlike a new event payload kind, a missed step fails gracefully: an old hub
+  answers `ok:false "unknown command"` (a stale bridge, `ok:false "command not
+  allowed"`) and the suggestion panel simply stays empty — no 4002 close, no silent
+  reconnect loop.
+- **A new app against an old hub sends one `listCommands` per session open forever and
+  gets `unknown command` back.** Accepted, because capping after repeated refusals would
+  permanently suppress the list after a mid-run hub upgrade, and a per-connection
+  counter cannot know the hub changed. It produces no error banner, no retry and no
+  stuck state.
+- **The suggestion panel shrinks with the keyboard at large text scale.** It is capped
+  to the space actually available (`min(200, available)`), so with the keyboard up at
+  2× text scale it collapses toward the transcript area and scrolls. Below roughly two
+  rows it is a scroll window rather than a browseable list; the alternative is an
+  overflow or a panel that steals the transcript's space.
 
 **App-started sessions, accepted at the time**
 
