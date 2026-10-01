@@ -158,12 +158,18 @@ interface TestCtx extends BridgeCtx {
   /** How many times the bridge asked pi for context usage. */
   usageCalls(): number;
   setUsage(usage: { tokens: number | null; contextWindow: number } | undefined): void;
+  /** Drive `isIdle()` for the next dispatch. */
+  setIdle(idle: boolean): void;
+  /** Make `isIdle()` throw, as a stale runner would. */
+  setIdleError(error: unknown): void;
 }
 
 function makeCtx(mode = 'tui'): TestCtx {
   let aborts = 0;
   let compacts = 0;
   let usageCalls = 0;
+  let idle = true;
+  let idleError: unknown;
   let usage: { tokens: number | null; contextWindow: number } | undefined = {
     tokens: 23400,
     contextWindow: 128000,
@@ -184,6 +190,10 @@ function makeCtx(mode = 'tui'): TestCtx {
     compact: () => {
       compacts += 1;
     },
+    isIdle: () => {
+      if (idleError !== undefined) throw idleError;
+      return idle;
+    },
     getContextUsage: () => {
       usageCalls += 1;
       return usage;
@@ -193,6 +203,12 @@ function makeCtx(mode = 'tui'): TestCtx {
     usageCalls: () => usageCalls,
     setUsage: (next) => {
       usage = next;
+    },
+    setIdle: (next) => {
+      idle = next;
+    },
+    setIdleError: (err) => {
+      idleError = err;
     },
   };
   return ctx;
@@ -666,7 +682,10 @@ test('the terminal agent state is re-emitted after a reconnect', () => {
 
 test('prompt asks pi to expand commands and templates instead of injecting text verbatim', async () => {
   const harness = makeHarness();
-  harness.start();
+  // Documentation of intent, not a witness: `makeCtx` already defaults idle to
+  // true, so this line cannot fail if the idle branch is absent.
+  const ctx = harness.start();
+  ctx.setIdle(true);
   const socket = harness.sockets[0]!;
   socket.open();
   await sendCommand(harness.pi, socket, 'prompt', { text: '/implement-vetted' });
@@ -698,6 +717,92 @@ test('followup injects the text with deliverAs followUp', async () => {
   assert.deepEqual(harness.pi.userMessages, [
     { content: 'hi', options: { expandPromptTemplates: true, deliverAs: 'followUp' } },
   ]);
+});
+
+test('a prompt while the agent is streaming is queued as a steer', async () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  ctx.setIdle(false);
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'prompt', { text: 'change direction' });
+  // A plain `prompt` sent mid-turn is silently dropped by pi — the reply the
+  // app waits on is `ok:true` either way. `steer` queues it instead.
+  assert.deepEqual(harness.pi.userMessages, [
+    { content: 'change direction', options: { expandPromptTemplates: true, deliverAs: 'steer' } },
+  ]);
+  assert.deepEqual(parsed(socket).at(-1), {
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'command-result',
+    id: 'c-prompt',
+    ok: true,
+  });
+});
+
+test('the prompt delivery mode is read per dispatch, not once at session start', async () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  ctx.setIdle(false);
+  await sendCommand(harness.pi, socket, 'prompt', { text: 'a' });
+  ctx.setIdle(true);
+  await sendCommand(harness.pi, socket, 'prompt', { text: 'b' });
+  // The mode follows the current turn, not a value cached at session start.
+  assert.deepEqual(harness.pi.userMessages, [
+    { content: 'a', options: { expandPromptTemplates: true, deliverAs: 'steer' } },
+    { content: 'b', options: { expandPromptTemplates: true } },
+  ]);
+});
+
+test('an explicit steer ignores the agent idle state', async () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  ctx.setIdle(true);
+  await sendCommand(harness.pi, socket, 'steer', { text: 's1' });
+  ctx.setIdle(false);
+  await sendCommand(harness.pi, socket, 'steer', { text: 's2' });
+  // `steer` says what it means: idle is irrelevant, both are steers.
+  assert.deepEqual(harness.pi.userMessages, [
+    { content: 's1', options: { expandPromptTemplates: true, deliverAs: 'steer' } },
+    { content: 's2', options: { expandPromptTemplates: true, deliverAs: 'steer' } },
+  ]);
+});
+
+test('an explicit followup ignores the agent idle state', async () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  ctx.setIdle(false);
+  await sendCommand(harness.pi, socket, 'followup', { text: 'f1' });
+  ctx.setIdle(true);
+  await sendCommand(harness.pi, socket, 'followup', { text: 'f2' });
+  assert.deepEqual(harness.pi.userMessages, [
+    { content: 'f1', options: { expandPromptTemplates: true, deliverAs: 'followUp' } },
+    { content: 'f2', options: { expandPromptTemplates: true, deliverAs: 'followUp' } },
+  ]);
+});
+
+test('an isIdle() that throws fails the command loudly instead of crashing', async () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  ctx.setIdleError(new Error('runner is not active'));
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'prompt', { text: 'x' });
+  // A pi lacking `isIdle` throws here. The failure must surface as a loud
+  // `ok:false` on the reply the app already awaits — not an escaped rejection,
+  // and not the silent drop this change exists to fix.
+  assert.deepEqual(parsed(socket).at(-1), {
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'command-result',
+    id: 'c-prompt',
+    ok: false,
+    error: 'runner is not active',
+  });
 });
 
 test('abort aborts the active operation and acknowledges dispatch', async () => {

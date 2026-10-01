@@ -73,6 +73,17 @@ export interface BridgeCtx {
   abort(): void;
   compact(options?: unknown): void;
   /**
+   * Whether the session is idle (`!streaming && !compacting`).
+   *
+   * Required, unlike `getContextUsage` below. The bridge picks the delivery
+   * mode from it, and a silent fallback (`ctx.isIdle?.() ?? true`) would
+   * reproduce the exact silent mid-turn drop this method exists to fix. On an
+   * older pi that lacks it the call throws into `dispatch`'s catch, yielding a
+   * loud `command-result ok:false`, and `tsc` rejects any ctx stub that omits
+   * it.
+   */
+  isIdle(): boolean;
+  /**
    * pi's context-usage estimate. Optional because the bridge's pi slice is
    * structural: an older pi without it degrades to "no label" rather than a
    * crash. Returns undefined when there is no model, or no known window.
@@ -920,8 +931,23 @@ class Bridge {
       case 'followup': {
         const text = asString(fields.text);
         if (text === null) return { ok: false, error: 'missing text' };
-        // `prompt` is plain; `steer` and `followup` queue during streaming.
-        const deliverAs = name === 'steer' ? 'steer' : name === 'followup' ? 'followUp' : undefined;
+        // `steer` and `followup` name their mode explicitly. For a plain
+        // `prompt` the mode is the agent's: the app cannot make this call well
+        // because its agent state is a network round-trip stale, so a stale
+        // "idle" would reproduce the silent mid-turn drop. Read `isIdle()`
+        // here instead: idle → today's plain prompt; running → steer, mirroring
+        // the TUI's Enter (interactive-mode.js:2615). The check is once, at
+        // dispatch: pi re-reads `isStreaming` after its own preflight, so the
+        // guarantee is "never worse than today", not race-free. Steer-on-idle
+        // is benign — pi ignores `streamingBehavior` when not streaming.
+        let deliverAs: 'steer' | 'followUp' | undefined;
+        if (name === 'steer') {
+          deliverAs = 'steer';
+        } else if (name === 'followup') {
+          deliverAs = 'followUp';
+        } else {
+          deliverAs = ctx.isIdle() ? undefined : 'steer';
+        }
         // `expandPromptTemplates` is what makes `/name` a command. pi's
         // extension API defaults it to FALSE, which injects the text verbatim
         // and leaves the model to read a command name as prose; pi's own
