@@ -48,8 +48,10 @@ pure Dart codec, the app — client, pairing, session list and transcript — th
 bridge driven inside a real `pi` against a faux provider including its silence as
 a process, `serve` minting pairing codes on demand, the real client attaching to
 a real hub with a real `pi` behind it, and the manual pass: pairing through the UI,
-a live model streaming into a rendered transcript, a hub restart survived
-without re-pairing, and the reasoning streaming live above the reply.
+a live model streaming into a rendered transcript, a hub restart survived without
+re-pairing — the phone reconnects to the stable viewer port while the bridge finds
+the new ephemeral agent port through the discovery file — and the reasoning
+streaming live above the reply.
 
 **What is left** is not milestone work — it is an agenda, listed next.
 
