@@ -88,6 +88,12 @@ Map<String, Object?> sessionsFrame(List<Map<String, Object?>> sessions) => {
 
 const sessionS1 = {'sessionId': 's1', 'label': 'api refactor', 'agentState': 'idle'};
 const sessionS2 = {'sessionId': 's2', 'label': 'second session', 'agentState': 'idle'};
+const appSessionA1 = {
+  'sessionId': 'a1',
+  'label': 'New session',
+  'agentState': 'idle',
+  'origin': 'app',
+};
 
 /// A snapshot with [count] flattened message entries — enough to overflow the
 /// 600px test viewport so scroll position is observable.
@@ -597,5 +603,59 @@ void main() {
     expect(find.byType(PairingScreen), findsOneWidget);
     expect(await h.store.readEndpoint(), isNull);
     expect(await h.store.read(), isNull);
+  });
+
+  testWidgets('the sessions view starts an app session', (tester) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+
+    await tester.tap(find.byKey(const Key('start-session')));
+    await tester.pump();
+
+    final frame = h.factory.last.sentFrames.last;
+    expect(frame['type'], 'start-session');
+    expect(frame['id'], isNotEmpty);
+  });
+
+  testWidgets('a refused start shows the error verbatim', (tester) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+
+    await tester.tap(find.byKey(const Key('start-session')));
+    await tester.pump();
+    final id = h.factory.last.sentFrames.last['id'];
+
+    h.factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'command-result',
+      'id': id,
+      'ok': false,
+      'error': 'too many app sessions',
+    });
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.textContaining('too many app sessions'), findsOneWidget);
+  });
+
+  testWidgets('the kill button kills an app session', (tester) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+    h.factory.last.receive(sessionsFrame([sessionS1, appSessionA1]));
+    await settle(tester, h.scheduler);
+
+    await tester.tap(find.byKey(const Key('kill-a1')));
+    await tester.pump();
+
+    final frame = h.factory.last.sentFrames.last;
+    expect(frame['type'], 'kill-session');
+    expect(frame['sessionId'], 'a1');
   });
 }

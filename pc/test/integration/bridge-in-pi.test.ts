@@ -24,7 +24,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -39,6 +39,8 @@ import { writeDiscovery } from '../../src/hub/discovery.ts';
 import { createHub } from '../../src/hub/hub.ts';
 import type { Hub } from '../../src/hub/hub.ts';
 import { createTicketStore } from '../../src/hub/pairing.ts';
+import { createSpawner } from '../../src/hub/spawner.ts';
+import type { Spawner } from '../../src/hub/spawner.ts';
 import { PROTOCOL_VERSION } from '../../src/protocol/protocol.ts';
 
 const bridgePath = fileURLToPath(new URL('../../extensions/pi-droid-bridge.ts', import.meta.url));
@@ -254,6 +256,24 @@ function assertStdoutIsPureJsonl(run: PiRun): void {
   );
 }
 
+function readText(path: string): string | null {
+  try {
+    return readFileSync(path, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+/** True while the pid is alive; `process.kill(pid, 0)` throws ESRCH once dead. */
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** A port nobody is listening on right now. */
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -375,6 +395,7 @@ interface SessionSummary {
   sessionId: string;
   label: string;
   agentState: string;
+  origin?: string;
 }
 
 async function waitForSession(viewer: Viewer, timeoutMs: number): Promise<SessionSummary> {
@@ -391,6 +412,36 @@ async function waitForSession(viewer: Viewer, timeoutMs: number): Promise<Sessio
     }
   }
   throw new Error('timed out waiting for the bridge to register a session with the hub');
+}
+
+/** Waits for a `sessions` push carrying an `origin:'app'` entry. */
+async function waitForAppSession(viewer: Viewer, timeoutMs: number): Promise<SessionSummary> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const message = await viewer.tryNext(Math.min(1000, Math.max(1, deadline - Date.now())));
+    if (message === undefined) continue;
+    if (message.type !== 'sessions' || !Array.isArray(message.sessions)) continue;
+    const entry = (message.sessions as Array<Record<string, unknown>>).find(
+      (session) => session.origin === 'app',
+    );
+    if (entry !== undefined) return entry as unknown as SessionSummary;
+  }
+  throw new Error('timed out waiting for an app-origin session to register');
+}
+
+/** Reads relayed messages until one matches, rejecting after a bound. */
+async function waitForMessage(
+  viewer: Viewer,
+  predicate: (message: Record<string, unknown>) => boolean,
+  timeoutMs: number,
+): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const message = await viewer.tryNext(Math.min(1000, Math.max(1, deadline - Date.now())));
+    if (message === undefined) continue;
+    if (predicate(message)) return message;
+  }
+  throw new Error('timed out waiting for a matching message');
 }
 
 interface Collected {
@@ -822,4 +873,122 @@ test('in print mode the bridge is inert (mode-guard evidence, not silence-while-
     return;
   }
   assert.fail('the hub never sent the authenticated viewer a session list');
+});
+
+// ---------------------------------------------------------------------------
+// Step 22 — the capstone: bare production args, configured-extension discovery
+// ---------------------------------------------------------------------------
+
+test('a spawned bare pi registers, prompts and dies on kill-session', async () => {
+  // The bridge and the faux harness are loaded through *configured-extension
+  // discovery* — the same mechanism production uses — with no `-e`. The faux
+  // provider is the declared carve-out; the registration path is production.
+  const { token } = loadOrCreateToken(configDir);
+  const agentDir = join(tmpRoot, 'agent');
+  mkdirSync(agentDir, { recursive: true, mode: 0o700 });
+  writeFileSync(
+    join(agentDir, 'settings.json'),
+    JSON.stringify({
+      defaultProvider: 'faux',
+      defaultModel: 'faux-1',
+      extensions: [
+        fileURLToPath(new URL('../../extensions', import.meta.url)),
+        harnessPath,
+      ],
+    }),
+  );
+
+  const real = createSpawner({
+    env: {
+      ...process.env,
+      PI_DROID_RUNTIME_DIR: runtimeDir,
+      XDG_CONFIG_HOME: configDir,
+      PI_CODING_AGENT_DIR: agentDir,
+      PI_DROID_FAUX_TEXT: FAUX_TEXT,
+    },
+  });
+  const pids: number[] = [];
+  // Wrap the real spawner only to observe the pid it hands back; every
+  // behaviour is the production one.
+  const spawner: Spawner = {
+    spawn: async () => {
+      const pid = await real.spawn();
+      pids.push(pid);
+      return pid;
+    },
+    owns: (pid) => real.owns(pid),
+    confirm: (pid) => real.confirm(pid),
+    kill: (pid) => real.kill(pid),
+    close: () => real.close(),
+  };
+
+  const hub = await startHub({ token, spawner });
+  publishDiscovery(hub);
+
+  const viewer = await connectViewer(hub.viewerPort, token);
+  viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'start-session', id: 'start-1' });
+
+  const session = await waitForAppSession(viewer, BOOT_TIMEOUT_MS);
+  assert.ok(session.sessionId.length > 0, 'the spawned pi must register a session id');
+  assert.equal(session.origin, 'app', 'the spawner-owned pid must derive origin app');
+
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'subscribe',
+    sessionId: session.sessionId,
+  });
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'history-request',
+    sessionId: session.sessionId,
+  });
+
+  const id = 'prompt-1';
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'command',
+    id,
+    sessionId: session.sessionId,
+    name: 'prompt',
+    args: { text: 'say the word' },
+  });
+
+  const collected = await collectPrompt(viewer, id, STREAM_TIMEOUT_MS);
+  assert.ok(collected.result, 'no command-result arrived for the prompt');
+  assert.equal(
+    collected.result.ok,
+    true,
+    `prompt was refused: ${String(collected.result.error)}`,
+  );
+  assert.ok(collected.settled, 'the spawned agent never settled');
+  assert.equal(
+    collected.streams.map((stream) => stream.text).join(''),
+    FAUX_TEXT,
+    'the spawned pi must stream the faux provider reply',
+  );
+
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'kill-session',
+    id: 'kill-1',
+    sessionId: session.sessionId,
+  });
+  const killResult = await waitForMessage(
+    viewer,
+    (message) => message.type === 'command-result' && message.id === 'kill-1',
+    5000,
+  );
+  assert.equal(killResult.ok, true, `kill was refused: ${String(killResult.error)}`);
+
+  await waitForMessage(
+    viewer,
+    (message) => message.type === 'session-gone' && message.sessionId === session.sessionId,
+    5000,
+  );
+  assert.equal(pids.length, 1, 'exactly one child was spawned');
+  await waitFor(
+    () => !alive(pids[0]!),
+    'the spawned process group to be gone after the kill',
+    5000,
+  );
 });

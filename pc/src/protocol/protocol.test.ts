@@ -433,6 +433,120 @@ test('decode rejects a sessions entry with an unknown agent state', () => {
   );
 });
 
+test('decode accepts a minimal start-session', () => {
+  const raw = JSON.stringify({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'start-session',
+    id: 'start-1',
+  });
+  const result = decode(raw);
+  if (!result.ok) assert.fail(`expected a start-session to decode: ${result.error}`);
+  assert.deepEqual(result.value, {
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'start-session',
+    id: 'start-1',
+  });
+});
+
+test('decode accepts a minimal kill-session', () => {
+  const raw = JSON.stringify({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'kill-session',
+    id: 'kill-1',
+    sessionId: 'sess-1',
+  });
+  const result = decode(raw);
+  if (!result.ok) assert.fail(`expected a kill-session to decode: ${result.error}`);
+  assert.deepEqual(result.value, {
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'kill-session',
+    id: 'kill-1',
+    sessionId: 'sess-1',
+  });
+});
+
+test('start-session and kill-session are viewer message types', () => {
+  assert.equal(isViewerMessageType('start-session'), true);
+  assert.equal(isViewerMessageType('kill-session'), true);
+  assert.equal(isAgentMessageType('start-session'), false);
+  assert.equal(isAgentMessageType('kill-session'), false);
+});
+
+test('decode rejects a start-session with a missing id', () => {
+  expectReject(
+    JSON.stringify({ protocolVersion: PROTOCOL_VERSION, type: 'start-session' }),
+    'bad-field',
+    /id/i,
+  );
+});
+
+test('decode rejects a start-session with an empty id', () => {
+  expectReject(
+    JSON.stringify({ protocolVersion: PROTOCOL_VERSION, type: 'start-session', id: '' }),
+    'bad-field',
+    /id/i,
+  );
+});
+
+test('decode rejects a kill-session with a missing sessionId', () => {
+  expectReject(
+    JSON.stringify({ protocolVersion: PROTOCOL_VERSION, type: 'kill-session', id: 'k1' }),
+    'bad-field',
+    /sessionId/i,
+  );
+});
+
+test('decode rejects a kill-session with an empty sessionId', () => {
+  expectReject(
+    JSON.stringify({
+      protocolVersion: PROTOCOL_VERSION,
+      type: 'kill-session',
+      id: 'k1',
+      sessionId: '',
+    }),
+    'bad-field',
+    /sessionId/i,
+  );
+});
+
+test('decode accepts a sessions entry with an app origin', () => {
+  const raw = JSON.stringify({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'sessions',
+    sessions: [{ sessionId: 'sess-1', label: 'one', agentState: 'idle', origin: 'app' }],
+  });
+  const result = decode(raw);
+  if (!result.ok) assert.fail(`expected an app origin to decode: ${result.error}`);
+  assert.equal((result.value as SessionsMessage).sessions[0]!.origin, 'app');
+});
+
+test('decode rejects a sessions entry with an unknown origin', () => {
+  expectReject(
+    JSON.stringify({
+      protocolVersion: PROTOCOL_VERSION,
+      type: 'sessions',
+      sessions: [{ sessionId: 'sess-1', label: 'one', agentState: 'idle', origin: 'nope' }],
+    }),
+    'bad-field',
+    /origin/i,
+  );
+});
+
+test('decode accepts a sessions entry with no origin', () => {
+  const raw = JSON.stringify({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'sessions',
+    sessions: [{ sessionId: 'sess-1', label: 'one', agentState: 'idle' }],
+  });
+  const result = decode(raw);
+  if (!result.ok) assert.fail(`expected an absent origin to decode: ${result.error}`);
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(result.value, 'origin'),
+    false,
+    'an absent origin must not be invented by the decoder',
+  );
+});
+
 test('the per-listener message type guards know their own set', () => {
   assert.equal(isAgentMessageType('register'), true);
   assert.equal(isAgentMessageType('command'), false);

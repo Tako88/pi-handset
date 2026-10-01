@@ -51,16 +51,22 @@ class SessionSummary {
   final String label;
   final String agentState;
 
+  /// Who started the session: `'app'` (the hub spawned it) or `'pc'`. Defaults
+  /// to `'pc'` so a hub that predates the field never strands a viewer.
+  final String origin;
+
   const SessionSummary({
     required this.sessionId,
     required this.label,
     required this.agentState,
+    this.origin = 'pc',
   });
 
   factory SessionSummary.fromJson(Map<String, Object?> json) => SessionSummary(
     sessionId: json['sessionId']! as String,
     label: json['label']! as String,
     agentState: json['agentState']! as String,
+    origin: json['origin'] as String? ?? 'pc',
   );
 }
 
@@ -480,15 +486,61 @@ class HubClient {
     Map<String, Object?>? args,
     String? id,
   }) {
+    return _request(sessionId, id, (commandId) {
+      final message = <String, Object?>{
+        'protocolVersion': protocolVersion,
+        'type': 'command',
+        'id': commandId,
+        'sessionId': sessionId,
+        'name': name,
+      };
+      if (args != null) message['args'] = args;
+      return message;
+    });
+  }
+
+  /// Asks the hub to spawn a headless app-started session.
+  ///
+  /// The hub answers directly to this connection; there is no session to key
+  /// the pending result into, so it is registered under the empty-session
+  /// convention (`_request`'s `pendingSessionId`) and a `session-gone` for any
+  /// session cannot fail it.
+  Future<CommandResult> startSession({String? id}) {
+    return _request('', id, (commandId) => <String, Object?>{
+      'protocolVersion': protocolVersion,
+      'type': 'start-session',
+      'id': commandId,
+    });
+  }
+
+  /// Asks the hub to kill an app-started session. Same empty-session pending
+  /// convention as [startSession].
+  Future<CommandResult> killSession(String sessionId, {String? id}) {
+    return _request('', id, (commandId) => <String, Object?>{
+      'protocolVersion': protocolVersion,
+      'type': 'kill-session',
+      'id': commandId,
+      'sessionId': sessionId,
+    });
+  }
+
+  /// The shared body of every request/result command: registers a pending
+  /// entry under a generated id, schedules the bounded wait, sends [build]'s
+  /// frame, and completes when the matching `command-result` arrives.
+  Future<CommandResult> _request(
+    String pendingSessionId,
+    String? id,
+    Map<String, Object?> Function(String commandId) build,
+  ) {
     if (_socket == null) {
-      // Dropping the command silently would leave the UI spinning forever.
+      // Dropping the request silently would leave the UI spinning forever.
       return Future.value(
         const CommandResult(ok: false, error: 'not connected'),
       );
     }
     final commandId = id ?? 'cmd-${++_commandCounter}';
     final completer = Completer<CommandResult>();
-    final pending = _PendingCommand(sessionId, completer);
+    final pending = _PendingCommand(pendingSessionId, completer);
     _pendingCommands[commandId] = pending;
     pending.timer = _scheduler.schedule(_commandTimeout, () {
       final removed = _pendingCommands.remove(commandId);
@@ -497,15 +549,7 @@ class HubClient {
         const CommandResult(ok: false, error: 'timed out'),
       );
     }, kind: HubTimerKind.command);
-    final message = <String, Object?>{
-      'protocolVersion': protocolVersion,
-      'type': 'command',
-      'id': commandId,
-      'sessionId': sessionId,
-      'name': name,
-    };
-    if (args != null) message['args'] = args;
-    final error = _trySend(message);
+    final error = _trySend(build(commandId));
     if (error != null) {
       // A closing socket must not leave the caller with a thrown exception and
       // an entry that only the 30s timeout would clear.

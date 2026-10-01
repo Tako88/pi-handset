@@ -135,6 +135,41 @@ class _PiDroidAppState extends State<PiDroidApp> {
   void _open(SessionSummary session) =>
       widget.client.subscribe(session.sessionId);
 
+  /// Starts an app-started session. The hub answers with a result; a refusal
+  /// (e.g. the cap is reached) is shown, never swallowed. [context] is the
+  /// sessions-view context, below `MaterialApp`, so its `ScaffoldMessenger` is
+  /// an ancestor.
+  void _start(BuildContext context) {
+    final messenger = ScaffoldMessenger.of(context);
+    unawaited(
+      widget.client.startSession().then((result) {
+        if (!result.ok) {
+          messenger.showSnackBar(
+            SnackBar(
+              content: Text(result.error ?? 'could not start a session'),
+            ),
+          );
+        }
+      }),
+    );
+  }
+
+  /// Kills an app-started session. A refusal is shown in a SnackBar.
+  void _kill(SessionSummary session, BuildContext context) {
+    final messenger = ScaffoldMessenger.of(context);
+    unawaited(
+      widget.client.killSession(session.sessionId).then((result) {
+        if (!result.ok) {
+          messenger.showSnackBar(
+            SnackBar(
+              content: Text(result.error ?? 'could not kill the session'),
+            ),
+          );
+        }
+      }),
+    );
+  }
+
   void _close() {
     final active = _state.activeSessionId;
     if (active != null) widget.client.unsubscribe(active);
@@ -193,7 +228,17 @@ class _PiDroidAppState extends State<PiDroidApp> {
           ],
         ),
         body: _withStatusBanner(
-          SessionList(sessions: _state.sessions, onOpen: _open),
+          SessionList(
+            sessions: _state.sessions,
+            onOpen: _open,
+            onKill: (session) => _kill(session, context),
+          ),
+        ),
+        floatingActionButton: FloatingActionButton(
+          key: const Key('start-session'),
+          tooltip: 'Start a session',
+          onPressed: () => _start(context),
+          child: const Icon(Icons.add),
         ),
       );
     }

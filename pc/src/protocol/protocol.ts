@@ -100,6 +100,13 @@ export type HelloMessage =
 export const AGENT_STATES = ['idle', 'running', 'settled'] as const;
 export type AgentState = (typeof AGENT_STATES)[number];
 
+/**
+ * Who started a session: the app (`app`) or the PC (`pc`). Derived hub-side
+ * from the spawner's live children, never from a client claim.
+ */
+export const SESSION_ORIGINS = ['app', 'pc'] as const;
+export type SessionOrigin = (typeof SESSION_ORIGINS)[number];
+
 /** The normalized payload kinds an `event` may carry. */
 export const EVENT_PAYLOAD_KINDS = ['stream', 'message', 'agent', 'tool', 'status', 'usage'] as const;
 export type EventPayloadKind = (typeof EVENT_PAYLOAD_KINDS)[number];
@@ -222,6 +229,27 @@ export interface CommandMessage {
   args?: unknown;
 }
 
+/**
+ * A viewer asks the hub to spawn a headless pi session. Answered directly to
+ * the issuing connection with a `command-result`; never forwarded to an agent.
+ */
+export interface StartSessionMessage {
+  protocolVersion: number;
+  type: 'start-session';
+  id: string;
+}
+
+/**
+ * A viewer asks the hub to kill an app-started session. Answered directly to
+ * the issuing connection; never forwarded to an agent.
+ */
+export interface KillSessionMessage {
+  protocolVersion: number;
+  type: 'kill-session';
+  id: string;
+  sessionId: string;
+}
+
 export interface PairedMessage {
   protocolVersion: number;
   type: 'paired';
@@ -243,6 +271,8 @@ export interface SessionSummary {
   sessionId: string;
   label: string;
   agentState: AgentState;
+  /** Validated if present; an absent field means `'pc'` (mixed-version skew). */
+  origin?: SessionOrigin;
 }
 
 export interface SessionsMessage {
@@ -295,6 +325,8 @@ export const VIEWER_MESSAGE_TYPES = [
   'unsubscribe',
   'history-request',
   'command',
+  'start-session',
+  'kill-session',
 ] as const;
 export type ViewerMessageType = (typeof VIEWER_MESSAGE_TYPES)[number];
 
@@ -340,7 +372,9 @@ export type ViewerToHubMessage =
   | SubscribeMessage
   | UnsubscribeMessage
   | HistoryRequestMessage
-  | CommandMessage;
+  | CommandMessage
+  | StartSessionMessage
+  | KillSessionMessage;
 
 export type HubToViewerMessage =
   | PairedMessage
@@ -362,6 +396,8 @@ export type Message =
   | UnsubscribeMessage
   | HistoryRequestMessage
   | CommandMessage
+  | StartSessionMessage
+  | KillSessionMessage
   | PairedMessage
   | SessionsMessage
   | SnapshotMessage
@@ -579,6 +615,21 @@ export function decode(text: string): DecodeResult {
       }
       return { ok: true, value: parsed as CommandMessage };
     }
+    case 'start-session': {
+      if (asString(message.id) === null) {
+        return fail('bad-field', 'start-session id must be a non-empty string');
+      }
+      return { ok: true, value: parsed as StartSessionMessage };
+    }
+    case 'kill-session': {
+      if (asString(message.id) === null) {
+        return fail('bad-field', 'kill-session id must be a non-empty string');
+      }
+      if (asString(message.sessionId) === null) {
+        return fail('bad-field', 'kill-session sessionId must be a non-empty string');
+      }
+      return { ok: true, value: parsed as KillSessionMessage };
+    }
     case 'paired': {
       if (asString(message.token) === null) {
         return fail('bad-field', 'paired token must be a non-empty string');
@@ -602,6 +653,12 @@ export function decode(text: string): DecodeResult {
         }
         if (!(AGENT_STATES as readonly unknown[]).includes(summary.agentState)) {
           return fail('bad-state', 'sessions agentState must be idle, running or settled');
+        }
+        if (
+          summary.origin !== undefined &&
+          !(SESSION_ORIGINS as readonly unknown[]).includes(summary.origin)
+        ) {
+          return fail('bad-field', 'sessions origin must be app or pc');
         }
       }
       return { ok: true, value: parsed as SessionsMessage };

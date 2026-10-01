@@ -5,7 +5,14 @@
     {
       "sessionId": "sess-1",
       "label": "my session",
-      "agentState": "settled"
+      "agentState": "settled",
+      "origin": "app"
+    },
+    {
+      "sessionId": "sess-2",
+      "label": "project work",
+      "agentState": "idle",
+      "origin": "pc"
     }
   ]
 }

@@ -20,6 +20,9 @@
     { "file": "command-result-bad-ok.json", "code": "bad-field" },
     { "file": "resync-bad-reason.json", "code": "bad-field" },
     { "file": "sessions-bad-array.json", "code": "bad-field" },
-    { "file": "sessions-bad-entry.json", "code": "bad-field" }
+    { "file": "sessions-bad-entry.json", "code": "bad-field" },
+    { "file": "sessions-bad-origin.json", "code": "bad-field" },
+    { "file": "start-session-bad-id.json", "code": "bad-field" },
+    { "file": "kill-session-bad-session-id.json", "code": "bad-field" }
   ]
 }

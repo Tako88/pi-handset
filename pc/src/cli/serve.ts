@@ -33,6 +33,7 @@ import {
 import type { LockResult } from '../hub/discovery.ts';
 import { createHub } from '../hub/hub.ts';
 import { TICKET_TTL_MS, createTicketStore } from '../hub/pairing.ts';
+import { createSpawner } from '../hub/spawner.ts';
 import { PROTOCOL_VERSION } from '../protocol/protocol.ts';
 
 /** The viewer listener's default port. */
@@ -225,12 +226,16 @@ async function main(): Promise<void> {
   // print codes the hub cannot exchange — the printed-but-unredeemable bug
   // this milestone fixes.
   const tickets = createTicketStore();
+  // One supervisor per serve: the hub owns the spawner and closes it on a
+  // graceful stop, group-killing every app-started child.
+  const spawner = createSpawner();
   try {
     hub = await createHub({
       token,
       tickets,
       viewerPort: args.port,
       viewerHost: args.lan ? '0.0.0.0' : '127.0.0.1',
+      spawner,
     });
   } catch (error) {
     releaseLock(runtimeDir, process.pid);

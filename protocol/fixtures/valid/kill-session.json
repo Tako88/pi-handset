@@ -1,0 +1,6 @@
+{
+  "protocolVersion": 1,
+  "type": "kill-session",
+  "id": "kill-1",
+  "sessionId": "sess-1"
+}

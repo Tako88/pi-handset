@@ -17,7 +17,7 @@ and so is transcript parity with the pi TUI (M1–M3).
 
 | | `pc/` (Node + TypeScript) | `app/` (Flutter + Dart) |
 |---|---|---|
-| Suite | 316 tests passing | 238 tests passing |
+| Suite | 354 tests passing | 256 tests passing |
 | Static gate | `tsc --noEmit` clean | `flutter analyze` clean |
 | Product code | hub, protocol codec, pi bridge | protocol codec, client, UI |
 
@@ -49,7 +49,11 @@ session-registry push), the pi bridge extension, shared golden fixtures with a
 pure Dart codec, the app — client, pairing, session list and transcript — the
 bridge driven inside a real `pi` against a faux provider including its silence as
 a process, `serve` minting pairing codes on demand, the real client attaching to
-a real hub with a real `pi` behind it, and the manual pass: pairing through the UI,
+a real hub with a real `pi` behind it, **starting and killing headless app sessions
+from the phone** — the hub spawns `pi --mode rpc --no-session` in a fresh empty
+temp dir, the spawned pi registers through the same bridge path, the session list
+groups app-started sessions above PC ones, and only app rows carry a kill
+affordance — and the manual pass: pairing through the UI,
 a live model streaming into a rendered transcript, a hub restart survived without
 re-pairing — the phone reconnects to the stable viewer port while the bridge finds
 the new ephemeral agent port through the discovery file — and the reasoning
@@ -131,6 +135,36 @@ what it would cost, so it can be picked up cold.
   it without a restart. Whether that came from a session replacement or something else
   is unverified; a `pi` restart is the sure path, and a stale bridge shows up as the
   phone missing a behaviour the code claims.
+
+**App-started sessions, accepted at the time**
+
+- **A `SIGKILL`ed hub leaks its children.** A graceful `SIGTERM`/`SIGINT` stop runs
+  `spawner.close()`, which group-kills every app session. A `SIGKILL` of `serve`
+  cannot run any handler: those children survive, reconnect via the rewritten
+  discovery file, re-register to the restarted hub as `origin:'pc'` (the new spawner
+  does not own their pid), become unkillable from the app, and their temp dirs stay in
+  `/tmp`. The upgrade path is a pidfile reaper on boot; not built. `--take-over`
+  likewise leaves the old supervisor's children running, because it does not signal
+  the old process — pre-existing, out of scope.
+- **A spawned child cannot be killed before it registers.** `kill-session` is keyed by
+  `sessionId`, which does not exist until the child's `register`; the app has no row
+  for it either. The window is bounded by the registration deadline (60 s), after which
+  the reaper kills it.
+- **The cap is a constant.** 8 simultaneous app sessions, hardcoded, with no CLI flag
+  and no UI; the 9th start is refused with `too many app sessions` (surfaced verbatim
+  in a SnackBar). Each session is a real pi process, so this is the one unbounded
+  resource the feature adds.
+- **No spawn-time configuration and no auto-open.** Nothing to pick at spawn (model,
+  name, cwd are not offered); the hub cannot know the pi-generated session id at spawn
+  time, so a new session appears only when its `register` arrives — a child spawned but
+  not yet registered has no row and therefore no kill affordance.
+- **`pi` must be on the supervisor's `PATH`.** `spawn('pi', …)` resolves through the
+  supervisor process's environment; a systemd/launchd-managed hub may not have it.
+- **The bridge must be globally configured.** Production relies on the user's
+  `<agent-dir>/settings.json` listing `pc/extensions` (verified on the dev host). If it
+  does not, a spawned pi never registers; the registration reaper kills it and the
+  start silently yields no row. The hermetic capstone proves the mechanism with an
+  equivalent settings file.
 
 ### What the manual pass actually found
 
