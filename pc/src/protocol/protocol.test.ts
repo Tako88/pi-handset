@@ -11,6 +11,7 @@ import {
   isViewerMessageType,
 } from './protocol.ts';
 import type {
+  AgentSettledMessage,
   DecodeErrorCode,
   EventMessage,
   HelloMessage,
@@ -632,4 +633,64 @@ test('decode never throws on deeply nested JSON', () => {
 test('the retired ordered-stream helper is not exported', async () => {
   const module = (await import('./protocol.ts')) as Record<string, unknown>;
   assert.equal(module.decodeOrderedStream, undefined);
+});
+
+test('an event carrying a settled payload round-trips through encode and decode', () => {
+  const event: EventMessage = {
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'event',
+    payload: { kind: 'settled', text: 'Done.', truncated: false },
+  };
+  assert.deepEqual(decode(encode(event)), { ok: true, value: event });
+});
+
+test('decode rejects a settled payload whose text is not a string', () => {
+  expectReject(
+    JSON.stringify({
+      protocolVersion: PROTOCOL_VERSION,
+      type: 'event',
+      payload: { kind: 'settled', text: 123, truncated: false },
+    }),
+    'bad-text',
+    /settled text/i,
+  );
+});
+
+test('decode rejects a settled payload whose truncated is not a boolean', () => {
+  expectReject(
+    JSON.stringify({
+      protocolVersion: PROTOCOL_VERSION,
+      type: 'event',
+      payload: { kind: 'settled', text: 'Done.', truncated: 'no' },
+    }),
+    'bad-field',
+    /settled truncated/i,
+  );
+});
+
+test('an agent-settled message round-trips through encode and decode', () => {
+  const message: AgentSettledMessage = {
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'agent-settled',
+    sessionId: 'sess-1',
+    label: 'work',
+    text: 'Done.',
+    truncated: false,
+  };
+  assert.deepEqual(decode(encode(message)), { ok: true, value: message });
+});
+
+test('decode rejects an agent-settled message with an empty label', () => {
+  expectReject(
+    JSON.stringify({
+      protocolVersion: PROTOCOL_VERSION,
+      type: 'agent-settled',
+      sessionId: 'sess-1',
+      label: '',
+      text: 'Done.',
+      truncated: false,
+    }),
+    'bad-field',
+    /label/i,
+  );
 });

@@ -41,6 +41,17 @@
     "type": "event",
     "payload": { "kind": "usage", "tokens": 23400, "contextWindow": 128000 }
   },
+  "event-settled.json": {
+    "type": "event",
+    "payload": { "kind": "settled", "text": "Done.", "truncated": false }
+  },
+  "agent-settled.json": {
+    "type": "agent-settled",
+    "sessionId": "sess-1",
+    "label": "work",
+    "text": "Done.",
+    "truncated": false
+  },
   "event-stream-phase.json": {
     "type": "event",
     "payload": { "kind": "stream", "seq": 1, "phase": "thinking" }

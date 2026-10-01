@@ -5,6 +5,14 @@
          not "deduplicate" this into the debug/profile manifests — that silently
          strips networking from release builds. -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Settles are surfaced as notifications while the app is backgrounded.
+         POST_NOTIFICATIONS is a runtime permission on API 33+; the service
+         still runs without it. The foreground service keeps the local hub
+         WebSocket connected so settles keep arriving, typed `specialUse`
+         because a `dataSync` service is time-capped. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
     <application
         android:label="pi_droid"
         android:name="${applicationName}"
@@ -36,6 +44,20 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+        <!-- Keeps the Dart isolate's WebSocket alive while the app is
+             backgrounded, so a settle can still raise a notification. A native
+             service, not a Dart-isolate plugin, because the hub client lives in
+             the main isolate. `stopWithTask` tears it down with the task so the
+             persistent notification cannot linger after a swipe-away. -->
+        <service
+            android:name=".HubConnectionService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse"
+            android:stopWithTask="true">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="keeps the local hub WebSocket connected for session notifications" />
+        </service>
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and

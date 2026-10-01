@@ -219,6 +219,14 @@ void main() {
         'reason': 'r',
       },
       'session-gone': {'protocolVersion': 1, 'type': 'session-gone', 'sessionId': 'sess'},
+      'agent-settled': {
+        'protocolVersion': 1,
+        'type': 'agent-settled',
+        'sessionId': 'sess',
+        'label': 'work',
+        'text': 'Done.',
+        'truncated': false,
+      },
     };
     for (final type in allMessageTypes) {
       final body = minimalBodies[type];

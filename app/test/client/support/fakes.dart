@@ -10,6 +10,7 @@ import 'dart:convert';
 
 import 'package:pi_droid/client/endpoint_store.dart';
 import 'package:pi_droid/client/hub_socket.dart';
+import 'package:pi_droid/client/notification_presenter.dart';
 import 'package:pi_droid/client/scheduler.dart';
 import 'package:pi_droid/client/token_store.dart';
 
@@ -84,6 +85,72 @@ class GatedTokenStore implements TokenStore {
   Future<void> clearEndpoint() async {
     _endpoint = null;
   }
+}
+
+/// A notification the presenter was asked to show.
+class ShownNotification {
+  final int id;
+  final String title;
+  final String body;
+  final String sessionId;
+
+  const ShownNotification({
+    required this.id,
+    required this.title,
+    required this.body,
+    required this.sessionId,
+  });
+}
+
+/// An in-memory [NotificationPresenter] recording every call.
+class FakeNotificationPresenter implements NotificationPresenter {
+  final List<ShownNotification> shown = <ShownNotification>[];
+  final List<int> cancelled = <int>[];
+  int permissionRequests = 0;
+  int startForegroundCalls = 0;
+  int stopForegroundCalls = 0;
+
+  /// Drives `openSessionRequests`; `.add(id)` simulates a notification tap.
+  final StreamController<String> requestOpen =
+      StreamController<String>.broadcast();
+
+  /// Returned by [getLaunchSession]; null means an ordinary cold start.
+  String? initialSession;
+
+  @override
+  Stream<String> get openSessionRequests => requestOpen.stream;
+
+  @override
+  Future<String?> getLaunchSession() async => initialSession;
+
+  @override
+  Future<void> requestPermission() async => permissionRequests++;
+
+  @override
+  Future<void> startForeground() async => startForegroundCalls++;
+
+  @override
+  Future<void> stopForeground() async => stopForegroundCalls++;
+
+  @override
+  Future<void> show({
+    required int id,
+    required String title,
+    required String body,
+    required String sessionId,
+  }) async {
+    shown.add(
+      ShownNotification(
+        id: id,
+        title: title,
+        body: body,
+        sessionId: sessionId,
+      ),
+    );
+  }
+
+  @override
+  Future<void> cancel({required int id}) async => cancelled.add(id);
 }
 
 /// A WebSocket the test controls frame by frame.

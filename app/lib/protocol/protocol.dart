@@ -22,7 +22,15 @@ const List<String> agentStates = ['idle', 'running', 'settled'];
 const List<String> sessionOrigins = ['app', 'pc'];
 
 /// The normalized payload kinds an `event` may carry.
-const List<String> eventPayloadKinds = ['stream', 'message', 'agent', 'tool', 'status', 'usage'];
+const List<String> eventPayloadKinds = [
+  'stream',
+  'message',
+  'agent',
+  'tool',
+  'status',
+  'usage',
+  'settled',
+];
 
 /// Lifecycle phases a `stream` frame may signal, and the tag that marks one.
 ///
@@ -65,6 +73,7 @@ const List<String> hubToViewerMessageTypes = [
   'command-result',
   'resync-required',
   'session-gone',
+  'agent-settled',
 ];
 
 /// Every message type the protocol defines. The fixture suite asserts one valid
@@ -196,6 +205,18 @@ DecodeResult decode(String text) {
       }
       // `message`/`tool`/`status`/`usage` are bridge-owned shapes the hub only
       // relays.
+      if (kind == 'settled') {
+        if (body['text'] is! String) {
+          return const DecodeResult.fail('bad-text', 'settled text must be a string');
+        }
+        if (body['truncated'] is! bool) {
+          return const DecodeResult.fail(
+            'bad-field',
+            'settled truncated must be a boolean',
+          );
+        }
+        return DecodeResult.ok(message);
+      }
       if (kind == 'message' || kind == 'tool' || kind == 'status' || kind == 'usage') {
         return DecodeResult.ok(message);
       }
@@ -409,6 +430,29 @@ DecodeResult decode(String text) {
         return const DecodeResult.fail(
           'bad-field',
           'session-gone sessionId must be a non-empty string',
+        );
+      }
+      return DecodeResult.ok(message);
+    case 'agent-settled':
+      if (_nonEmptyString(message['sessionId']) == null) {
+        return const DecodeResult.fail(
+          'bad-field',
+          'agent-settled sessionId must be a non-empty string',
+        );
+      }
+      if (_nonEmptyString(message['label']) == null) {
+        return const DecodeResult.fail(
+          'bad-field',
+          'agent-settled label must be a non-empty string',
+        );
+      }
+      if (message['text'] is! String) {
+        return const DecodeResult.fail('bad-field', 'agent-settled text must be a string');
+      }
+      if (message['truncated'] is! bool) {
+        return const DecodeResult.fail(
+          'bad-field',
+          'agent-settled truncated must be a boolean',
         );
       }
       return DecodeResult.ok(message);

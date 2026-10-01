@@ -388,6 +388,27 @@ function messageText(content: unknown): string {
 }
 
 /**
+ * The snippet cap in Unicode code points, not UTF-16 units, so a slice never
+ * leaves a lone surrogate. Deliberately the wire cap, larger than the app's
+ * visible cap (140); keep that ordering if either changes.
+ */
+export const SETTLED_TEXT_MAX_CODE_POINTS = 200;
+
+/**
+ * Bounds a turn's final assistant text to `maxCodePoints` code points for a
+ * notification body. Text that fits is returned untouched; a longer string is
+ * sliced and flagged `truncated`.
+ */
+export function settleText(
+  text: string,
+  maxCodePoints: number,
+): { text: string; truncated: boolean } {
+  const points = Array.from(text);
+  if (points.length <= maxCodePoints) return { text, truncated: false };
+  return { text: points.slice(0, maxCodePoints).join(''), truncated: true };
+}
+
+/**
  * Trims a raw label to a single sanitized line of at most
  * `LABEL_MAX_CODE_POINTS` code points, or `null` when there is nothing usable.
  * Control characters (including newlines) collapse to spaces, mirroring pi's
@@ -553,6 +574,8 @@ class Bridge {
   private seq = 0;
   private lastLabel: string | null = null;
   private state: AgentState = 'idle';
+  /** The current turn's final assistant snippet, reset at each turn start. */
+  private lastSettled: { text: string; truncated: boolean } = { text: '', truncated: false };
   private attempt = 0;
   private reconnectTimer: unknown = null;
   private closed = false;
@@ -580,12 +603,20 @@ class Bridge {
     this.pi.on('session_info_changed', () =>
       this.guard(() => this.refreshLabel(this.currentLabel())),
     );
-    this.pi.on('agent_start', () => this.guard(() => this.setAgentState('running')));
+    this.pi.on('agent_start', () =>
+      this.guard(() => {
+        // A new turn starts with no reply, so a settle before any assistant
+        // message cannot inherit the previous turn's text.
+        this.lastSettled = { text: '', truncated: false };
+        this.setAgentState('running');
+      }),
+    );
     // Terminal state is `agent_settled`, deliberately not `agent_end`.
     this.pi.on('agent_settled', () =>
       this.guard(() => {
         this.setAgentState('settled');
         this.sendUsageEvent();
+        this.sendSettleEvent();
       }),
     );
     // Compaction invalidates the token count — pi reports it as unknown until the
@@ -617,6 +648,7 @@ class Bridge {
     this.closed = false;
     this.seq = 0;
     this.state = 'idle';
+    this.lastSettled = { text: '', truncated: false };
     this.attempt = 0;
     if (!isActiveMode(ctx.mode)) {
       this.debug('stderr', `pi-droid bridge: inert in ${ctx.mode} mode\n`);
@@ -785,6 +817,20 @@ class Bridge {
     const normalized = normalizeMessageEnd(event as MessageEndEvent);
     if (normalized.kind === 'ignore') return;
     this.sendEvent(normalized.payload);
+    // The snippet comes from the ORIGINAL message, never the bounded payload:
+    // an oversized reply is replaced by a `{truncated:true,bytes}` marker, and
+    // caching that marker would make every huge reply notify `'No reply'`.
+    const original = (event as { message?: unknown }).message;
+    if (
+      typeof original === 'object' &&
+      original !== null &&
+      (original as { role?: unknown }).role === 'assistant'
+    ) {
+      this.lastSettled = settleText(
+        messageText((original as { content?: unknown }).content),
+        SETTLED_TEXT_MAX_CODE_POINTS,
+      );
+    }
     // The live path uses the event's own message, never the entries scan: pi
     // persists the message only after this event, so `getEntries()` is stale.
     this.refreshLabel(
@@ -939,6 +985,15 @@ class Bridge {
     }
     if (usage === null) return;
     this.sendEvent({ kind: 'usage', tokens: usage.tokens, contextWindow: usage.contextWindow });
+  }
+
+  /** Emits the cached turn snippet, after the terminal state and usage. */
+  private sendSettleEvent(): void {
+    this.sendEvent({
+      kind: 'settled',
+      text: this.lastSettled.text,
+      truncated: this.lastSettled.truncated,
+    });
   }
 
   private sendCommandResult(id: string, ok: boolean, error?: string): void {

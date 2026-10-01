@@ -16,6 +16,8 @@ import 'package:flutter/material.dart';
 import '../client/endpoint_store.dart';
 import '../client/context_usage.dart';
 import '../client/hub_client.dart';
+import '../client/notification_presenter.dart';
+import '../client/settle_notification.dart';
 import '../client/token_store.dart';
 import 'compose_bar.dart';
 import 'pairing_screen.dart';
@@ -28,21 +30,47 @@ class PiDroidApp extends StatefulWidget {
     super.key,
     required this.client,
     required this.tokenStore,
+    required this.notifications,
+    this.initialSessionId,
   });
 
   final HubClient client;
   final TokenStore tokenStore;
 
+  /// The platform notification surface. `main.dart` passes the real one; tests
+  /// pass a fake.
+  final NotificationPresenter notifications;
+
+  /// A session to open once authenticated, from a notification tap that cold
+  /// started the app, or null for an ordinary launch.
+  final String? initialSessionId;
+
   @override
   State<PiDroidApp> createState() => _PiDroidAppState();
 }
 
-class _PiDroidAppState extends State<PiDroidApp> {
+class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
   late HubClientState _state = widget.client.state;
   StreamSubscription<HubClientState>? _subscription;
+  StreamSubscription<String>? _openRequests;
+  StreamSubscription<AgentSettledEvent>? _settlesSub;
   bool _loading = true;
   bool _authenticated = false;
   HubEndpoint? _endpoint;
+
+  /// A session requested by a tap (cold `initialSessionId` or a warm
+  /// `openSessionRequests` event) that must wait for authentication before it
+  /// can be subscribed. Sending `subscribe` on a socket the hub has not
+  /// authenticated closes it `4002` and loops the reconnect.
+  String? _pendingOpenSessionId;
+
+  /// Whether the foreground service has been started for this hub; started once
+  /// on the first authenticated connection, never restarted from the
+  /// background.
+  bool _foregroundStarted = false;
+
+  /// The app's foreground/background reading, driving the notify rule.
+  AppPresence _presence = AppPresence.foreground;
 
   /// The endpoint of an in-flight pairing. Persisted only once authentication
   /// succeeds, so a typo'd host is never saved and auto-dialled.
@@ -57,14 +85,81 @@ class _PiDroidAppState extends State<PiDroidApp> {
   @override
   void initState() {
     super.initState();
+    _pendingOpenSessionId = widget.initialSessionId;
     _subscription = widget.client.changes.listen(_onState);
+    _openRequests = widget.notifications.openSessionRequests.listen(_queueOpen);
+    _settlesSub = widget.client.settles.listen(_onSettle);
+    WidgetsBinding.instance.addObserver(this);
+    unawaited(widget.notifications.requestPermission());
     _bootstrap();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _subscription?.cancel();
+    _openRequests?.cancel();
+    _settlesSub?.cancel();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // `inactive` is the notification shade and split-screen/foldable
+    // transitions, both of which still have the app on screen, so it counts as
+    // foreground.
+    _presence = switch (state) {
+      AppLifecycleState.resumed || AppLifecycleState.inactive =>
+        AppPresence.foreground,
+      _ => AppPresence.background,
+    };
+  }
+
+  /// Queues [sessionId] to open; [ _drainOpen] subscribes once connected.
+  void _queueOpen(String sessionId) {
+    _pendingOpenSessionId = sessionId;
+    _drainOpen();
+  }
+
+  /// Opens the pending session if — and only if — the hub has authenticated
+  /// this connection. Cold-start and warm taps both route through here.
+  void _drainOpen() {
+    if (_state.status != HubConnectionStatus.connected) return;
+    final sessionId = _pendingOpenSessionId;
+    if (sessionId == null) return;
+    _pendingOpenSessionId = null;
+    widget.client.subscribe(sessionId);
+    // The user is now looking at this session, so any shade entry for it is
+    // stale. `cancel` on a missing id is a no-op.
+    unawaited(
+      widget.notifications.cancel(id: notificationIdForSession(sessionId)),
+    );
+  }
+
+  /// A settle broadcast: notify unless the app is foregrounded on that session.
+  void _onSettle(AgentSettledEvent event) {
+    if (!mounted) return;
+    if (!shouldNotifyOnSettle(
+      _presence,
+      _state.activeSessionId,
+      event.sessionId,
+    )) {
+      // The session is on screen; clear any entry a backgrounded settle left.
+      unawaited(
+        widget.notifications.cancel(
+          id: notificationIdForSession(event.sessionId),
+        ),
+      );
+      return;
+    }
+    unawaited(
+      widget.notifications.show(
+        id: notificationIdForSession(event.sessionId),
+        title: event.label,
+        body: notificationBody(event.text, truncated: event.truncated),
+        sessionId: event.sessionId,
+      ),
+    );
   }
 
   void _onState(HubClientState state) {
@@ -81,6 +176,13 @@ class _PiDroidAppState extends State<PiDroidApp> {
       }
     });
     if (pending != null) unawaited(widget.tokenStore.writeEndpoint(pending));
+    if (state.status == HubConnectionStatus.connected && !_foregroundStarted) {
+      // Started here, while the app is foregrounded, never from the background:
+      // Android forbids a background FGS start on API 31+.
+      _foregroundStarted = true;
+      unawaited(widget.notifications.startForeground());
+    }
+    _drainOpen();
   }
 
   Future<void> _bootstrap() async {
@@ -121,6 +223,9 @@ class _PiDroidAppState extends State<PiDroidApp> {
     await widget.client.disconnect();
     await widget.tokenStore.clearEndpoint();
     await widget.tokenStore.clear();
+    _pendingOpenSessionId = null;
+    _foregroundStarted = false;
+    await widget.notifications.stopForeground();
     if (!mounted) return;
     setState(() {
       _authenticated = false;
@@ -132,8 +237,7 @@ class _PiDroidAppState extends State<PiDroidApp> {
     });
   }
 
-  void _open(SessionSummary session) =>
-      widget.client.subscribe(session.sessionId);
+  void _open(SessionSummary session) => _queueOpen(session.sessionId);
 
   /// Starts an app-started session. The hub answers with a result; a refusal
   /// (e.g. the cap is reached) is shown, never swallowed. [context] is the

@@ -20,6 +20,7 @@ void main() {
           tokenStore: store,
         ),
         tokenStore: store,
+        notifications: FakeNotificationPresenter(),
       ),
     );
     await tester.pumpAndSettle();

@@ -1740,3 +1740,70 @@ test('a fresh app session is labelled New session', async () => {
   });
   assert.equal(sessionEntry(await viewer.nextSessions(2000), 's1').label, 'renamed');
 });
+
+test('a settled event broadcasts agent-settled to every viewer with no raw duplicate', async () => {
+  const hub = await startHub();
+  const agent = await connect(hub.agentPort);
+  const subscribed = await connect(hub.viewerPort);
+  const observer = await connect(hub.viewerPort);
+  await helloTokened(agent);
+  await helloViewer(subscribed);
+  await helloViewer(observer);
+
+  agent.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'register',
+    sessionId: 's1',
+    name: 'work',
+  });
+  await barrier(agent);
+  subscribed.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'subscribe',
+    sessionId: 's1',
+  });
+  await barrier(subscribed);
+
+  agent.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'event',
+    payload: { kind: 'settled', text: 'Done.', truncated: false },
+  });
+
+  // The settle is a notification concern, so it reaches a viewer that never
+  // subscribed — unlike a relayed `event`, which is subscriber-scoped.
+  const notice = await observer.next(2000);
+  assert.deepEqual(notice, {
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'agent-settled',
+    sessionId: 's1',
+    label: 'work',
+    text: 'Done.',
+    truncated: false,
+  });
+
+  // The subscriber is a viewer too, so it also gets the broadcast. Drain it,
+  // then prove no raw `event` carrying the settle follows: the `return` after
+  // the broadcast is load-bearing, and without it every settle would be
+  // delivered twice (once as this notice, once as a relayed event).
+  assert.deepEqual(await subscribed.next(2000), notice);
+  const relayed = await subscribed.tryNext(150);
+  assert.equal(relayed, undefined, `expected no raw relay, got ${JSON.stringify(relayed)}`);
+});
+
+test('a viewer sending agent-settled is closed as a capability violation', async () => {
+  const hub = await startHub();
+  const viewer = await connect(hub.viewerPort);
+  viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'hello', token: TOKEN });
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'agent-settled',
+    sessionId: 's1',
+    label: 'work',
+    text: 'Done.',
+    truncated: false,
+  });
+
+  const { code } = await closed(viewer);
+  assert.equal(code, CLOSE_CAPABILITY);
+});

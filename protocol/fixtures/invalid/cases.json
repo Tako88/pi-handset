@@ -23,6 +23,8 @@
     { "file": "sessions-bad-entry.json", "code": "bad-field" },
     { "file": "sessions-bad-origin.json", "code": "bad-field" },
     { "file": "start-session-bad-id.json", "code": "bad-field" },
-    { "file": "kill-session-bad-session-id.json", "code": "bad-field" }
+    { "file": "kill-session-bad-session-id.json", "code": "bad-field" },
+    { "file": "event-settled-bad-text.json", "code": "bad-text" },
+    { "file": "agent-settled-bad-label.json", "code": "bad-field" }
   ]
 }

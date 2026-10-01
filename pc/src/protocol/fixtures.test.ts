@@ -220,6 +220,14 @@ test('every message type in the canonical lists decodes from a minimal body', ()
     },
     'resync-required': { protocolVersion: 1, type: 'resync-required', sessionId: 'sess', reason: 'r' },
     'session-gone': { protocolVersion: 1, type: 'session-gone', sessionId: 'sess' },
+    'agent-settled': {
+      protocolVersion: 1,
+      type: 'agent-settled',
+      sessionId: 'sess',
+      label: 'work',
+      text: 'Done.',
+      truncated: false,
+    },
   };
   for (const type of ALL_MESSAGE_TYPES) {
     const body = minimalBodies[type];

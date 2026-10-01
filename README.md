@@ -102,11 +102,22 @@ what it would cost, so it can be picked up cold.
 
 **Known residuals, accepted at the time**
 
-- **Adding an event payload kind needs the hub restarted.** The hub validates an
-  inbound payload's kind against the shared list, which it reads at startup, so a
-  bridge that emits a newly added kind is closed with 4002 by a hub started before
-  that change — and the bridge reconnects rather than giving up, so it loops
-  silently. Restart the hub with any change that adds a kind.
+- **Deploy gate: adding an event payload kind needs the hub restarted AND pi
+  restarted (or `/reload`ed).** The hub validates an inbound payload's kind against
+  the shared list, which it reads at startup, so a bridge that emits a newly added
+  kind is closed with 4002 by a hub started before that change — and the bridge
+  reconnects rather than giving up, so it loops silently. The bridge is also read
+  from disk by pi, so a running pi keeps the old one until it is restarted or
+  `/reload`ed. Restart both before judging a new kind; a missed step shows only as a
+  silent reconnect loop.
+- **Notifications stop if the app process is killed or the task is swiped away.**
+  `HubConnectionService` is `START_NOT_STICKY` with `stopWithTask="true"`, and it is
+  started only while the app is foregrounded (an FGS may not be started from the
+  background on API 31+). A swipe-from-recents destroys the Flutter activity, the main
+  isolate and its `dart:io` WebSocket, so no settles arrive until the app is reopened
+  (which restarts the service). A sticky restart is deliberately not planned: it cannot
+  reconstruct the Dart socket and would only leave a zombie persistent notification.
+  Backgrounding with Home keeps the activity and the socket alive.
 - **The context reading can lag during a long tool run.** It is sampled at turn
   boundaries (history replay, settle, compaction, an accepted model switch), not per
   model response, so a multi-step run shows the number from before the run.
