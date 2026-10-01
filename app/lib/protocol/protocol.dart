@@ -18,7 +18,7 @@ const int maxRelayBytes = 256 * 1024;
 const List<String> agentStates = ['idle', 'running', 'settled'];
 
 /// The normalized payload kinds an `event` may carry.
-const List<String> eventPayloadKinds = ['stream', 'message', 'agent', 'tool', 'status'];
+const List<String> eventPayloadKinds = ['stream', 'message', 'agent', 'tool', 'status', 'usage'];
 
 /// Lifecycle phases a `stream` frame may signal, and the tag that marks one.
 ///
@@ -188,8 +188,9 @@ DecodeResult decode(String text) {
         }
         return DecodeResult.ok(message);
       }
-      // `message`/`tool`/`status` are bridge-owned shapes the hub only relays.
-      if (kind == 'message' || kind == 'tool' || kind == 'status') {
+      // `message`/`tool`/`status`/`usage` are bridge-owned shapes the hub only
+      // relays.
+      if (kind == 'message' || kind == 'tool' || kind == 'status' || kind == 'usage') {
         return DecodeResult.ok(message);
       }
       return DecodeResult.fail(

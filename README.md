@@ -17,7 +17,7 @@ and so is transcript parity with the pi TUI (M1–M3).
 
 | | `pc/` (Node + TypeScript) | `app/` (Flutter + Dart) |
 |---|---|---|
-| Suite | 305 tests passing | 218 tests passing |
+| Suite | 316 tests passing | 238 tests passing |
 | Static gate | `tsc --noEmit` clean | `flutter analyze` clean |
 | Product code | hub, protocol codec, pi bridge | protocol codec, client, UI |
 
@@ -26,7 +26,9 @@ assistant's thinking from one ordered block model fed identically by the live re
 and the snapshot history, shows a live `Working…`/`Thinking…`/`Responding…` status
 above the composer, renders tool calls as collapsed blocks that pair each result to
 its call, and follows the newest message until you scroll away — where a jump-to-latest
-button appears. The status is precise rather than a guess: the bridge relays a
+button appears. The app bar carries the session name and how full the model's context
+is (`23k / 128k · 18%`, or `? / 128k` while pi cannot say), read at turn boundaries
+rather than per token. The status is precise rather than a guess: the bridge relays a
 **content-free** `thinking` phase frame first, so a slow first token is never
 mislabelled as thinking. The reasoning itself streams too — into its own row above
 the reply, replaced by the committed thinking block when the message lands.
@@ -96,6 +98,16 @@ what it would cost, so it can be picked up cold.
 
 **Known residuals, accepted at the time**
 
+- **Adding an event payload kind needs the hub restarted.** The hub validates an
+  inbound payload's kind against the shared list, which it reads at startup, so a
+  bridge that emits a newly added kind is closed with 4002 by a hub started before
+  that change — and the bridge reconnects rather than giving up, so it loops
+  silently. Restart the hub with any change that adds a kind.
+- **The context reading can lag during a long tool run.** It is sampled at turn
+  boundaries (history replay, settle, compaction, an accepted model switch), not per
+  model response, so a multi-step run shows the number from before the run.
+- **A usage frame racing a session switch** is attributed to whichever session is
+  active when it arrives — the same one-session-model race every relayed event has.
 - `lstat` TOCTOU on the token file; a reused PID; `token.tmp.*` left behind by a crash.
 - A dropped `sessions` frame is silent — the app shows a stale list rather than saying so.
 - The bridge's pi types are a hand-declared structural slice, not pi's real ones.

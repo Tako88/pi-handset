@@ -123,6 +123,83 @@ void main() {
     expect(states.last.status, HubConnectionStatus.disconnected);
   });
 
+  test('a usage event sets the session context usage', () async {
+    client.subscribe('s1');
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'event',
+      'payload': {'kind': 'usage', 'tokens': 23400, 'contextWindow': 128000},
+    });
+    await pumpEventQueue();
+
+    final usage = client.transcript('s1')!.contextUsage!;
+    expect(usage.tokens, 23400);
+    expect(usage.contextWindow, 128000);
+  });
+
+  test('a usage event with an unknown count keeps the window', () async {
+    client.subscribe('s1');
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'event',
+      'payload': {'kind': 'usage', 'tokens': null, 'contextWindow': 128000},
+    });
+    await pumpEventQueue();
+
+    final usage = client.transcript('s1')!.contextUsage!;
+    expect(usage.tokens, isNull);
+    expect(usage.contextWindow, 128000);
+  });
+
+  test('a usage event is not appended to the transcript', () async {
+    client.subscribe('s1');
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'event',
+      'payload': {'kind': 'usage', 'tokens': 1, 'contextWindow': 100},
+    });
+    await pumpEventQueue();
+
+    // It is state, not a row: appending it would put an unrenderable payload in
+    // the entry list and bloat the transcript.
+    expect(client.transcript('s1')!.entries, isEmpty);
+  });
+
+  test('a snapshot keeps this session\'s usage and does not borrow another\'s', () async {
+    client.subscribe('s1');
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'event',
+      'payload': {'kind': 'usage', 'tokens': 23400, 'contextWindow': 128000},
+    });
+    await pumpEventQueue();
+
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'snapshot',
+      'sessionId': 's1',
+      'lastSeq': 0,
+      'agentState': 'idle',
+      'entries': <Object?>[],
+      'truncated': false,
+    });
+    await pumpEventQueue();
+    expect(client.transcript('s1')!.contextUsage!.tokens, 23400);
+
+    // A different session's snapshot must not inherit s1's reading.
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'snapshot',
+      'sessionId': 's2',
+      'lastSeq': 0,
+      'agentState': 'idle',
+      'entries': <Object?>[],
+      'truncated': false,
+    });
+    await pumpEventQueue();
+    expect(client.transcript('s2')!.contextUsage, isNull);
+  });
+
   test('disconnect resets the state and allows a later start', () async {
     await client.disconnect();
 

@@ -37,6 +37,10 @@
     "type": "event",
     "payload": { "kind": "stream", "seq": 1, "text": "hello " }
   },
+  "event-usage.json": {
+    "type": "event",
+    "payload": { "kind": "usage", "tokens": 23400, "contextWindow": 128000 }
+  },
   "event-stream-phase.json": {
     "type": "event",
     "payload": { "kind": "stream", "seq": 1, "phase": "thinking" }

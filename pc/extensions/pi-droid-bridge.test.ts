@@ -135,11 +135,19 @@ class StubPi implements BridgePi {
 interface TestCtx extends BridgeCtx {
   aborts(): number;
   compacts(): number;
+  /** How many times the bridge asked pi for context usage. */
+  usageCalls(): number;
+  setUsage(usage: { tokens: number | null; contextWindow: number } | undefined): void;
 }
 
 function makeCtx(mode = 'tui'): TestCtx {
   let aborts = 0;
   let compacts = 0;
+  let usageCalls = 0;
+  let usage: { tokens: number | null; contextWindow: number } | undefined = {
+    tokens: 23400,
+    contextWindow: 128000,
+  };
   const ctx: TestCtx = {
     mode,
     cwd: '/work',
@@ -156,8 +164,16 @@ function makeCtx(mode = 'tui'): TestCtx {
     compact: () => {
       compacts += 1;
     },
+    getContextUsage: () => {
+      usageCalls += 1;
+      return usage;
+    },
     aborts: () => aborts,
     compacts: () => compacts,
+    usageCalls: () => usageCalls,
+    setUsage: (next) => {
+      usage = next;
+    },
   };
   return ctx;
 }
@@ -568,9 +584,17 @@ test('agent_settled yields the terminal agent state', () => {
   harness.start();
   const socket = harness.sockets[0]!;
   socket.open();
+  const before = socket.sent.length;
   harness.pi.handlers.get('agent_settled')!({ type: 'agent_settled' }, harness.startCtx);
-  const last = parsed(socket).at(-1)!;
-  assert.deepEqual(last.payload, { kind: 'agent', state: 'settled' });
+  // Settling is also a context-usage boundary, so the state frame is no longer
+  // the last thing on the wire. Deliberate: the terminal state still comes first.
+  const emitted = parsed(socket).slice(before);
+  assert.deepEqual(emitted[0]!.payload, { kind: 'agent', state: 'settled' });
+  assert.deepEqual(emitted[1]!.payload, {
+    kind: 'usage',
+    tokens: 23400,
+    contextWindow: 128000,
+  });
 });
 
 test('agent_start yields the running state', () => {
@@ -709,6 +733,202 @@ test('fetchHistory replies with a history message', async () => {
   assert.deepEqual(history.entries, [{ type: 'message', id: 'e1' }]);
   assert.equal(history.truncated, false);
   assert.equal((parsed(socket).at(-1) as { ok: boolean }).ok, true);
+});
+
+test('a history-request replays history and then the context usage', () => {
+  const harness = makeHarness();
+  harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  socket.message({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'history-request',
+    sessionId: 'sess-1',
+  });
+  const after = parsed(socket).slice(-2);
+  assert.equal(after[0]!.type, 'history');
+  // A phone that attaches mid-session must see a number without waiting for a
+  // turn, and the hub only relays to subscribers — which is why this rides the
+  // reply rather than the register frame.
+  assert.deepEqual(after[1], {
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'event',
+    payload: { kind: 'usage', tokens: 23400, contextWindow: 128000 },
+  });
+});
+
+test('an unknown token count travels as null', () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  ctx.setUsage({ tokens: null, contextWindow: 128000 });
+  const socket = harness.sockets[0]!;
+  socket.open();
+  socket.message({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'history-request',
+    sessionId: 'sess-1',
+  });
+  assert.deepEqual((parsed(socket).at(-1) as { payload: unknown }).payload, {
+    kind: 'usage',
+    tokens: null,
+    contextWindow: 128000,
+  });
+});
+
+test('agent_settled reports the terminal state and then the usage', () => {
+  const harness = makeHarness();
+  harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  const before = socket.sent.length;
+  harness.pi.handlers.get('agent_settled')!({}, harness.startCtx);
+  const emitted = parsed(socket).slice(before);
+  assert.deepEqual(
+    emitted.map((m) => (m.payload as { kind?: string }).kind),
+    ['agent', 'usage'],
+  );
+});
+
+test('a compaction reports unknown tokens', () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  const before = socket.sent.length;
+  ctx.setUsage({ tokens: null, contextWindow: 128000 });
+  harness.pi.handlers.get('session_compact')!({}, ctx);
+  const emitted = parsed(socket).slice(before);
+  assert.deepEqual((emitted.at(-1) as { payload: unknown }).payload, {
+    kind: 'usage',
+    tokens: null,
+    contextWindow: 128000,
+  });
+});
+
+test('an accepted model switch reports the new window', async () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  ctx.setUsage({ tokens: 100, contextWindow: 200000 });
+  const socket = harness.sockets[0]!;
+  socket.open();
+  const before = socket.sent.length;
+  await sendCommand(harness.pi, socket, 'setModel', { model: { id: 'm2' } });
+  assert.deepEqual(
+    parsed(socket)
+      .slice(before)
+      .filter((m) => m.type === 'event')
+      .map((m) => (m.payload as { kind?: string }).kind),
+    ['usage'],
+  );
+});
+
+test('a refused model switch reports nothing about usage', async () => {
+  const harness = makeHarness();
+  harness.pi.modelAccepted = false;
+  const ctx = harness.start();
+  ctx.setUsage({ tokens: 100, contextWindow: 200000 });
+  const socket = harness.sockets[0]!;
+  socket.open();
+  const before = socket.sent.length;
+  await sendCommand(harness.pi, socket, 'setModel', { model: { id: 'm2' } });
+  assert.deepEqual(
+    parsed(socket)
+      .slice(before)
+      .filter((m) => m.type === 'event')
+      .map((m) => (m.payload as { kind?: string }).kind),
+    [],
+  );
+});
+
+test('a pi without getContextUsage emits no usage frame', () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  delete ctx.getContextUsage;
+  const socket = harness.sockets[0]!;
+  socket.open();
+  const before = socket.sent.length;
+  socket.message({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'history-request',
+    sessionId: 'sess-1',
+  });
+  assert.deepEqual(
+    parsed(socket)
+      .slice(before)
+      .filter((m) => m.type === 'event')
+      .map((m) => (m.payload as { kind?: string }).kind),
+    [],
+  );
+  // The history reply itself must still arrive: a missing usage reading is not
+  // allowed to take the transcript down with it.
+  assert.ok(parsed(socket).some((m) => m.type === 'history'));
+});
+
+test('an undefined usage reading emits no usage frame', () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  ctx.setUsage(undefined);
+  const socket = harness.sockets[0]!;
+  socket.open();
+  const before = socket.sent.length;
+  socket.message({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'history-request',
+    sessionId: 'sess-1',
+  });
+  assert.deepEqual(
+    parsed(socket)
+      .slice(before)
+      .filter((m) => m.type === 'event')
+      .map((m) => (m.payload as { kind?: string }).kind),
+    [],
+  );
+});
+
+test('a throwing getContextUsage does not escape and costs only the reading', () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  ctx.getContextUsage = () => {
+    throw new Error('usage exploded');
+  };
+  const socket = harness.sockets[0]!;
+  socket.open();
+  assert.doesNotThrow(() => {
+    socket.message({
+      protocolVersion: PROTOCOL_VERSION,
+      type: 'history-request',
+      sessionId: 'sess-1',
+    });
+  });
+  assert.deepEqual(harness.writes, []);
+  assert.ok(parsed(socket).some((m) => m.type === 'history'));
+});
+
+test('stream deltas never sample the context', () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  const update = (): void => {
+    harness.pi.handlers.get('message_update')!(
+      {
+        type: 'message_update',
+        message: {},
+        assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'x', partial: {} },
+      },
+      ctx,
+    );
+  };
+  for (let index = 0; index < 20; index += 1) update();
+  // Reading it walks the whole session projection, so it is a boundary cost and
+  // must never land on the delta path.
+  assert.equal(ctx.usageCalls(), 0);
+  socket.message({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'history-request',
+    sessionId: 'sess-1',
+  });
+  assert.equal(ctx.usageCalls(), 1);
 });
 
 test('a history-request from the hub is answered with a history message', () => {

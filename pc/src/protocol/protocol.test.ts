@@ -288,6 +288,24 @@ test('a tool payload round-trips and is accepted whole', () => {
   assert.deepEqual(decode(JSON.stringify(event)), { ok: true, value: event });
 });
 
+test('a usage payload round-trips, including unknown tokens', () => {
+  const event = {
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'event',
+    payload: { kind: 'usage', tokens: 23400, contextWindow: 128000 },
+  };
+  assert.deepEqual(decode(JSON.stringify(event)), { ok: true, value: event });
+
+  // After a compaction pi reports the count as unknown until the next response,
+  // so a null token count is a real wire value, not an omission.
+  const unknown = {
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'event',
+    payload: { kind: 'usage', tokens: null, contextWindow: 128000 },
+  };
+  assert.deepEqual(decode(JSON.stringify(unknown)), { ok: true, value: unknown });
+});
+
 test('a status payload round-trips and is accepted whole', () => {
   const event = {
     protocolVersion: PROTOCOL_VERSION,

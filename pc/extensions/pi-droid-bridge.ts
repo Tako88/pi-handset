@@ -71,6 +71,14 @@ export interface BridgeCtx {
   sessionManager: BridgeSessionManager;
   abort(): void;
   compact(options?: unknown): void;
+  /**
+   * pi's context-usage estimate. Optional because the bridge's pi slice is
+   * structural: an older pi without it degrades to "no label" rather than a
+   * crash. Returns undefined when there is no model, or no known window.
+   */
+  getContextUsage?():
+    | { tokens: number | null; contextWindow: number }
+    | undefined;
 }
 
 /** The extension API, narrowed to what the bridge calls. */
@@ -335,6 +343,23 @@ export function projectHistory(entries: readonly unknown[], maxBytes: number): H
   return { entries: kept, truncated: kept.length < entries.length };
 }
 
+/**
+ * pi's own context-usage reading, if the host exposes one and has a model with a
+ * known window. Deliberately not a passthrough of the whole object: only the two
+ * numbers the app renders travel, so a field added to pi's `ContextUsage` later
+ * cannot change the wire by accident.
+ *
+ * Structural on purpose — an older pi has no such method, and that must be a
+ * missing label rather than a crash.
+ */
+function readContextUsage(
+  ctx: BridgeCtx,
+): { tokens: number | null; contextWindow: number } | null {
+  const usage = ctx.getContextUsage?.();
+  if (usage === undefined) return null;
+  return { tokens: usage.tokens, contextWindow: usage.contextWindow };
+}
+
 // ---------------------------------------------------------------------------
 // Session labels
 // ---------------------------------------------------------------------------
@@ -557,7 +582,15 @@ class Bridge {
     );
     this.pi.on('agent_start', () => this.guard(() => this.setAgentState('running')));
     // Terminal state is `agent_settled`, deliberately not `agent_end`.
-    this.pi.on('agent_settled', () => this.guard(() => this.setAgentState('settled')));
+    this.pi.on('agent_settled', () =>
+      this.guard(() => {
+        this.setAgentState('settled');
+        this.sendUsageEvent();
+      }),
+    );
+    // Compaction invalidates the token count — pi reports it as unknown until the
+    // next model response — so the reading is re-taken rather than left stale.
+    this.pi.on('session_compact', () => this.guard(() => this.sendUsageEvent()));
   }
 
   /**
@@ -841,6 +874,9 @@ class Bridge {
       case 'setModel': {
         if (fields.model === undefined) return { ok: false, error: 'missing model' };
         const accepted = await this.pi.setModel(fields.model);
+        // The window belongs to the model, so an accepted switch changes the
+        // denominator; a refusal changes nothing.
+        if (accepted) this.sendUsageEvent();
         return accepted ? { ok: true } : { ok: false, error: 'model not accepted' };
       }
       case 'setThinkingLevel': {
@@ -878,6 +914,31 @@ class Bridge {
       truncated: projection.truncated,
     };
     this.send(message);
+    // After the history frame, so a viewer that re-baselines on the snapshot
+    // cannot overwrite the fresh reading with an older one. A phone attaching
+    // mid-session lands here, which is why the reading rides the replay rather
+    // than the register frame: at register the hub has no subscribers yet.
+    this.sendUsageEvent();
+  }
+
+  /**
+   * Sends the current context usage, if pi can report one. A missing reading is
+   * silence, never an error: this is ambient information, and it must not be
+   * able to break the transcript it decorates.
+   */
+  private sendUsageEvent(): void {
+    const ctx = this.ctx;
+    if (ctx === null) return;
+    let usage: { tokens: number | null; contextWindow: number } | null;
+    try {
+      usage = readContextUsage(ctx);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.debug('stderr', `pi-droid bridge: context usage failed: ${message}\n`);
+      return;
+    }
+    if (usage === null) return;
+    this.sendEvent({ kind: 'usage', tokens: usage.tokens, contextWindow: usage.contextWindow });
   }
 
   private sendCommandResult(id: string, ok: boolean, error?: string): void {
