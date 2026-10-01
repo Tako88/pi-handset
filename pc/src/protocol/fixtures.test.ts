@@ -23,6 +23,7 @@ import {
   ALL_MESSAGE_TYPES,
   AGENT_MESSAGE_TYPES,
   EVENT_PAYLOAD_KINDS,
+  HUB_CAPABILITIES,
   HUB_TO_VIEWER_MESSAGE_TYPES,
   SESSION_ORIGINS,
   STREAM_PHASES,
@@ -228,6 +229,18 @@ test('every message type in the canonical lists decodes from a minimal body', ()
       text: 'Done.',
       truncated: false,
     },
+    'list-dirs': { protocolVersion: 1, type: 'list-dirs', id: 'dirs-1' },
+    'dir-listing': {
+      protocolVersion: 1,
+      type: 'dir-listing',
+      id: 'dirs-1',
+      path: '/home/user',
+      root: '/home/user',
+      trust: null,
+      trustRequired: false,
+      entries: [],
+      truncated: false,
+    },
   };
   for (const type of ALL_MESSAGE_TYPES) {
     const body = minimalBodies[type];
@@ -250,6 +263,7 @@ test('the canonical message-type and payload-kind lists match the shared fixture
     viewerMessageTypes: string[];
     hubToViewerMessageTypes: string[];
     sessionOrigins: string[];
+    hubCapabilities: string[];
   };
   assert.deepEqual(new Set(ALL_MESSAGE_TYPES), new Set(shared.messageTypes));
   assert.deepEqual(new Set(EVENT_PAYLOAD_KINDS), new Set(shared.eventPayloadKinds));
@@ -258,6 +272,7 @@ test('the canonical message-type and payload-kind lists match the shared fixture
   assert.deepEqual(new Set(VIEWER_MESSAGE_TYPES), new Set(shared.viewerMessageTypes));
   assert.deepEqual(new Set(HUB_TO_VIEWER_MESSAGE_TYPES), new Set(shared.hubToViewerMessageTypes));
   assert.deepEqual(new Set(SESSION_ORIGINS), new Set(shared.sessionOrigins));
+  assert.deepEqual(new Set(HUB_CAPABILITIES), new Set(shared.hubCapabilities));
 });
 
 test('every invalid fixture is rejected for the right reason', () => {

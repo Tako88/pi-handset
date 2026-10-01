@@ -41,6 +41,10 @@ const List<String> eventPayloadKinds = [
 /// authoritative.
 const List<String> streamPhases = ['thinking'];
 
+/// The hub capabilities this protocol version advertises on the `sessions`
+/// frame. Canonical; a viewer gates folder browsing on their presence.
+const List<String> hubCapabilities = ['list-dirs', 'project-session'];
+
 /// What the loopback (agent) listener accepts besides `hello`.
 ///
 /// These lists are canonical: [decode]'s switch follows them, never the
@@ -62,6 +66,7 @@ const List<String> viewerMessageTypes = [
   'command',
   'start-session',
   'kill-session',
+  'list-dirs',
 ];
 
 /// What the hub sends to a viewer. Canonical; see [agentMessageTypes].
@@ -74,6 +79,7 @@ const List<String> hubToViewerMessageTypes = [
   'resync-required',
   'session-gone',
   'agent-settled',
+  'dir-listing',
 ];
 
 /// Every message type the protocol defines. The fixture suite asserts one valid
@@ -322,6 +328,68 @@ DecodeResult decode(String text) {
           'start-session id must be a non-empty string',
         );
       }
+      if (message.containsKey('cwd') && _nonEmptyString(message['cwd']) == null) {
+        return const DecodeResult.fail(
+          'bad-field',
+          'start-session cwd must be a non-empty string',
+        );
+      }
+      if (message.containsKey('trust') && message['trust'] is! bool) {
+        return const DecodeResult.fail(
+          'bad-field',
+          'start-session trust must be a boolean',
+        );
+      }
+      return DecodeResult.ok(message);
+    case 'list-dirs':
+      if (_nonEmptyString(message['id']) == null) {
+        return const DecodeResult.fail(
+          'bad-field',
+          'list-dirs id must be a non-empty string',
+        );
+      }
+      if (message.containsKey('path') && _nonEmptyString(message['path']) == null) {
+        return const DecodeResult.fail(
+          'bad-field',
+          'list-dirs path must be a non-empty string',
+        );
+      }
+      return DecodeResult.ok(message);
+    case 'dir-listing':
+      if (_nonEmptyString(message['id']) == null ||
+          _nonEmptyString(message['path']) == null ||
+          _nonEmptyString(message['root']) == null) {
+        return const DecodeResult.fail(
+          'bad-field',
+          'dir-listing requires id, path and root strings',
+        );
+      }
+      if (!message.containsKey('trust') ||
+          (message['trust'] != null && message['trust'] is! bool)) {
+        return const DecodeResult.fail(
+          'bad-field',
+          'dir-listing trust must be null or a boolean',
+        );
+      }
+      if (message['trustRequired'] is! bool) {
+        return const DecodeResult.fail(
+          'bad-field',
+          'dir-listing trustRequired must be a boolean',
+        );
+      }
+      final entries = message['entries'];
+      if (entries is! List || entries.any((entry) => _nonEmptyString(entry) == null)) {
+        return const DecodeResult.fail(
+          'bad-field',
+          'dir-listing entries must be non-empty strings',
+        );
+      }
+      if (message['truncated'] is! bool) {
+        return const DecodeResult.fail(
+          'bad-field',
+          'dir-listing truncated must be a boolean',
+        );
+      }
       return DecodeResult.ok(message);
     case 'kill-session':
       if (_nonEmptyString(message['id']) == null) {
@@ -383,6 +451,15 @@ DecodeResult decode(String text) {
             'sessions origin must be app or pc',
           );
         }
+      }
+      final capabilities = message['capabilities'];
+      if (message.containsKey('capabilities') &&
+          (capabilities is! List ||
+              capabilities.any((capability) => _nonEmptyString(capability) == null))) {
+        return const DecodeResult.fail(
+          'bad-field',
+          'sessions capabilities must be non-empty strings',
+        );
       }
       return DecodeResult.ok(message);
     case 'snapshot':

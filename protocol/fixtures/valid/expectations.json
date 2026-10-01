@@ -109,6 +109,12 @@
     "type": "start-session",
     "id": "start-1"
   },
+  "start-session-project.json": {
+    "type": "start-session",
+    "id": "start-1",
+    "cwd": "/home/user/project",
+    "trust": true
+  },
   "kill-session.json": {
     "type": "kill-session",
     "id": "kill-1",
@@ -152,5 +158,31 @@
   "unsubscribe.json": {
     "type": "unsubscribe",
     "sessionId": "sess-1"
+  },
+  "list-dirs.json": {
+    "type": "list-dirs",
+    "id": "dirs-1"
+  },
+  "dir-listing.json": {
+    "type": "dir-listing",
+    "id": "dirs-1",
+    "path": "/home/user",
+    "root": "/home/user",
+    "trust": true,
+    "trustRequired": true,
+    "entries": ["Work", "project"],
+    "truncated": false
+  },
+  "sessions-capabilities.json": {
+    "type": "sessions",
+    "sessions": [
+      {
+        "sessionId": "sess-1",
+        "label": "my session",
+        "agentState": "settled",
+        "origin": "app"
+      }
+    ],
+    "capabilities": ["list-dirs", "project-session"]
   }
 }

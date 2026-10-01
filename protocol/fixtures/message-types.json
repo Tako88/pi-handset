@@ -16,8 +16,11 @@
     "snapshot",
     "resync-required",
     "session-gone",
-    "agent-settled"
+    "agent-settled",
+    "list-dirs",
+    "dir-listing"
   ],
+  "hubCapabilities": ["list-dirs", "project-session"],
   "eventPayloadKinds": ["stream", "message", "agent", "tool", "status", "usage", "settled"],
   "streamPhases": ["thinking"],
   "sessionOrigins": ["app", "pc"],
@@ -28,7 +31,8 @@
     "history-request",
     "command",
     "start-session",
-    "kill-session"
+    "kill-session",
+    "list-dirs"
   ],
   "hubToViewerMessageTypes": [
     "paired",
@@ -38,6 +42,7 @@
     "command-result",
     "resync-required",
     "session-gone",
-    "agent-settled"
+    "agent-settled",
+    "dir-listing"
   ]
 }
