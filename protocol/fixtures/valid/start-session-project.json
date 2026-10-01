@@ -1,0 +1,7 @@
+{
+  "protocolVersion": 1,
+  "type": "start-session",
+  "id": "start-1",
+  "cwd": "/home/user/project",
+  "trust": true
+}

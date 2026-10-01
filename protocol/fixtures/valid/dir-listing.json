@@ -1,0 +1,11 @@
+{
+  "protocolVersion": 1,
+  "type": "dir-listing",
+  "id": "dirs-1",
+  "path": "/home/user",
+  "root": "/home/user",
+  "trust": true,
+  "trustRequired": true,
+  "entries": ["Work", "project"],
+  "truncated": false
+}

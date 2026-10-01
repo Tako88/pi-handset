@@ -227,6 +227,18 @@ void main() {
         'text': 'Done.',
         'truncated': false,
       },
+      'list-dirs': {'protocolVersion': 1, 'type': 'list-dirs', 'id': 'dirs-1'},
+      'dir-listing': {
+        'protocolVersion': 1,
+        'type': 'dir-listing',
+        'id': 'dirs-1',
+        'path': '/home/user',
+        'root': '/home/user',
+        'trust': null,
+        'trustRequired': false,
+        'entries': <Object?>[],
+        'truncated': false,
+      },
     };
     for (final type in allMessageTypes) {
       final body = minimalBodies[type];
@@ -255,6 +267,7 @@ void main() {
       (shared['hubToViewerMessageTypes'] as List).toSet(),
     );
     expect(sessionOrigins.toSet(), (shared['sessionOrigins'] as List).toSet());
+    expect(hubCapabilities.toSet(), (shared['hubCapabilities'] as List).toSet());
   });
 
   test('every invalid fixture is rejected for the right reason', () {

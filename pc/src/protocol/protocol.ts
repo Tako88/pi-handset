@@ -257,6 +257,38 @@ export interface StartSessionMessage {
   protocolVersion: number;
   type: 'start-session';
   id: string;
+  /** Project directory to run the child pi in; absent means a temp dir. */
+  cwd?: string;
+  /** The user's trust decision for `cwd`; absent means "no new decision". */
+  trust?: boolean;
+}
+
+/**
+ * A viewer asks the hub to list the directories under the PC user's home.
+ * Answered directly with a `dir-listing`; never forwarded to an agent. `path`
+ * is absent for the browsing root.
+ */
+export interface ListDirsMessage {
+  protocolVersion: number;
+  type: 'list-dirs';
+  id: string;
+  path?: string;
+}
+
+/**
+ * The hub's answer to a `list-dirs`: the sub-directories of `path`, the
+ * browsing root, and the trust state pi would see for `path`.
+ */
+export interface DirListingMessage {
+  protocolVersion: number;
+  type: 'dir-listing';
+  id: string;
+  path: string;
+  root: string;
+  trust: boolean | null;
+  trustRequired: boolean;
+  entries: string[];
+  truncated: boolean;
 }
 
 /**
@@ -312,6 +344,11 @@ export interface SessionsMessage {
   protocolVersion: number;
   type: 'sessions';
   sessions: SessionSummary[];
+  /**
+   * The hub's capabilities, absent on a pre-capabilities hub (which a viewer
+   * must treat as the empty set). Validated-if-present, like `SessionSummary.origin`.
+   */
+  capabilities?: string[];
 }
 
 export interface SnapshotMessage {
@@ -337,6 +374,11 @@ export interface ResyncRequiredMessage {
   reason: string;
 }
 
+/** The hub capabilities this protocol version advertises on the `sessions`
+ * frame. Canonical; a viewer gates folder browsing on their presence. */
+export const HUB_CAPABILITIES = ['list-dirs', 'project-session'] as const;
+export type HubCapability = (typeof HUB_CAPABILITIES)[number];
+
 /**
  * What each listener accepts besides `hello`; the listener *is* the role.
  *
@@ -360,6 +402,7 @@ export const VIEWER_MESSAGE_TYPES = [
   'command',
   'start-session',
   'kill-session',
+  'list-dirs',
 ] as const;
 export type ViewerMessageType = (typeof VIEWER_MESSAGE_TYPES)[number];
 
@@ -378,6 +421,7 @@ export const HUB_TO_VIEWER_MESSAGE_TYPES = [
   'resync-required',
   'session-gone',
   'agent-settled',
+  'dir-listing',
 ] as const;
 export type HubToViewerMessageType = (typeof HUB_TO_VIEWER_MESSAGE_TYPES)[number];
 
@@ -408,7 +452,8 @@ export type ViewerToHubMessage =
   | HistoryRequestMessage
   | CommandMessage
   | StartSessionMessage
-  | KillSessionMessage;
+  | KillSessionMessage
+  | ListDirsMessage;
 
 export type HubToViewerMessage =
   | PairedMessage
@@ -418,7 +463,8 @@ export type HubToViewerMessage =
   | CommandResultMessage
   | ResyncRequiredMessage
   | SessionGoneMessage
-  | AgentSettledMessage;
+  | AgentSettledMessage
+  | DirListingMessage;
 
 /** Every message type `decode` understands. */
 export type Message =
@@ -438,7 +484,9 @@ export type Message =
   | SnapshotMessage
   | ResyncRequiredMessage
   | SessionGoneMessage
-  | AgentSettledMessage;
+  | AgentSettledMessage
+  | ListDirsMessage
+  | DirListingMessage;
 
 /** True when `type` is a message the agent listener accepts. */
 export function isAgentMessageType(type: unknown): type is AgentMessageType {
@@ -664,7 +712,47 @@ export function decode(text: string): DecodeResult {
       if (asString(message.id) === null) {
         return fail('bad-field', 'start-session id must be a non-empty string');
       }
+      if (message.cwd !== undefined && asString(message.cwd) === null) {
+        return fail('bad-field', 'start-session cwd must be a non-empty string');
+      }
+      if (message.trust !== undefined && typeof message.trust !== 'boolean') {
+        return fail('bad-field', 'start-session trust must be a boolean');
+      }
       return { ok: true, value: parsed as StartSessionMessage };
+    }
+    case 'list-dirs': {
+      if (asString(message.id) === null) {
+        return fail('bad-field', 'list-dirs id must be a non-empty string');
+      }
+      if (message.path !== undefined && asString(message.path) === null) {
+        return fail('bad-field', 'list-dirs path must be a non-empty string');
+      }
+      return { ok: true, value: parsed as ListDirsMessage };
+    }
+    case 'dir-listing': {
+      if (
+        asString(message.id) === null ||
+        asString(message.path) === null ||
+        asString(message.root) === null
+      ) {
+        return fail('bad-field', 'dir-listing requires id, path and root strings');
+      }
+      if (message.trust !== null && typeof message.trust !== 'boolean') {
+        return fail('bad-field', 'dir-listing trust must be null or a boolean');
+      }
+      if (typeof message.trustRequired !== 'boolean') {
+        return fail('bad-field', 'dir-listing trustRequired must be a boolean');
+      }
+      if (
+        !Array.isArray(message.entries) ||
+        message.entries.some((entry) => asString(entry) === null)
+      ) {
+        return fail('bad-field', 'dir-listing entries must be non-empty strings');
+      }
+      if (typeof message.truncated !== 'boolean') {
+        return fail('bad-field', 'dir-listing truncated must be a boolean');
+      }
+      return { ok: true, value: parsed as DirListingMessage };
     }
     case 'kill-session': {
       if (asString(message.id) === null) {
@@ -705,6 +793,13 @@ export function decode(text: string): DecodeResult {
         ) {
           return fail('bad-field', 'sessions origin must be app or pc');
         }
+      }
+      if (
+        message.capabilities !== undefined &&
+        (!Array.isArray(message.capabilities) ||
+          message.capabilities.some((capability) => asString(capability) === null))
+      ) {
+        return fail('bad-field', 'sessions capabilities must be non-empty strings');
       }
       return { ok: true, value: parsed as SessionsMessage };
     }
