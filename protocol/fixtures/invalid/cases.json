@@ -18,6 +18,8 @@
     { "file": "history-bad-entries.json", "code": "bad-field" },
     { "file": "paired-bad-token.json", "code": "bad-field" },
     { "file": "command-result-bad-ok.json", "code": "bad-field" },
+    { "file": "command-result-bad-commands.json", "code": "bad-field" },
+    { "file": "command-result-bad-command.json", "code": "bad-field" },
     { "file": "resync-bad-reason.json", "code": "bad-field" },
     { "file": "sessions-bad-array.json", "code": "bad-field" },
     { "file": "sessions-bad-entry.json", "code": "bad-field" },

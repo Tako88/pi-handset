@@ -1,0 +1,10 @@
+{
+  "protocolVersion": 1,
+  "type": "command-result",
+  "id": "cmd-1",
+  "ok": true,
+  "commands": [
+    { "name": "review", "description": "Review the working tree" },
+    { "name": "implement-vetted" }
+  ]
+}
