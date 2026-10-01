@@ -47,6 +47,8 @@ const bridgePath = fileURLToPath(new URL('../../extensions/pi-droid-bridge.ts', 
 const harnessPath = fileURLToPath(new URL('./support/faux-provider.ts', import.meta.url));
 
 const FAUX_TEXT = 'FAUX_OK';
+/** The body a `/ping` template expands to. Chosen by the test, asserted verbatim. */
+const TEMPLATE_MARKER = 'TEMPLATE_EXPANDED_OK';
 /** Generous: a real pi boots slower than any fake, and this box may be busy. */
 const BOOT_TIMEOUT_MS = 20_000;
 const STREAM_TIMEOUT_MS = 30_000;
@@ -534,7 +536,11 @@ async function collectPrompt(viewer: Viewer, id: string, timeoutMs: number): Pro
  * one prompt end to end. Returns everything the hub relayed to the viewer.
  * Children, hubs and viewers are torn down by `afterEach`.
  */
-async function drivePrompt(extraEnv: Record<string, string> = {}): Promise<Collected> {
+async function drivePrompt(
+  extraEnv: Record<string, string> = {},
+  extraArgs: string[] = [],
+  promptText = 'say the word',
+): Promise<Collected> {
   const { token } = loadOrCreateToken(configDir);
   const hub = await startHub({ token });
   publishDiscovery(hub);
@@ -554,6 +560,7 @@ async function drivePrompt(extraEnv: Record<string, string> = {}): Promise<Colle
       'faux-1',
       '--no-session',
       '-nc',
+      ...extraArgs,
     ],
     { PI_DROID_FAUX_TEXT: FAUX_TEXT, ...extraEnv },
   );
@@ -578,10 +585,25 @@ async function drivePrompt(extraEnv: Record<string, string> = {}): Promise<Colle
     id,
     sessionId: session.sessionId,
     name: 'prompt',
-    args: { text: 'say the word' },
+    args: { text: promptText },
   });
 
   return collectPrompt(viewer, id, STREAM_TIMEOUT_MS);
+}
+
+/**
+ * The text of a relayed `message` payload, for either content shape pi uses: a
+ * bare string, or an array of typed parts.
+ */
+function messageText(payload: Record<string, unknown>): string {
+  const message = payload.message as Record<string, unknown> | undefined;
+  const content = message?.content;
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .map((part) => (part as { text?: unknown }).text)
+    .filter((text): text is string => typeof text === 'string')
+    .join('');
 }
 
 // ---------------------------------------------------------------------------
@@ -770,6 +792,42 @@ test('a tools recipe relays a toolResult whose toolCallId matches the call', asy
     new RegExp(FAUX_TEXT),
     'the final assistant message must carry the provider text',
   );
+});
+
+// ---------------------------------------------------------------------------
+// Slash commands
+// ---------------------------------------------------------------------------
+
+test('a slash command from the phone runs as a command, not as literal text', async () => {
+  // `/ping` is loaded by explicit path, so this needs no project trust and does
+  // not depend on the user's real agent directory.
+  const templatePath = join(tmpRoot, 'ping.md');
+  writeFileSync(
+    templatePath,
+    [
+      '---',
+      'description: Marker template for the slash-command witness',
+      '---',
+      TEMPLATE_MARKER,
+      '',
+    ].join('\n'),
+  );
+
+  const collected = await drivePrompt({}, ['--prompt-template', templatePath], '/ping');
+
+  assert.equal(collected.result?.ok, true, 'the prompt was refused');
+  const user = collected.messages.find((entry) => entry.role === 'user');
+  assert.ok(user, 'no user message was relayed');
+
+  // What lands in the session is the template body, not the typed command. The
+  // failure this pins is the literal: `/ping` injected verbatim, leaving the
+  // model to interpret a command name as prose.
+  const text = messageText(user.payload);
+  assert.ok(
+    text.includes(TEMPLATE_MARKER),
+    `the template was not expanded; the user message was ${JSON.stringify(text)}`,
+  );
+  assert.ok(!text.includes('/ping'), 'the raw command text was sent verbatim');
 });
 
 // ---------------------------------------------------------------------------

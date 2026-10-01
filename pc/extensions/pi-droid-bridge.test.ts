@@ -646,13 +646,18 @@ test('the terminal agent state is re-emitted after a reconnect', () => {
 // Command dispatch
 // ---------------------------------------------------------------------------
 
-test('prompt injects the text as a plain user message', async () => {
+test('prompt asks pi to expand commands and templates instead of injecting text verbatim', async () => {
   const harness = makeHarness();
   harness.start();
   const socket = harness.sockets[0]!;
   socket.open();
-  await sendCommand(harness.pi, socket, 'prompt', { text: 'hi' });
-  assert.deepEqual(harness.pi.userMessages, [{ content: 'hi', options: {} }]);
+  await sendCommand(harness.pi, socket, 'prompt', { text: '/implement-vetted' });
+  // pi's extension API defaults `expandPromptTemplates` to false, which hands a
+  // `/name` to the model as prose instead of running the command. The bridge
+  // must opt in; which commands exist is pi's business, not the bridge's.
+  assert.deepEqual(harness.pi.userMessages, [
+    { content: '/implement-vetted', options: { expandPromptTemplates: true } },
+  ]);
 });
 
 test('steer injects the text with deliverAs steer', async () => {
@@ -661,7 +666,9 @@ test('steer injects the text with deliverAs steer', async () => {
   const socket = harness.sockets[0]!;
   socket.open();
   await sendCommand(harness.pi, socket, 'steer', { text: 'hi' });
-  assert.deepEqual(harness.pi.userMessages, [{ content: 'hi', options: { deliverAs: 'steer' } }]);
+  assert.deepEqual(harness.pi.userMessages, [
+    { content: 'hi', options: { expandPromptTemplates: true, deliverAs: 'steer' } },
+  ]);
 });
 
 test('followup injects the text with deliverAs followUp', async () => {
@@ -670,7 +677,9 @@ test('followup injects the text with deliverAs followUp', async () => {
   const socket = harness.sockets[0]!;
   socket.open();
   await sendCommand(harness.pi, socket, 'followup', { text: 'hi' });
-  assert.deepEqual(harness.pi.userMessages, [{ content: 'hi', options: { deliverAs: 'followUp' } }]);
+  assert.deepEqual(harness.pi.userMessages, [
+    { content: 'hi', options: { expandPromptTemplates: true, deliverAs: 'followUp' } },
+  ]);
 });
 
 test('abort aborts the active operation and acknowledges dispatch', async () => {
