@@ -41,9 +41,18 @@ const List<String> eventPayloadKinds = [
 /// authoritative.
 const List<String> streamPhases = ['thinking'];
 
+/// The hub capability that lets a viewer list directories.
+const String capabilityListDirs = 'list-dirs';
+
+/// The hub capability that lets a viewer start a session in a chosen folder.
+const String capabilityProjectSession = 'project-session';
+
 /// The hub capabilities this protocol version advertises on the `sessions`
 /// frame. Canonical; a viewer gates folder browsing on their presence.
-const List<String> hubCapabilities = ['list-dirs', 'project-session'];
+const List<String> hubCapabilities = [
+  capabilityListDirs,
+  capabilityProjectSession,
+];
 
 /// What the loopback (agent) listener accepts besides `hello`.
 ///

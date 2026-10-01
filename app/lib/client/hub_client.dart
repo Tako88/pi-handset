@@ -179,12 +179,19 @@ class HubClientState {
   final String? activeSessionId;
   final String? lastError;
 
+  /// The hub's advertised capabilities, read from the post-auth `sessions`
+  /// frame. Empty for a hub that predates the field, which hides folder
+  /// browsing and its `start-session{cwd}` form rather than sending a frame an
+  /// old hub would answer with a terminal `4003` close.
+  final Set<String> capabilities;
+
   const HubClientState({
     this.status = HubConnectionStatus.disconnected,
     this.sessions = const [],
     this.transcripts = const {},
     this.activeSessionId,
     this.lastError,
+    this.capabilities = const {},
   });
 
   HubClientState copyWith({
@@ -193,10 +200,12 @@ class HubClientState {
     Map<String, SessionTranscript>? transcripts,
     Object? activeSessionId = _unset,
     Object? lastError = _unset,
+    Set<String>? capabilities,
   }) => HubClientState(
     status: status ?? this.status,
     sessions: sessions ?? this.sessions,
     transcripts: transcripts ?? this.transcripts,
+    capabilities: capabilities ?? this.capabilities,
     activeSessionId: identical(activeSessionId, _unset)
         ? this.activeSessionId
         : activeSessionId as String?,
@@ -211,6 +220,38 @@ class CommandResult {
   final bool ok;
   final String? error;
   const CommandResult({required this.ok, this.error});
+}
+
+/// One directory listing: the resolved directory, the browse root, whether a
+/// trust decision exists, whether the directory requires one, its entry names,
+/// and whether the cap truncated the listing.
+class DirListing {
+  final String path;
+  final String root;
+
+  /// The nearest trust decision (`true`/`false`), or null when there is none.
+  final bool? trust;
+
+  final bool trustRequired;
+  final List<String> entries;
+  final bool truncated;
+
+  const DirListing({
+    required this.path,
+    required this.root,
+    required this.trust,
+    required this.trustRequired,
+    required this.entries,
+    required this.truncated,
+  });
+}
+
+/// The outcome of one `list-dirs`: the listing on success, or an error.
+class DirListingResult {
+  final bool ok;
+  final String? error;
+  final DirListing? listing;
+  const DirListingResult({required this.ok, this.error, this.listing});
 }
 
 /// The close code the hub sends for a capability violation. Retrying a bridge
@@ -257,6 +298,15 @@ class _PendingCommand {
   HubTimer? timer;
 }
 
+/// One in-flight `list-dirs` and its timeout handle. Session-less, so only a
+/// disconnect or the timeout can fail it.
+class _PendingListing {
+  _PendingListing(this.completer);
+
+  final Completer<DirListingResult> completer;
+  HubTimer? timer;
+}
+
 class HubClient {
   HubClient({
     required HubSocketFactory socketFactory,
@@ -285,6 +335,11 @@ class HubClient {
   HubClientState _state = const HubClientState();
   final Map<String, _PendingCommand> _pendingCommands = {};
 
+  /// In-flight `list-dirs`, keyed by their `dirs-N` id. Kept separate from
+  /// [_pendingCommands] because the two share the wire `id` field: a
+  /// `command-result` for a listing id must not complete a command.
+  final Map<String, _PendingListing> _pendingListings = {};
+
   /// Consecutive resync answers per session, reset by a `snapshot` or a fresh
   /// `subscribe`.
   final Map<String, int> _resyncCounts = {};
@@ -309,6 +364,7 @@ class HubClient {
   int _attempt = 0;
   bool _stopped = true;
   int _commandCounter = 0;
+  int _listingCounter = 0;
   bool _resubscribed = false;
 
   /// Whether [HubClientState.lastError] came from the connection path (dial,
@@ -531,12 +587,76 @@ class HubClient {
   /// the pending result into, so it is registered under the empty-session
   /// convention (`_request`'s `pendingSessionId`) and a `session-gone` for any
   /// session cannot fail it.
-  Future<CommandResult> startSession({String? id}) {
-    return _request('', id, (commandId) => <String, Object?>{
-      'protocolVersion': protocolVersion,
-      'type': 'start-session',
-      'id': commandId,
+  ///
+  /// With a [cwd] or [trust] this needs the hub's `project-session` capability:
+  /// an old hub would silently ignore the field and temp-spawn, so without it
+  /// the call is refused locally and no frame is sent. `trust` is a
+  /// project-session-era field too — the hub validates it alongside `cwd` — so
+  /// it is only ever sent together with `cwd`.
+  Future<CommandResult> startSession({String? id, String? cwd, bool? trust}) {
+    if ((cwd != null || trust != null) &&
+        !_state.capabilities.contains(capabilityProjectSession)) {
+      return Future.value(
+        const CommandResult(
+          ok: false,
+          error: 'this hub cannot start a session in a chosen folder',
+        ),
+      );
+    }
+    return _request('', id, (commandId) {
+      final message = <String, Object?>{
+        'protocolVersion': protocolVersion,
+        'type': 'start-session',
+        'id': commandId,
+      };
+      if (cwd != null) message['cwd'] = cwd;
+      if (trust != null && cwd != null) message['trust'] = trust;
+      return message;
     });
+  }
+
+  /// Lists the directories under the hub's browse root, or under [path] when
+  /// given. A null or empty [path] means the root.
+  ///
+  /// Refuses locally without the hub's `list-dirs` capability: an old hub takes
+  /// an unknown viewer type as a capability violation and closes `4003`, which
+  /// this client treats as terminal (no reconnect). The id is namespaced
+  /// `dirs-N`, distinct from `_request`'s `cmd-N`.
+  Future<DirListingResult> listDirs({String? path, String? id}) {
+    if (!_state.capabilities.contains(capabilityListDirs)) {
+      return Future.value(
+        const DirListingResult(ok: false, error: 'this hub cannot browse folders'),
+      );
+    }
+    if (_socket == null) {
+      return Future.value(
+        const DirListingResult(ok: false, error: 'not connected'),
+      );
+    }
+    final listingId = id ?? 'dirs-${++_listingCounter}';
+    final completer = Completer<DirListingResult>();
+    final pending = _PendingListing(completer);
+    _pendingListings[listingId] = pending;
+    pending.timer = _scheduler.schedule(_commandTimeout, () {
+      final removed = _pendingListings.remove(listingId);
+      if (removed == null || removed.completer.isCompleted) return;
+      removed.completer.complete(
+        const DirListingResult(ok: false, error: 'timed out'),
+      );
+    }, kind: HubTimerKind.command);
+    final message = <String, Object?>{
+      'protocolVersion': protocolVersion,
+      'type': 'list-dirs',
+      'id': listingId,
+    };
+    if (path != null && path.isNotEmpty) message['path'] = path;
+    final error = _trySend(message);
+    if (error != null) {
+      _pendingListings.remove(listingId);
+      pending.timer?.cancel();
+      completer.complete(DirListingResult(ok: false, error: '$error'));
+    }
+    return completer.future;
   }
 
   /// Asks the hub to kill an app-started session. Same empty-session pending
@@ -767,13 +887,15 @@ class HubClient {
       case 'paired':
         unawaited(_onPaired(message['token']! as String));
       case 'sessions':
-        _onSessions(message['sessions']! as List);
+        _onSessions(message);
       case 'event':
         _onEvent((message['payload']! as Map).cast<String, Object?>());
       case 'snapshot':
         _onSnapshot(message);
       case 'command-result':
         _onCommandResult(message);
+      case 'dir-listing':
+        _onDirListing(message);
       case 'resync-required':
         _onResyncRequired(message['sessionId']! as String);
       case 'session-gone':
@@ -814,15 +936,25 @@ class HubClient {
     _restoreSubscription();
   }
 
-  void _onSessions(List<dynamic> raw) {
+  void _onSessions(Map<String, Object?> message) {
     _cancelAuthWatchdog();
+    final raw = message['sessions']! as List;
     final summaries = raw
         .map(
           (entry) =>
               SessionSummary.fromJson((entry as Map).cast<String, Object?>()),
         )
         .toList();
-    _state = _state.copyWith(sessions: summaries);
+    // Absent means a hub that predates the field: an empty set, so the folder
+    // feature is hidden rather than probed with a frame that would disconnect.
+    final rawCapabilities = message['capabilities'];
+    final capabilities = rawCapabilities is List
+        ? rawCapabilities.whereType<String>().toSet()
+        : <String>{};
+    _state = _state.copyWith(
+      sessions: summaries,
+      capabilities: capabilities,
+    );
     // The hub pushes `sessions` on authentication; its arrival is how a
     // token-authenticated connection is confirmed (there is no `paired`).
     _markConnected();
@@ -980,8 +1112,21 @@ class HubClient {
     _scheduleNotify();
   }
 
+  /// A listing's rejection (an invalid path, a trust-store fault) arrives as a
+  /// `command-result` carrying the listing's id, so listings are consulted
+  /// first: the id spaces are disjoint by construction, but the routing order
+  /// is the guarantee. A listing failure never carries `ok:true`.
   void _onCommandResult(Map<String, Object?> message) {
     final id = message['id']! as String;
+    final listing = _pendingListings.remove(id);
+    if (listing != null) {
+      if (listing.completer.isCompleted) return;
+      listing.timer?.cancel();
+      listing.completer.complete(
+        DirListingResult(ok: false, error: message['error'] as String?),
+      );
+      return;
+    }
     final pending = _pendingCommands.remove(id);
     if (pending == null || pending.completer.isCompleted) return;
     pending.timer?.cancel();
@@ -989,6 +1134,26 @@ class HubClient {
       CommandResult(
         ok: message['ok']! as bool,
         error: message['error'] as String?,
+      ),
+    );
+  }
+
+  void _onDirListing(Map<String, Object?> message) {
+    final id = message['id']! as String;
+    final pending = _pendingListings.remove(id);
+    if (pending == null || pending.completer.isCompleted) return;
+    pending.timer?.cancel();
+    pending.completer.complete(
+      DirListingResult(
+        ok: true,
+        listing: DirListing(
+          path: message['path']! as String,
+          root: message['root']! as String,
+          trust: message['trust'] as bool?,
+          trustRequired: message['trustRequired']! as bool,
+          entries: (message['entries']! as List).cast<String>(),
+          truncated: message['truncated']! as bool,
+        ),
       ),
     );
   }
@@ -1053,6 +1218,20 @@ class HubClient {
   }
 
   void _failPending(String error, {String? sessionId}) {
+    // Listings are session-less, so only a whole-connection failure
+    // (`sessionId == null`) reaches them.
+    if (sessionId == null) {
+      for (final entry in [..._pendingListings.entries]) {
+        final pending = entry.value;
+        _pendingListings.remove(entry.key);
+        pending.timer?.cancel();
+        if (!pending.completer.isCompleted) {
+          pending.completer.complete(
+            DirListingResult(ok: false, error: error),
+          );
+        }
+      }
+    }
     for (final entry in [..._pendingCommands.entries]) {
       final pending = entry.value;
       if (sessionId != null && pending.sessionId != sessionId) continue;
