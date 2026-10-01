@@ -145,6 +145,27 @@ font-dependent by construction. A golden failure means "look at the diff".
 - If a boundary genuinely cannot be tested yet, say so explicitly rather than
   silently skipping it.
 
+## Where open work lives
+
+Split by *kind*, not by size:
+
+- **Actionable work → [GitHub issues](https://github.com/Tako88/PI-Droid/issues).**
+  Bugs and gaps are issues. When a commit resolves one, put `Fixes #12` in the message
+  so GitHub closes it — that is the whole point of it being an issue rather than a
+  README bullet, which rots silently.
+- **Deliberate limits → [`docs/known-limits.md`](docs/known-limits.md).** Things we
+  have decided *not* to do, each with its reason. Do **not** file these as issues: a
+  limitation is not a work item, and filing it makes the open-issue count lie about
+  the project's state.
+
+Both are versioned with the code, so a change that removes a constraint updates the
+file in the same commit. `gh` is installed and authenticated; `gh issue create`,
+`gh issue list` and `gh issue view` all work.
+
+Write issue bodies for a human skimming: what is wrong in plain words first, then
+`**To fix:**` and `**Where:**` (file paths). No internal jargon in the opening
+sentence, and no assumption that the reader has already read the README.
+
 ## Commits
 
 - Imperative subject, no trailing period. Aim for ≤50 chars: what changed, at a glance.
@@ -155,11 +176,11 @@ font-dependent by construction. A golden failure means "look at the diff".
 - No type prefixes (`feat:`, `fix:`) unless asked.
 - Never commit unless explicitly told.
 
-## Not built yet
+## Status
 
-- **The app has no networking.** `app/lib/protocol/` is a pure codec; there is no
-  WebSocket client and no UI. The bridge has never run inside a real pi.
-- **Nothing has run end to end** — hub, bridge and app have not been exercised
-  together. Unit and integration tests are local only.
+The hub, the bridge running inside a real pi, and the Android client are all built,
+and the whole path has been exercised end to end on a phone. What is missing is in the
+issue list; what is deliberately absent is in
+[`docs/known-limits.md`](docs/known-limits.md).
 
-Setup, status and the roadmap live in [`README.md`](README.md).
+Setup and architecture live in [`README.md`](README.md).
