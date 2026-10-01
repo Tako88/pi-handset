@@ -2,10 +2,12 @@
  * The process supervisor for app-started headless pi sessions.
  *
  * The hub spawns one `pi --mode rpc --no-session` child per app-started
- * session, each in a fresh empty temp directory. The child is its own process
- * group (`detached: true`), so a kill signals the whole group — a running
- * `bash` tool command is a grandchild, and signalling only the direct child
- * would leave it alive.
+ * session, each in a fresh empty temp directory. A *project* spawn (`cwd` is
+ * supplied) instead runs in the caller's existing directory with
+ * `defaultProjectArgs`; the spawner never removes that directory. The child is
+ * its own process group (`detached: true`), so a kill signals the whole group —
+ * a running `bash` tool command is a grandchild, and signalling only the direct
+ * child would leave it alive.
  *
  * stdin is opened but never written and never ended: rpc reads commands from
  * it, and an accidental `.end()` would close the session's command channel.
@@ -42,6 +44,10 @@ export interface SpawnerOptions {
   command?: string;
   /** Production args. Defaults to `['--mode','rpc','--no-session']`. */
   args?: readonly string[];
+  /**
+   * Args for a project spawn (one with a caller-supplied `cwd`). Defaults to
+   * `defaultProjectArgs`. */
+  projectArgs?: (trust: boolean) => readonly string[];
   /** The child environment. Defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
   /** Where per-session temp directories are created. Defaults to `os.tmpdir()`. */
@@ -56,9 +62,17 @@ export interface SpawnerOptions {
   debug?: (text: string) => void;
 }
 
+/** Per-spawn options. A `cwd` selects a project spawn. */
+export interface SpawnOptions {
+  /** Run the child in this existing directory instead of a fresh temp dir. */
+  cwd?: string;
+  /** Whether the project is trusted for this run (project spawns only). */
+  trust?: boolean;
+}
+
 export interface Spawner {
   /** Spawns one child, resolving its process-group pid. Rejects over cap/ENOENT. */
-  spawn(): Promise<number>;
+  spawn(options?: SpawnOptions): Promise<number>;
   /** True while `pid` is a live child this spawner owns. */
   owns(pid: unknown): boolean;
   /** Clears the registration deadline once the child's `register` arrives. */
@@ -72,12 +86,24 @@ export interface Spawner {
 interface Entry {
   readonly dir: string;
   readonly child: ChildProcess;
+  /** True when this spawner created the dir and may remove it. */
+  readonly owned: boolean;
   timer: NodeJS.Timeout | null;
+}
+
+/**
+ * The args for a project spawn: exactly one of `--approve` / `--no-approve`
+ * (pi 0.87.1 `--help`), plus rpc mode. No `--no-session`, so the child can
+ * persist a resumable session in the project.
+ */
+export function defaultProjectArgs(trust: boolean): readonly string[] {
+  return trust ? ['--mode', 'rpc', '--approve'] : ['--mode', 'rpc', '--no-approve'];
 }
 
 export function createSpawner(options: SpawnerOptions = {}): Spawner {
   const command = options.command ?? 'pi';
   const args = options.args ?? ['--mode', 'rpc', '--no-session'];
+  const projectArgs = options.projectArgs;
   const env = options.env ?? process.env;
   const tempRoot = options.tempRoot ?? tmpdir();
   const maxSessions = options.maxSessions ?? DEFAULT_MAX_SESSIONS;
@@ -108,13 +134,13 @@ export function createSpawner(options: SpawnerOptions = {}): Spawner {
     }
   }
 
-  /** Forgets a child, clears its deadline and removes its temp dir. */
+  /** Forgets a child, clears its deadline and removes its dir if it owns it. */
   function reap(pid: number): void {
     const entry = children.get(pid);
     if (entry === undefined) return;
     children.delete(pid);
     if (entry.timer !== null) clearTimeout(entry.timer);
-    removeDir(entry.dir);
+    if (entry.owned) removeDir(entry.dir);
   }
 
   function armRegistration(pid: number): void {
@@ -127,27 +153,36 @@ export function createSpawner(options: SpawnerOptions = {}): Spawner {
     if (entry !== undefined) entry.timer = timer;
   }
 
-  function spawnChild(): Promise<number> {
+  function spawnChild(options?: SpawnOptions): Promise<number> {
     if (closed) return Promise.reject(new Error('spawner is closed'));
     if (children.size >= maxSessions) {
       return Promise.reject(new Error('too many app sessions'));
     }
+    // A caller-supplied cwd is a project spawn: we must never remove it.
+    const owned = options?.cwd === undefined;
     let dir: string;
-    try {
-      dir = mkdtempSync(join(tempRoot, 'pi-droid-session-'));
-    } catch (error) {
-      return Promise.reject(error);
+    if (owned) {
+      try {
+        dir = mkdtempSync(join(tempRoot, 'pi-droid-session-'));
+      } catch (error) {
+        return Promise.reject(error);
+      }
+    } else {
+      dir = options!.cwd as string;
     }
+    const spawnArgs = owned
+      ? args
+      : (projectArgs ?? defaultProjectArgs)(options?.trust ?? false);
     let child: ChildProcess;
     try {
-      child = spawn(command, args, {
+      child = spawn(command, spawnArgs, {
         cwd: dir,
         env,
         detached: true,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
     } catch (error) {
-      removeDir(dir);
+      if (owned) removeDir(dir);
       return Promise.reject(error);
     }
     // Drain both pipes; never touch stdin (rpc reads commands from it).
@@ -158,18 +193,18 @@ export function createSpawner(options: SpawnerOptions = {}): Spawner {
       child.once('spawn', () => {
         const spawnedPid = child.pid;
         if (spawnedPid === undefined) {
-          removeDir(dir);
+          if (owned) removeDir(dir);
           reject(new Error('spawned child has no pid'));
           return;
         }
         if (closed) {
           signalGroup(spawnedPid, 'SIGKILL');
-          removeDir(dir);
+          if (owned) removeDir(dir);
           reject(new Error('spawner is closed'));
           return;
         }
         pid = spawnedPid;
-        children.set(pid, { dir, child, timer: null });
+        children.set(pid, { dir, child, owned, timer: null });
         armRegistration(pid);
         resolve(pid);
       });
@@ -177,7 +212,7 @@ export function createSpawner(options: SpawnerOptions = {}): Spawner {
         // A failed spawn emits `error` and not a guaranteed `exit`, so the
         // cleanup must live here too.
         if (pid === null) {
-          removeDir(dir);
+          if (owned) removeDir(dir);
           reject(error);
         } else {
           reap(pid);
@@ -185,7 +220,7 @@ export function createSpawner(options: SpawnerOptions = {}): Spawner {
       });
       child.once('exit', () => {
         if (pid !== null) reap(pid);
-        else removeDir(dir);
+        else if (owned) removeDir(dir);
       });
     });
   }
@@ -238,7 +273,7 @@ export function createSpawner(options: SpawnerOptions = {}): Spawner {
     });
     await Promise.race([exited, escalated]);
     children.delete(pid);
-    removeDir(dir);
+    if (entry.owned) removeDir(dir);
   }
 
   async function close(): Promise<void> {

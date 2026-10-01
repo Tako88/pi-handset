@@ -5,12 +5,12 @@
 // spawner is exactly the behaviour mocks cannot show.
 
 import assert from 'node:assert/strict';
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, test } from 'node:test';
 
-import { createSpawner } from '../../src/hub/spawner.ts';
+import { createSpawner, defaultProjectArgs } from '../../src/hub/spawner.ts';
 import type { Spawner } from '../../src/hub/spawner.ts';
 
 const spawners: Spawner[] = [];
@@ -290,4 +290,110 @@ test('close also kills a spawn that is still in flight', async () => {
 
   await assert.rejects(pending, /spawner is closed/);
   assert.deepEqual(readdirSync(tempRoot), [], 'no temp dir may survive the close');
+});
+
+// --- project spawns: the caller's directory must survive every exit path ---
+
+/** A project dir with a marker file, so a removal is unmistakable. */
+function projectDir(): string {
+  const dir = scratch();
+  writeFileSync(join(dir, 'marker.txt'), 'keep me');
+  return dir;
+}
+
+function assertProjectIntact(dir: string): void {
+  assert.equal(existsSync(dir), true, `the project dir ${dir} must survive`);
+  assert.equal(existsSync(join(dir, 'marker.txt')), true, 'its contents must survive');
+}
+
+test('defaultProjectArgs picks exactly one approve flag', () => {
+  assert.deepEqual(defaultProjectArgs(true), ['--mode', 'rpc', '--approve']);
+  assert.deepEqual(defaultProjectArgs(false), ['--mode', 'rpc', '--no-approve']);
+});
+
+test('a project spawn runs in the caller directory and survives kill and close', async () => {
+  const dir = projectDir();
+  const spawner = createSpawner({
+    command: 'sh',
+    projectArgs: () => ['-c', 'sleep 30'],
+  });
+  spawners.push(spawner);
+
+  const pid = await spawner.spawn({ cwd: dir });
+  assert.equal(spawner.owns(pid), true, 'a project spawn is still owned');
+  assertProjectIntact(dir);
+
+  spawner.kill(pid);
+  await waitFor(() => !alive(pid), 'the killed project child to die');
+  assertProjectIntact(dir);
+
+  await spawner.spawn({ cwd: dir });
+  await spawner.close();
+  assertProjectIntact(dir);
+});
+
+test('the registration reaper leaves a project dir alone', async () => {
+  const dir = projectDir();
+  const spawner = createSpawner({
+    command: 'sh',
+    projectArgs: () => ['-c', 'sleep 30'],
+    registrationTimeoutMs: 50,
+  });
+  spawners.push(spawner);
+
+  const pid = await spawner.spawn({ cwd: dir });
+  await waitFor(() => !alive(pid), 'the unconfirmed project child to be reaped', 3000);
+  await waitFor(() => !spawner.owns(pid), 'the reaper to forget the child');
+  assertProjectIntact(dir);
+});
+
+test('close immediately after a project spawn leaves the project dir alone', async () => {
+  const dir = projectDir();
+  const spawner = createSpawner({
+    command: 'sh',
+    projectArgs: () => ['-c', 'sleep 30'],
+  });
+  spawners.push(spawner);
+
+  const pending = spawner.spawn({ cwd: dir });
+  await spawner.close();
+
+  await assert.rejects(pending, /spawner is closed/);
+  assertProjectIntact(dir);
+});
+
+test('a failed command leaves a project dir alone', async () => {
+  const dir = projectDir();
+  const spawner = createSpawner({ command: 'pi-droid-no-such-binary' });
+  spawners.push(spawner);
+
+  await assert.rejects(() => spawner.spawn({ cwd: dir }));
+  assertProjectIntact(dir);
+});
+
+test('a self-exiting project child leaves the project dir alone', async () => {
+  const dir = projectDir();
+  const spawner = createSpawner({
+    command: 'sh',
+    projectArgs: () => ['-c', 'exit 0'],
+  });
+  spawners.push(spawner);
+
+  const pid = await spawner.spawn({ cwd: dir });
+  await waitFor(() => !spawner.owns(pid), 'the self-exiting child to be reaped', 3000);
+  assertProjectIntact(dir);
+});
+
+test('a synchronous spawn throw leaves a project dir alone', async () => {
+  const dir = projectDir();
+  // A NUL byte in an argument makes child_process.spawn throw synchronously,
+  // exercising the sync-catch removal guard.
+  const spawner = createSpawner({
+    command: 'sh',
+    projectArgs: () => ['\0'],
+  });
+  spawners.push(spawner);
+
+  await assert.rejects(() => spawner.spawn({ cwd: dir }));
+  assertProjectIntact(dir);
 });
