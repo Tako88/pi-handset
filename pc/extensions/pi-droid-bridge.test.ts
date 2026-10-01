@@ -630,6 +630,7 @@ test('agent_settled yields the terminal agent state', () => {
     kind: 'usage',
     tokens: 23400,
     contextWindow: 128000,
+    thinkingLevel: 'medium',
   });
   assert.deepEqual(emitted[2]!.payload, { kind: 'settled', text: '', truncated: false });
 });
@@ -958,7 +959,7 @@ test('a history-request replays history and then the context usage', () => {
   assert.deepEqual(after[1], {
     protocolVersion: PROTOCOL_VERSION,
     type: 'event',
-    payload: { kind: 'usage', tokens: 23400, contextWindow: 128000 },
+    payload: { kind: 'usage', tokens: 23400, contextWindow: 128000, thinkingLevel: 'medium' },
   });
 });
 
@@ -977,6 +978,7 @@ test('an unknown token count travels as null', () => {
     kind: 'usage',
     tokens: null,
     contextWindow: 128000,
+    thinkingLevel: 'medium',
   });
 });
 
@@ -1007,7 +1009,183 @@ test('a compaction reports unknown tokens', () => {
     kind: 'usage',
     tokens: null,
     contextWindow: 128000,
+    thinkingLevel: 'medium',
   });
+});
+
+test('a context without a thinking level omits the field', () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  delete ctx.thinkingLevel;
+  const socket = harness.sockets[0]!;
+  socket.open();
+  socket.message({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'history-request',
+    sessionId: 'sess-1',
+  });
+  // The key must be absent, not `null`: an older pi exposes no level and the
+  // field is optional.
+  assert.deepEqual((parsed(socket).at(-1) as { payload: unknown }).payload, {
+    kind: 'usage',
+    tokens: 23400,
+    contextWindow: 128000,
+  });
+});
+
+test('a thinking level change re-reports usage', () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  const before = socket.sent.length;
+  ctx.thinkingLevel = 'low';
+  harness.pi.handlers.get('thinking_level_select')!(
+    { level: 'low', previousLevel: 'medium' },
+    ctx,
+  );
+  assert.deepEqual((parsed(socket).slice(before).at(-1) as { payload: unknown }).payload, {
+    kind: 'usage',
+    tokens: 23400,
+    contextWindow: 128000,
+    thinkingLevel: 'low',
+  });
+});
+
+test('the reported thinking level is read live, not cached', () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  ctx.thinkingLevel = 'high';
+  const before = socket.sent.length;
+  harness.pi.handlers.get('thinking_level_select')!(
+    { level: 'high', previousLevel: 'low' },
+    ctx,
+  );
+  assert.deepEqual((parsed(socket).slice(before).at(-1) as { payload: unknown }).payload, {
+    kind: 'usage',
+    tokens: 23400,
+    contextWindow: 128000,
+    thinkingLevel: 'high',
+  });
+});
+
+test('a failed compaction reaches the transcript as an error notice', () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  const before = socket.sent.length;
+  harness.pi.handlers.get('session_compact_failed')!(
+    { reason: 'manual', errorMessage: 'Compaction failed: no model', aborted: false },
+    ctx,
+  );
+  assert.deepEqual((parsed(socket).slice(before).at(-1) as { payload: unknown }).payload, {
+    kind: 'status',
+    event: 'error',
+    message: 'Compaction failed: no model',
+  });
+});
+
+test('an overflow compaction failure also reaches the transcript', () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  const before = socket.sent.length;
+  harness.pi.handlers.get('session_compact_failed')!(
+    {
+      reason: 'overflow',
+      errorMessage: 'Context overflow recovery failed: too large',
+      aborted: false,
+    },
+    ctx,
+  );
+  assert.deepEqual((parsed(socket).slice(before).at(-1) as { payload: unknown }).payload, {
+    kind: 'status',
+    event: 'error',
+    message: 'Context overflow recovery failed: too large',
+  });
+});
+
+test('an aborted compaction clears the announcement without an error notice', () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  const before = socket.sent.length;
+  harness.pi.handlers.get('session_compact_failed')!({ reason: 'manual', aborted: true }, ctx);
+  // The announcement must still be cleared — an aborted compaction is over just
+  // like a failed one — but nothing is shown, because nothing went wrong.
+  assert.deepEqual(parsed(socket).slice(before).map((m) => (m as { payload: unknown }).payload), [
+    { kind: 'status', event: 'compacting', active: false },
+  ]);
+});
+
+test('a compaction start announces itself to the app', () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  const before = socket.sent.length;
+  harness.pi.handlers.get('session_before_compact')!(
+    { type: 'session_before_compact', reason: 'manual', willRetry: false },
+    ctx,
+  );
+  assert.deepEqual((parsed(socket).slice(before).at(-1) as { payload: unknown }).payload, {
+    kind: 'status',
+    event: 'compacting',
+    active: true,
+  });
+});
+
+test('the compaction start handler neither cancels nor customises the compaction', () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  harness.sockets[0]!.open();
+  // pi awaits this handler and reads the result: a truthy `cancel` aborts the
+  // compaction and a `compaction` replaces the summary. Returning undefined is
+  // what keeps the bridge from silently changing what compaction does.
+  const result = harness.pi.handlers.get('session_before_compact')!(
+    { type: 'session_before_compact', reason: 'threshold', willRetry: true },
+    ctx,
+  );
+  assert.equal(result, undefined);
+});
+
+test('a completed compaction clears the announcement', () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  const before = socket.sent.length;
+  harness.pi.handlers.get('session_compact')!({ type: 'session_compact', reason: 'manual' }, ctx);
+  assert.deepEqual(
+    parsed(socket)
+      .slice(before)
+      .map((m) => (m as { payload: { kind: string; event?: string } }).payload)
+      .filter((p) => p.kind === 'status'),
+    [{ kind: 'status', event: 'compacting', active: false }],
+  );
+});
+
+test('a failed compaction clears the announcement before the error notice', () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  const before = socket.sent.length;
+  harness.pi.handlers.get('session_compact_failed')!(
+    { reason: 'overflow', errorMessage: 'Context overflow recovery failed', aborted: false },
+    ctx,
+  );
+  // Order matters: the indicator is cleared first, so the app cannot end up
+  // showing "Compacting…" and a failure notice at the same time.
+  assert.deepEqual(parsed(socket).slice(before).map((m) => (m as { payload: unknown }).payload), [
+    { kind: 'status', event: 'compacting', active: false },
+    { kind: 'status', event: 'error', message: 'Context overflow recovery failed' },
+  ]);
 });
 
 test('an accepted model switch reports the new window', async () => {

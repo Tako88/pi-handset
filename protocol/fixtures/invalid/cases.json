@@ -30,6 +30,8 @@
     { "file": "start-session-bad-trust.json", "code": "bad-field" },
     { "file": "kill-session-bad-session-id.json", "code": "bad-field" },
     { "file": "event-settled-bad-text.json", "code": "bad-text" },
+    { "file": "event-usage-bad-thinking-level.json", "code": "bad-field" },
+    { "file": "event-usage-null-thinking-level.json", "code": "bad-field" },
     { "file": "agent-settled-bad-label.json", "code": "bad-field" },
     { "file": "list-dirs-bad-id.json", "code": "bad-field" },
     { "file": "list-dirs-bad-path.json", "code": "bad-field" },

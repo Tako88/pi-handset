@@ -142,11 +142,14 @@ export type StreamPhase = (typeof STREAM_PHASES)[number];
  * gives pi something to measure; `contextWindow` is the model's window. The
  * percentage is deliberately absent — it is exactly `tokens / contextWindow`,
  * and the app derives it rather than trusting a second source of truth.
+ * `thinkingLevel` is the level in effect when the reading was taken (pi's
+ * `ThinkingLevel`); it is optional so an older pi without a level omits it.
  */
 export interface ContextUsagePayload {
   kind: 'usage';
   tokens: number | null;
   contextWindow: number;
+  thinkingLevel?: string;
 }
 
 /** The agent's lifecycle transition. Carried inside an `event`. */
@@ -646,9 +649,18 @@ export function decode(text: string): DecodeResult {
       }
       // `message`/`tool`/`status` are M6-owned shapes the hub only relays, so
       // their fields are accepted as-is once `kind` is recognized. `usage` is
-      // the same deal: it is produced by our own bridge, and the hub neither
-      // reads nor interprets it.
-      if (kind === 'message' || kind === 'tool' || kind === 'status' || kind === 'usage') {
+      // the same deal except for its `thinkingLevel`: the numbers stay opaque,
+      // but the level is validated because the app reads it directly. Note this
+      // is contract-pinning, not runtime defence — the hub never calls `decode`
+      // on an event (it validates `hello` only), so the app and the shared
+      // fixtures are the consumers this branch keeps honest.
+      if (kind === 'message' || kind === 'tool' || kind === 'status') {
+        return { ok: true, value: parsed as EventMessage };
+      }
+      if (kind === 'usage') {
+        if (!isOptionalString(body.thinkingLevel)) {
+          return fail('bad-field', 'usage thinkingLevel must be a string');
+        }
         return { ok: true, value: parsed as EventMessage };
       }
       return fail('bad-payload', `unknown event payload kind: ${String(kind)}`);

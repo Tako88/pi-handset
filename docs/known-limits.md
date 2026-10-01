@@ -37,8 +37,23 @@ rather than guess at it.
   compacting, so the bridge sends `deliverAs:'steer'`, but pi's compaction check runs
   before its streaming check and throws regardless of `streamingBehavior`; the refusal
   only reaches pi's stdout, which the hub drains. `ExtensionContext` has no `isStreaming`
-  or `isCompacting`, so the bridge cannot detect compaction. The bridge reports
+  or `isCompacting`, so the bridge cannot *poll* for compaction at dispatch time (it can
+  observe the compaction events — see below). The bridge reports
   `queued:true` and the notice appears anyway. Pre-existing, not made worse. Not built.
+- **The app shows compaction progress but does not gate the composer.** The app bar says
+  `Compacting…` in place of the context reading while a compaction runs, driven by
+  `session_before_compact` — an extension event pi emits before the summarization call
+  from both entry points, for `manual`, `threshold` and `overflow` alike. It is cleared by
+  `session_compact` (the success path) or `session_compact_failed` (the `catch` of both
+  paths). Two residuals: a **hard-killed** pi sends neither, leaving the indicator up until
+  the session is reopened; and an app that **reconnects mid-compaction** never sees the
+  start event, so it shows nothing for the remainder. The composer is still not disabled —
+  a prompt sent during compaction is silently dropped (above).
+- **The compact-failure notice covers auto compactions too.** The bridge surfaces every
+  `session_compact_failed` reason — `manual`, `overflow` and `threshold` — so an error
+  notice in the transcript can describe an automatic compaction the user did not trigger.
+  Deliberate: an auto-compaction failure is at least as consequential as a manual one, and
+  it is otherwise invisible.
 - **Extension commands sent mid-turn execute immediately, so the queued notice is wrong
   for them.** pi runs `_tryExecuteExtensionCommand` *before* its compaction and streaming
   checks, so a registered command like `/review` runs now rather than queuing while the
