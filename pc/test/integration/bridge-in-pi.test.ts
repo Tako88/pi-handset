@@ -911,8 +911,8 @@ test('a spawned bare pi registers, prompts and dies on kill-session', async () =
   // Wrap the real spawner only to observe the pid it hands back; every
   // behaviour is the production one.
   const spawner: Spawner = {
-    spawn: async () => {
-      const pid = await real.spawn();
+    spawn: async (options) => {
+      const pid = await real.spawn(options);
       pids.push(pid);
       return pid;
     },
