@@ -14,6 +14,15 @@
     "ok": false,
     "error": "unknown command"
   },
+  "command-result-commands.json": {
+    "type": "command-result",
+    "id": "cmd-1",
+    "ok": true,
+    "commands": [
+      { "name": "review", "description": "Review the working tree" },
+      { "name": "implement-vetted" }
+    ]
+  },
   "event-agent.json": {
     "type": "event",
     "payload": { "kind": "agent", "state": "running" }

@@ -54,7 +54,7 @@ export const HISTORY_MAX_BYTES = 768 * 1024;
  * - `register` { sessionId, sessionFile?, cwd?, name?, model?, thinkingLevel?, mode?, pid? }
  * - `event`  { payload: stream | message | agent | tool | status }
  * - `history` { sessionId, entries: unknown[], truncated: boolean }
- * - `command-result` { id, ok, error? }
+ * - `command-result` { id, ok, error?, commands? }
  *
  * viewer -> hub (LAN listener):
  * - `hello`  { ticket XOR token }
@@ -79,7 +79,7 @@ export const HISTORY_MAX_BYTES = 768 * 1024;
  * - `snapshot` { sessionId, lastSeq, agentState, entries: unknown[], truncated }
  *   — `lastSeq`/`agentState` are hub-tracked; `entries` are agent-supplied and
  *   may be truncated.
- * - `command-result` { id, ok, error? }
+ * - `command-result` { id, ok, error?, commands? }
  * - `resync-required` { sessionId, reason }
  * - `session-gone` { sessionId }
  *
@@ -213,12 +213,19 @@ export interface HistoryMessage {
   truncated: boolean;
 }
 
+export interface SlashCommand {
+  name: string;
+  description?: string;
+}
+
 export interface CommandResultMessage {
   protocolVersion: number;
   type: 'command-result';
   id: string;
   ok: boolean;
   error?: string;
+  /** Present only on a `listCommands` result; validated if present. */
+  commands?: SlashCommand[];
 }
 
 export interface SubscribeMessage {
@@ -674,6 +681,23 @@ export function decode(text: string): DecodeResult {
       }
       if (!isOptionalString(message.error)) {
         return fail('bad-field', 'command-result error must be a string');
+      }
+      if (message.commands !== undefined) {
+        if (!Array.isArray(message.commands)) {
+          return fail('bad-field', 'command-result commands must be an array');
+        }
+        for (const entry of message.commands) {
+          if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+            return fail('bad-field', 'command-result commands entries must be JSON objects');
+          }
+          const command = entry as Record<string, unknown>;
+          if (asString(command.name) === null) {
+            return fail('bad-field', 'command-result command name must be a non-empty string');
+          }
+          if (!isOptionalString(command.description)) {
+            return fail('bad-field', 'command-result command description must be a string');
+          }
+        }
       }
       return { ok: true, value: parsed as CommandResultMessage };
     }

@@ -289,6 +289,36 @@ DecodeResult decode(String text) {
       if (!_isOptionalString(message, 'error')) {
         return const DecodeResult.fail('bad-field', 'command-result error must be a string');
       }
+      final commands = message['commands'];
+      if (message.containsKey('commands')) {
+        if (commands is! List) {
+          return const DecodeResult.fail(
+            'bad-field',
+            'command-result commands must be an array',
+          );
+        }
+        for (final entry in commands) {
+          if (entry is! Map) {
+            return const DecodeResult.fail(
+              'bad-field',
+              'command-result commands entries must be JSON objects',
+            );
+          }
+          final command = entry.cast<String, Object?>();
+          if (_nonEmptyString(command['name']) == null) {
+            return const DecodeResult.fail(
+              'bad-field',
+              'command-result command name must be a non-empty string',
+            );
+          }
+          if (!_isOptionalString(command, 'description')) {
+            return const DecodeResult.fail(
+              'bad-field',
+              'command-result command description must be a string',
+            );
+          }
+        }
+      }
       return DecodeResult.ok(message);
     case 'subscribe':
       if (_nonEmptyString(message['sessionId']) == null) {
