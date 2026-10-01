@@ -198,12 +198,13 @@ what it would cost, so it can be picked up cold.
   ignores the extra `cwd`/`trust` fields and answers `ok` while spawning in a temp dir
   — a silent wrong-directory session. Neither can happen, because the new frames are
   never handed to a hub that cannot honour them.
-- **The trust write is neither atomic nor locked.** `saveTrustDecision` mirrors pi's
-  `writeTrustFile`: a direct `writeFileSync` (after `mkdirSync`), with no temp file and
-  no rename, so a crash mid-write can leave the store torn or empty, and a concurrent
-  `pi /trust` can lose one update. pi serializes its own writes with `proper-lockfile`
-  on `${trustPath}.lock`; check its current options before adopting, as that exact
-  protocol is deliberately not taken here to avoid a new runtime dependency.
+- **The trust write is atomic but unlocked.** `saveTrustDecision` writes a sibling
+  temp file and renames it over the store, so an interrupted write leaves the previous
+  store intact rather than torn or empty (pi itself truncates in place). What is not
+  taken: pi serializes its writes with `proper-lockfile` on `${trustPath}.lock`, so a
+  concurrent `pi /trust` can still lose one update. Check pi's current lock options
+  before adopting them, as that protocol is deliberately not replicated here to avoid
+  a new runtime dependency.
 - **A malformed trust store is refused loudly, not read as "no decision".** pi throws
   on malformed JSON, a non-object root, or a value that is not `true`/`false`/`null`,
   so a spawned child throws on the same file no matter what the hub does; this mirrors

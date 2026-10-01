@@ -18,7 +18,7 @@
  * keys pi computes.
  */
 
-import { existsSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, isAbsolute, join, sep } from 'node:path';
 
 /** Default maximum number of entries returned by a single listing. */
@@ -26,6 +26,9 @@ export const DEFAULT_MAX_DIR_ENTRIES = 500;
 
 /** Default maximum encoded byte budget (`name` + JSON overhead) for a listing. */
 export const DEFAULT_MAX_DIR_BYTES = 256 * 1024;
+
+/** Makes each trust-store temp file name unique within this process. */
+let tmpCounter = 0;
 
 /** Raised for a path that cannot be listed: outside home, relative, missing. */
 export class FolderError extends Error {
@@ -299,8 +302,12 @@ export function trustDecision(trustPath: string, cwd: string): boolean | null {
 /**
  * Writes a decision for `cwd`, merging with the existing store. Keys are
  * sorted, parent directories are created, and the file ends with a newline —
- * pi's exact `writeTrustFile`. A malformed store throws before any write, so
- * the file is left byte-identical rather than clobbered.
+ * pi's exact `writeTrustFile`, except for the write itself: pi truncates the
+ * store in place, while this writes a sibling temp file and renames it over
+ * the target, so an interrupted write can never leave the store torn. A torn
+ * store is not a cosmetic problem — both pi and this hub throw on one. A
+ * malformed store throws before any write, so the file is left byte-identical
+ * rather than clobbered.
  */
 export function saveTrustDecision(trustPath: string, cwd: string, decision: boolean | null): void {
   const existing = readTrustStore(trustPath);
@@ -311,5 +318,17 @@ export function saveTrustDecision(trustPath: string, cwd: string, decision: bool
     if (value === true || value === false || value === null) sorted[key] = value;
   }
   mkdirSync(dirname(trustPath), { recursive: true });
-  writeFileSync(trustPath, `${JSON.stringify(sorted, null, 2)}\n`, 'utf-8');
+  // Same directory as the target: a rename is only atomic within a filesystem.
+  const tmpPath = `${trustPath}.tmp-${process.pid}-${++tmpCounter}`;
+  try {
+    writeFileSync(tmpPath, `${JSON.stringify(sorted, null, 2)}\n`, 'utf-8');
+    renameSync(tmpPath, trustPath);
+  } catch (error) {
+    try {
+      unlinkSync(tmpPath);
+    } catch {
+      // The temp file may never have been created; the original error matters.
+    }
+    throw error;
+  }
 }

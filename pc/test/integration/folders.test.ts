@@ -11,8 +11,10 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -296,6 +298,30 @@ test('saveTrustDecision creates parents, merges, sorts and ends with a newline',
   );
   assert.equal(parsed[canonicalizePath(project)], true, 'existing keys are preserved');
   assert.equal(parsed[canonicalizePath(join(home, 'other'))], false);
+});
+
+test('saveTrustDecision replaces the store by rename, never rewriting it in place', () => {
+  const home = scratch();
+  const trustPath = join(home, 'trust.json');
+  const project = join(home, 'project');
+  mkdirSync(project);
+
+  saveTrustDecision(trustPath, project, true);
+  const inoBefore = statSync(trustPath).ino;
+  saveTrustDecision(trustPath, join(home, 'other'), false);
+  const inoAfter = statSync(trustPath).ino;
+
+  assert.notEqual(
+    inoAfter,
+    inoBefore,
+    'a crash-safe write renames a fresh file over the store instead of truncating it',
+  );
+  assert.equal(
+    readdirSync(home).filter((name) => name.includes('tmp')).length,
+    0,
+    'no temp file is left behind',
+  );
+  assert.equal(trustDecision(trustPath, project), true, 'the merge survives');
 });
 
 test('saveTrustDecision refuses a malformed store and leaves it byte-identical', () => {
