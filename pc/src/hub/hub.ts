@@ -89,8 +89,10 @@ const DEFAULT_AUTH_CLOSE_DELAY_MS = 250;
 /** Cap on a single inbound frame; `ws` defaults to 100 MB, far too generous. */
 const DEFAULT_MAX_PAYLOAD = 1024 * 1024;
 
-/** The bridge's command allowlist; anything else is refused here too. */
-const COMMAND_ALLOWLIST = new Set([
+/** The bridge's command allowlist; anything else is refused here too.
+ * Exported so a test can pin it equal to the bridge's copy: the two must not
+ * drift, or one side allows what the other refuses. */
+export const COMMAND_ALLOWLIST = new Set([
   'prompt',
   'steer',
   'followup',
@@ -100,6 +102,7 @@ const COMMAND_ALLOWLIST = new Set([
   'compact',
   'fetchHistory',
   'setSessionName',
+  'listCommands',
 ]);
 
 export interface HubOptions {

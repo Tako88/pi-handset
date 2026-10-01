@@ -46,6 +46,7 @@ import type {
   EventPayload,
   HistoryMessage,
   RegisterMessage,
+  SlashCommand,
 } from '../src/protocol/protocol.ts';
 
 // ---------------------------------------------------------------------------
@@ -92,6 +93,12 @@ export interface BridgePi {
   setThinkingLevel(level: string): void;
   setSessionName(name: string): void;
   getSessionName?(): string | undefined;
+  /**
+   * pi's own slash-command list for the active session. Optional because the
+   * bridge's pi slice is structural: an older pi without it degrades to an
+   * `ok:false` result rather than a crash.
+   */
+  getCommands?(): SlashCommand[];
 }
 
 // ---------------------------------------------------------------------------
@@ -269,8 +276,10 @@ export function isActiveMode(mode: string): boolean {
 }
 
 /** The bridge's command allowlist. Anything else — including a case- or
- * whitespace-variant of an entry — is refused, because the match is exact. */
-const COMMAND_ALLOWLIST = new Set([
+ * whitespace-variant of an entry — is refused, because the match is exact.
+ * Exported so a test can pin it equal to the hub's copy: the two must not
+ * drift, or one side allows what the other refuses. */
+export const COMMAND_ALLOWLIST = new Set([
   'prompt',
   'steer',
   'followup',
@@ -280,6 +289,7 @@ const COMMAND_ALLOWLIST = new Set([
   'compact',
   'fetchHistory',
   'setSessionName',
+  'listCommands',
 ]);
 
 const BACKOFF_BASE_MS = 500;
@@ -563,6 +573,7 @@ function parseCommand(message: Record<string, unknown>): CommandMessage | null {
 interface CommandOutcome {
   ok: boolean;
   error?: string;
+  commands?: SlashCommand[];
 }
 
 class Bridge {
@@ -887,7 +898,7 @@ class Bridge {
         return;
       }
       const outcome = await this.dispatchCommand(ctx, command.name, command.args);
-      this.sendCommandResult(command.id, outcome.ok, outcome.error);
+      this.sendCommandResult(command.id, outcome.ok, outcome.error, outcome.commands);
     } catch (error) {
       this.sendCommandResult(
         command.id,
@@ -942,6 +953,22 @@ class Bridge {
       case 'compact':
         ctx.compact();
         return { ok: true };
+      case 'listCommands': {
+        const raw = this.pi.getCommands?.();
+        if (raw === undefined || !Array.isArray(raw)) {
+          return { ok: false, error: 'commands unavailable' };
+        }
+        const commands: SlashCommand[] = [];
+        for (const entry of raw) {
+          const name = asString((entry as { name?: unknown })?.name);
+          if (name === null) continue;
+          const command: SlashCommand = { name };
+          const description = asString((entry as { description?: unknown })?.description);
+          if (description !== null) command.description = description;
+          commands.push(command);
+        }
+        return { ok: true, commands };
+      }
       case 'setSessionName': {
         const sessionName = asString(fields.name);
         if (sessionName === null) return { ok: false, error: 'missing name' };
@@ -1004,7 +1031,12 @@ class Bridge {
     });
   }
 
-  private sendCommandResult(id: string, ok: boolean, error?: string): void {
+  private sendCommandResult(
+    id: string,
+    ok: boolean,
+    error?: string,
+    commands?: SlashCommand[],
+  ): void {
     const message: CommandResultMessage = {
       protocolVersion: PROTOCOL_VERSION,
       type: 'command-result',
@@ -1012,6 +1044,7 @@ class Bridge {
       ok,
     };
     if (error !== undefined) message.error = error;
+    if (commands !== undefined) message.commands = commands;
     this.send(message);
   }
 }
