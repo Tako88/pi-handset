@@ -61,7 +61,8 @@ streaming live above the reply.
 
 **Browse and start a project session.** The phone can open a folder browser over the
 PC's home directory and start an app session whose `pi` child runs *in the chosen
-folder* rather than in a fresh temp dir. The hub lists only directories whose
+folder* rather than in a fresh temp dir, and because it runs in a real folder its
+session is saved under that project — `pi --continue` on the PC picks it up. The hub lists only directories whose
 `realpath` stays under `$HOME`, offering a symlink only when its target does too. When
 the folder carries trust-requiring project resources — pi's `.pi/*` set in the folder
 itself, or an `.agents/skills` in it or an ancestor — and pi has no saved decision,
@@ -233,11 +234,27 @@ what it would cost, so it can be picked up cold.
   passes `--approve` exactly when the effective trust decision is true (`--no-approve`
   otherwise, per `defaultProjectArgs` in `pc/src/hub/spawner.ts`). Hand-run spike on
   the dev host with `pi` 0.87.1; no committed script or test pins it.
-- **Spike: dropping `--no-session` persists no session file before a turn.** Started
-  with no prompt and stopped, pi created the per-cwd session *directory*
-  (`~/.pi/agent/sessions/--<encoded-cwd>--/`) but wrote no `.jsonl`, and nothing landed
-  under the project. The feature does not branch on it: the child runs in the project
-  dir either way. Same hand-run spike as above; no committed trace.
+- **A project session is saved, but only once the agent has replied.** Project spawns
+  drop `--no-session`, so pi persists the session under
+  `~/.pi/agent/sessions/--<encoded-cwd>--/`, and it can be continued on the PC with
+  `pi --continue` (the most recent session for that cwd) or `pi --resume` (the picker)
+  run from that directory — `/resume` does the same inside a running pi, while `/tree`
+  only navigates branches of the session you are already in. The trust decision the
+  phone wrote applies to that PC run too, so the same project config loads. The caveat:
+  pi buffers entries in memory until the first *assistant* message exists, so a session
+  started from the phone and killed before the agent answers leaves the session
+  *directory* and no `.jsonl` — nothing to resume. (An earlier version of this note
+  read "persists no session file" from a spike that started pi and stopped it without
+  ever sending a prompt; that was a methodology artifact, not the behaviour — the
+  hand-run spike recorded nothing because there was no turn. Verified on the device:
+  an app-started project session does resume on the PC.)
+- **The `.pi` trust prompt follows pi's exact gate, not the presence of `.pi`.** A
+  resource-free project — including one whose only `.pi` entry is `plans/`, as in this
+  repo — starts with no prompt, because pi itself asks only when `.pi/settings.json`,
+  `.pi/extensions`, `.pi/skills`, `.pi/prompts`, `.pi/themes`, `.pi/SYSTEM.md`,
+  `.pi/APPEND_SYSTEM.md`, or a non-user `.agents/skills` directory exists.
+  `AGENTS.md` never triggers it: context files load whether the project is trusted or
+  not.
 
 ### What the manual pass actually found
 
