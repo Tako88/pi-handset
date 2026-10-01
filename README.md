@@ -100,6 +100,13 @@ what it would cost, so it can be picked up cold.
 
 **Bugs, diagnosed and unfixed**
 
+- **`fetchHistory` is allowlisted but not implemented.** It is in both the bridge's and
+  the hub's `COMMAND_ALLOWLIST`, but `dispatchCommand` has no case for it, so it falls to
+  the default and answers `ok:false "command not allowed"` — an allowlist promising what
+  the dispatcher refuses. Nothing sends it today (the app uses the `history-request`
+  frame), so it is latent rather than live, and the cross-module allowlist-equality test
+  cannot catch it: that pins the two lists *matching*, not every name being implemented.
+  Fix is one line either way — delete the entry, or implement it.
 - **The transcript disables Android's predictive-back preview.** The system back button
   is wired with `PopScope(canPop: false)`, which is what stops it exiting the app — but
   the same flag suppresses the peek-at-the-previous-screen gesture preview. The honest
@@ -114,6 +121,19 @@ what it would cost, so it can be picked up cold.
   carries, the built-ins are excluded from pi's own command list, so reaching them is a
   different fix: real affordances in the app (a model picker, a compact action) rather
   than completion.
+- **A message sent while pi is working is refused, not queued.** The composer is enabled
+  whenever the socket is connected, regardless of the agent's state, so a send mid-turn
+  goes out as `prompt` with no delivery mode and pi rejects it with `Agent is already
+  processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.`
+  — surfaced verbatim in a snackbar. The bridge already carries `steer` and `followup`,
+  and the app already knows the agent state (it drives the status indicator and the live
+  row), so the work is client-side: pick the delivery mode from that state, and decide
+  what a send during a turn should mean.
+- **Four bridge commands have no UI.** `setModel`, `setThinkingLevel`, `compact` and
+  `setSessionName` are allowlisted and implemented in the bridge, but the app sends only
+  `prompt` and `abort` — so there is no way to switch model, change the thinking level,
+  compact, or rename a session from the phone. All four are the same shape (a control in
+  the transcript app bar plus a `sendCommand`), which is why they are one item.
 - **History is a fixed window, not a paged log.** A `snapshot` carries at most
   `HISTORY_MAX_BYTES` (768 KiB) of the *newest* entries; older ones are simply not
   sent, and the app says so above the oldest row it has. A single entry larger than
@@ -123,7 +143,9 @@ what it would cost, so it can be picked up cold.
 - **Tool rendering is generic.** Every tool gets the same collapsed block; there are no
   per-tool renderers — no diff, no file, no table.
 - **Images are `[image]` placeholders**, and **links are styled but not tappable** (the
-  latter needs `url_launcher`, deliberately not taken).
+  latter needs `url_launcher`, deliberately not taken). Images cannot be *sent* either:
+  the bridge's `prompt` carries text only and there is no attach affordance, so this gap
+  has two halves.
 - **No discovery.** The address is typed by hand. Tailscale needs none — its MagicDNS
   name is typed once — but there is no LAN beacon or mDNS path. The emulator can only
   reach the host as `10.0.2.2`, because its NAT hides the LAN entirely.
