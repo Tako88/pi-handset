@@ -19,7 +19,9 @@ import '../client/hub_client.dart';
 import '../client/notification_presenter.dart';
 import '../client/settle_notification.dart';
 import '../client/token_store.dart';
+import '../protocol/protocol.dart';
 import 'compose_bar.dart';
+import 'folder_browser.dart';
 import 'pairing_screen.dart';
 import 'session_list.dart';
 import 'status_indicator.dart';
@@ -239,11 +241,22 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
 
   void _open(SessionSummary session) => _queueOpen(session.sessionId);
 
-  /// Starts an app-started session. The hub answers with a result; a refusal
-  /// (e.g. the cap is reached) is shown, never swallowed. [context] is the
-  /// sessions-view context, below `MaterialApp`, so its `ScaffoldMessenger` is
-  /// an ancestor.
+  /// Starts an app-started session. With the folder capabilities the FAB first
+  /// offers a choice between a quick temp-dir session and browsing to a project;
+  /// otherwise it starts directly, exactly as it always has. [context] is the
+  /// sessions-view context, below `MaterialApp`, so its `ScaffoldMessenger` and
+  /// `Navigator` are ancestors.
   void _start(BuildContext context) {
+    if (_state.capabilities.contains(capabilityListDirs) &&
+        _state.capabilities.contains(capabilityProjectSession)) {
+      unawaited(_chooseStart(context));
+      return;
+    }
+    _quickStart(context);
+  }
+
+  /// The old-hub path: start immediately, no chooser.
+  void _quickStart(BuildContext context) {
     final messenger = ScaffoldMessenger.of(context);
     unawaited(
       widget.client.startSession().then((result) {
@@ -256,6 +269,53 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
         }
       }),
     );
+  }
+
+  /// The capability path: a bottom-sheet chooser. The messenger and navigator
+  /// are captured before the sheet's async gap, because the sheet's own context
+  /// is gone once it closes; the sheet is popped and only then is the browser
+  /// route pushed.
+  Future<void> _chooseStart(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final navigator = Navigator.of(context);
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              key: const Key('quick-session'),
+              leading: const Icon(Icons.add),
+              title: const Text('Quick session'),
+              onTap: () => Navigator.pop(sheetContext, 'quick'),
+            ),
+            ListTile(
+              key: const Key('open-project'),
+              leading: const Icon(Icons.folder_open),
+              title: const Text('Open a project'),
+              onTap: () => Navigator.pop(sheetContext, 'project'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted) return;
+    if (choice == 'quick') {
+      final result = await widget.client.startSession();
+      if (!mounted) return;
+      if (!result.ok) {
+        messenger.showSnackBar(
+          SnackBar(content: Text(result.error ?? 'could not start a session')),
+        );
+      }
+    } else if (choice == 'project') {
+      await navigator.push(
+        MaterialPageRoute<void>(
+          builder: (_) => FolderBrowserScreen(client: widget.client),
+        ),
+      );
+    }
   }
 
   /// Kills an app-started session. A refusal is shown in a SnackBar.
