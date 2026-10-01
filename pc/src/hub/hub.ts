@@ -25,13 +25,15 @@
  */
 
 import { once } from 'node:events';
-import { basename } from 'node:path';
+import { homedir } from 'node:os';
+import { basename, join } from 'node:path';
 
 import { WebSocket, WebSocketServer } from 'ws';
 import type { RawData } from 'ws';
 
 import {
   EVENT_PAYLOAD_KINDS,
+  HUB_CAPABILITIES,
   MAX_RELAY_BYTES,
   PROTOCOL_VERSION,
   STREAM_PHASES,
@@ -49,6 +51,20 @@ import type {
 } from '../protocol/protocol.ts';
 import { compareToken } from './auth.ts';
 import { ByteBudget } from './backpressure.ts';
+import {
+  DEFAULT_MAX_DIR_BYTES,
+  DEFAULT_MAX_DIR_ENTRIES,
+  FolderError,
+  TrustStoreError,
+  canonicalizePath,
+  getAgentDir,
+  hasTrustRequiringResources,
+  listDirectories,
+  resolveWithinHome,
+  saveTrustDecision,
+  trustDecision,
+} from './folders.ts';
+import type { DirectoryListing } from './folders.ts';
 import type { TicketStore } from './pairing.ts';
 import type { Spawner } from './spawner.ts';
 
@@ -103,6 +119,19 @@ export interface HubOptions {
   maxViewerBytes?: number;
   /** Maximum size of a single inbound frame, in bytes. Defaults to 1 MiB. */
   maxPayload?: number;
+  /**
+   * The user's home root that listings and project cwds are contained by.
+   * Defaults to `canonicalizePath($HOME ?? homedir())`.
+   */
+  homeDir?: string;
+  /** pi's agent directory. Defaults to `getAgentDir(env, homedir())`. */
+  agentDir?: string;
+  /** pi's trust store. Defaults to `<agentDir>/trust.json`. */
+  trustPath?: string;
+  /** Max entries returned by one `list-dirs`. Defaults to 500. */
+  maxDirEntries?: number;
+  /** Max encoded bytes for one `list-dirs`. Defaults to 256 KiB. */
+  maxDirBytes?: number;
   /** The process supervisor for app-started sessions, when one is configured. */
   spawner?: Spawner;
 }
@@ -153,6 +182,11 @@ interface State {
     maxAuthAttempts: number;
     authCloseDelayMs: number;
     maxViewerBytes: number;
+    homeDir: string;
+    agentDir: string;
+    trustPath: string;
+    maxDirEntries: number;
+    maxDirBytes: number;
     spawner?: Spawner;
   };
   readonly sessions: Map<string, Session>;
@@ -233,6 +267,9 @@ function sessionsMessage(state: State): SessionsMessage {
         agentState: session.agentState,
         origin: session.origin,
       })),
+    // Advertised so a viewer can gate folder browsing on it; a pre-capabilities
+    // hub omits the field, and the app then never sends the new frames.
+    capabilities: [...HUB_CAPABILITIES],
   };
 }
 
@@ -562,11 +599,22 @@ function commandOk(id: string): unknown {
   return { protocolVersion: PROTOCOL_VERSION, type: 'command-result', id, ok: true };
 }
 
+/** A rejection's message, verbatim when it is not an `Error` (never dropped). */
+function errorMessage(error: unknown): string {
+  return String((error as Error)?.message ?? error);
+}
+
 /**
  * A viewer asks the hub to spawn a headless pi session. Answered directly to
  * the issuing connection: the result is produced locally, not by an agent
  * round-trip, so there is no per-session pending map to key it into. Two
  * viewers using the same id each receive their own reply.
+ *
+ * With a `cwd`, the path is re-resolved immediately before the spawn (a
+ * directory that vanished between the listing and this request fails here),
+ * pi's trust predicate decides whether a decision is needed, and a decision is
+ * persisted only when the viewer supplied one. Any trust-store failure is loud
+ * and spawns nothing.
  */
 function handleStartSession(
   state: State,
@@ -587,15 +635,116 @@ function handleStartSession(
     );
     return;
   }
-  spawner.spawn().then(
+  const rawCwd = message.cwd;
+  if (rawCwd === undefined) {
+    spawner.spawn().then(
+      () => sendToViewer(connection, commandOk(id), null),
+      (error: unknown) =>
+        sendToViewer(connection, commandResult(id, false, errorMessage(error)), null),
+    );
+    return;
+  }
+  const cwd = asString(rawCwd);
+  if (cwd === null) {
+    sendToViewer(connection, commandResult(id, false, 'invalid cwd'), null);
+    return;
+  }
+  const trust = message.trust;
+  if (trust !== undefined && typeof trust !== 'boolean') {
+    sendToViewer(connection, commandResult(id, false, 'invalid trust'), null);
+    return;
+  }
+  const resolved = resolveWithinHome(cwd, state.config.homeDir);
+  if (resolved === null) {
+    sendToViewer(
+      connection,
+      commandResult(id, false, `not a directory inside home: ${cwd}`),
+      null,
+    );
+    return;
+  }
+  let effective = false;
+  try {
+    const trustRequired = hasTrustRequiringResources(resolved, state.config.homeDir);
+    // pi reads lazily: a folder with no trust-requiring resources cannot be
+    // broken by a malformed store, so the read is skipped there.
+    const existing =
+      trust !== undefined || trustRequired
+        ? trustDecision(state.config.trustPath, resolved)
+        : null;
+    effective = trust ?? existing ?? false;
+    if (trust !== undefined) {
+      saveTrustDecision(state.config.trustPath, resolved, trust);
+    }
+  } catch (error) {
+    // A malformed store is a loud failure, never a silent "no decision".
+    sendToViewer(connection, commandResult(id, false, errorMessage(error)), null);
+    return;
+  }
+  spawner.spawn({ cwd: resolved, trust: effective }).then(
     () => sendToViewer(connection, commandOk(id), null),
     (error: unknown) =>
-      sendToViewer(
-        connection,
-        commandResult(id, false, String((error as Error)?.message ?? error)),
-        null,
-      ),
+      sendToViewer(connection, commandResult(id, false, errorMessage(error)), null),
   );
+}
+
+/**
+ * A viewer asks for the directories under the PC user's home. Answered
+ * directly, and **unbudgeted**: it is a response to an explicit request, so a
+ * throttled viewer must not have it silently dropped. A bad path or a broken
+ * trust store is a `command-result` failure — never a close, so a browsing
+ * session survives one bad folder.
+ */
+function handleListDirs(
+  state: State,
+  connection: Connection,
+  message: Record<string, unknown>,
+): void {
+  const id = asString(message.id);
+  if (id === null) {
+    closeWith(connection, CLOSE_PROTOCOL);
+    return;
+  }
+  const rawPath = message.path;
+  let target: string | undefined;
+  if (rawPath === undefined) {
+    target = undefined;
+  } else {
+    const path = asString(rawPath);
+    if (path === null) {
+      sendToViewer(connection, commandResult(id, false, 'invalid path'), null);
+      return;
+    }
+    target = path;
+  }
+  let listing: DirectoryListing;
+  let trustRequired = false;
+  let trust: boolean | null = null;
+  try {
+    listing = listDirectories(target, state.config.homeDir, {
+      maxEntries: state.config.maxDirEntries,
+      maxBytes: state.config.maxDirBytes,
+    });
+    trustRequired = hasTrustRequiringResources(listing.path, state.config.homeDir);
+    trust = trustRequired ? trustDecision(state.config.trustPath, listing.path) : null;
+  } catch (error) {
+    if (error instanceof FolderError || error instanceof TrustStoreError) {
+      sendToViewer(connection, commandResult(id, false, errorMessage(error)), null);
+      return;
+    }
+    throw error;
+  }
+  send(connection, {
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'dir-listing',
+    id,
+    path: listing.path,
+    root: listing.root,
+    trust,
+    trustRequired,
+    entries: listing.entries,
+    truncated: listing.truncated,
+  });
 }
 
 /**
@@ -830,11 +979,17 @@ function dispatch(
   else if (type === 'history-request') handleHistoryRequest(state, connection, message);
   else if (type === 'start-session') handleStartSession(state, connection, message);
   else if (type === 'kill-session') handleKillSession(state, connection, message);
+  else if (type === 'list-dirs') handleListDirs(state, connection, message);
   else closeWith(connection, CLOSE_PROTOCOL);
 }
 
 export async function createHub(options: HubOptions): Promise<Hub> {
   const maxPayload = options.maxPayload ?? DEFAULT_MAX_PAYLOAD;
+  const homeDir = options.homeDir ?? canonicalizePath(process.env.HOME ?? homedir());
+  const agentDir = options.agentDir ?? getAgentDir(process.env, homedir());
+  const trustPath = options.trustPath ?? join(agentDir, 'trust.json');
+  const maxDirEntries = options.maxDirEntries ?? DEFAULT_MAX_DIR_ENTRIES;
+  const maxDirBytes = options.maxDirBytes ?? DEFAULT_MAX_DIR_BYTES;
   const agent = new WebSocketServer({ host: '127.0.0.1', port: 0, maxPayload });
   // Attach the readiness promises before awaiting either: a server that starts
   // listening while we await its sibling would otherwise fire 'listening' once,
@@ -861,6 +1016,11 @@ export async function createHub(options: HubOptions): Promise<Hub> {
       maxAuthAttempts: options.maxAuthAttempts ?? DEFAULT_MAX_AUTH_ATTEMPTS,
       authCloseDelayMs: options.authCloseDelayMs ?? DEFAULT_AUTH_CLOSE_DELAY_MS,
       maxViewerBytes: options.maxViewerBytes ?? MAX_RELAY_BYTES,
+      homeDir,
+      agentDir,
+      trustPath,
+      maxDirEntries,
+      maxDirBytes,
       ...(options.spawner === undefined ? {} : { spawner: options.spawner }),
     },
     sessions: new Map(),
