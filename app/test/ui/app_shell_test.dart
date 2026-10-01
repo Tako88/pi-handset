@@ -3,12 +3,15 @@
 // It must also stay honest about failure: a resync give-up, a refused send, a
 // failed pairing and a broken store all have to reach the screen.
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pi_droid/client/endpoint_store.dart';
 import 'package:pi_droid/client/hub_client.dart';
+import 'package:pi_droid/client/hub_socket.dart';
 import 'package:pi_droid/client/settle_notification.dart';
 import 'package:pi_droid/client/token_store.dart';
 import 'package:pi_droid/ui/app_shell.dart';
@@ -20,8 +23,9 @@ import '../client/support/fakes.dart';
 const String testToken =
     '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 
-/// The root shows a busy spinner while authenticating, so `pumpAndSettle` never
-/// settles. Pump a bounded number of frames instead.
+/// The root shows a spinner while bootstrapping, and a spinner animates
+/// forever, so `pumpAndSettle` never settles. Pump a bounded number of frames
+/// instead.
 Future<void> pumpBootstrap(WidgetTester tester) async {
   for (var i = 0; i < 5; i++) {
     await tester.pump();
@@ -545,6 +549,88 @@ void main() {
     );
     expect(find.text('ABCD2345'), findsNothing);
   });
+
+  testWidgets(
+    'two identical pairing failures still leave the form usable',
+    (tester) async {
+      final h = Harness(token: null);
+      await tester.pumpWidget(h.app());
+      await pumpBootstrap(tester);
+
+      await tester.enterText(find.byKey(const Key('pairing-host')), '10.0.0.9');
+
+      // The first attempt is rejected by the hub's deliberate silence; only the
+      // client's watchdog ends it, with a constant message.
+      await tester.enterText(find.byKey(const Key('pairing-code')), 'ABCD2345');
+      await tester.tap(find.byKey(const Key('pairing-submit')));
+      await tester.pump();
+      h.scheduler.fireAuthWatchdog();
+      await tester.pump();
+      h.scheduler.flushNotifications();
+      await tester.pump();
+      final firstError = h.client.state.lastError;
+      expect(firstError, isNotNull);
+
+      // A second attempt fails with the *identical* message. The form must still
+      // be usable — a repeat failure is precisely what a stateful gate would
+      // re-wedge.
+      await tester.enterText(find.byKey(const Key('pairing-code')), 'ABCD2345');
+      await tester.tap(find.byKey(const Key('pairing-submit')));
+      await tester.pump();
+      h.scheduler.fireAuthWatchdog();
+      await tester.pump();
+      h.scheduler.flushNotifications();
+      await tester.pump();
+      expect(h.client.state.lastError, firstError);
+
+      // A third submit must still reach the hub.
+      await tester.enterText(find.byKey(const Key('pairing-code')), 'ABCD2345');
+      await tester.tap(find.byKey(const Key('pairing-submit')));
+      await tester.pump();
+      expect(h.factory.urls.length, 3);
+    },
+  );
+
+  testWidgets(
+    'a cold start whose dial never completes shows a usable pairing form',
+    (tester) async {
+      final held = Completer<HubSocket>();
+      final h = Harness(
+        endpoint: const HubEndpoint(host: '10.0.0.9', port: 8787),
+      );
+      h.factory.onDialFuture = (_) => held.future;
+      await tester.pumpWidget(h.app());
+      await pumpBootstrap(tester);
+
+      // The dial is still pending, so the root spinner is what is on screen.
+      expect(find.byKey(const Key('pairing-submit')), findsNothing);
+
+      h.scheduler.fireConnectDeadline();
+      await tester.pump();
+      h.scheduler.flushNotifications();
+      await tester.pump();
+
+      // The dial failed boundedly: the form is shown, names the endpoint, and is
+      // not gated.
+      expect(
+        find.textContaining('could not reach 10.0.0.9:8787 within 10 seconds'),
+        findsOneWidget,
+      );
+      expect(
+        tester
+            .widget<FilledButton>(find.byKey(const Key('pairing-submit')))
+            .onPressed,
+        isNotNull,
+      );
+
+      // And it stays usable: a submit reaches the hub.
+      await tester.enterText(find.byKey(const Key('pairing-host')), '10.0.0.9');
+      await tester.enterText(find.byKey(const Key('pairing-code')), 'ABCD2345');
+      await tester.tap(find.byKey(const Key('pairing-submit')));
+      await tester.pump();
+      expect(h.factory.urls.length, 2);
+    },
+  );
 
   testWidgets('a successful pairing persists the endpoint only after auth', (
     tester,

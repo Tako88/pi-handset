@@ -285,6 +285,11 @@ const int _maxConsecutiveSessionGone = 3;
 /// stay `authenticating` forever with no error.
 const Duration _authTimeout = Duration(seconds: 10);
 
+/// Bounded wait for the socket factory to produce a socket. Without it an
+/// unroutable host hangs until Android's own TCP timeout (minutes, not
+/// seconds).
+const Duration _connectTimeout = Duration(seconds: 10);
+
 /// Bounded wait for a `command-result` before the caller's future fails.
 const Duration _commandTimeout = Duration(seconds: 30);
 
@@ -361,8 +366,13 @@ class HubClient {
   HubTimer? _notifyTimer;
   HubTimer? _reconnectTimer;
   HubTimer? _authTimer;
+  HubTimer? _connectTimer;
   int _attempt = 0;
   bool _stopped = true;
+  /// Bumped per dial attempt, and again on every path that invalidates an
+  /// in-flight dial ([start], [stop], [disconnect]). A dial that resumes after
+  /// its generation moved must close its socket, never adopt it.
+  int _dialSeq = 0;
   int _commandCounter = 0;
   int _listingCounter = 0;
   bool _resubscribed = false;
@@ -405,9 +415,22 @@ class HubClient {
 
   /// Dials the hub. Uses [ticket] when given, otherwise the stored token.
   ///
+  /// Any attempt already in flight is disposed first: its timers are cancelled
+  /// and its socket and subscription are closed. Cancelling the auth watchdog
+  /// here is not load-bearing today — `_onAuthTimeout` no-ops on a null
+  /// `_socket`, and arming the next watchdog cancels its predecessor — but a
+  /// timer that outlives the attempt it was armed for is a trap for the next
+  /// edit, so every timer goes up front.
+  ///
   /// Returns after the first dial attempt; reconnects after that happen in the
   /// background. Throws [StateError] when neither credential is available.
   Future<void> start(String host, {int port = 8787, String? ticket}) async {
+    _cancelReconnect();
+    _cancelAuthWatchdog();
+    _cancelConnectDeadline();
+    _dialSeq++;
+    await _dropConnection();
+
     _url = Uri(scheme: 'ws', host: host, port: port);
     if (ticket != null) {
       _credential = {'ticket': ticket};
@@ -428,19 +451,11 @@ class HubClient {
     _stopped = true;
     _cancelReconnect();
     _cancelAuthWatchdog();
+    _cancelConnectDeadline();
+    _dialSeq++;
     // Every in-flight command fails rather than hanging the caller forever.
     _failPending('client stopped');
-    final socket = _socket;
-    _socket = null;
-    await _subscription?.cancel();
-    _subscription = null;
-    if (socket != null) {
-      try {
-        await socket.close(1000, 'client stopped');
-      } catch (_) {
-        // Already gone; nothing to do.
-      }
-    }
+    await _dropConnection(reason: 'client stopped');
     _setStatus(HubConnectionStatus.disconnected);
     // Emit the terminal state now: cancelling the pending notify would close
     // `changes` without anyone ever observing `disconnected`.
@@ -457,22 +472,13 @@ class HubClient {
     _stopped = true;
     _cancelReconnect();
     _cancelAuthWatchdog();
+    _cancelConnectDeadline();
+    _dialSeq++;
     _failPending('disconnected');
-    final socket = _socket;
-    _socket = null;
-    final subscription = _subscription;
-    _subscription = null;
     // Not awaited: closing the socket below ends delivery, and awaiting a
     // subscription cancel leaves the UI's change-hub action pending under a
     // widget-test clock.
-    unawaited(subscription?.cancel() ?? Future<void>.value());
-    if (socket != null) {
-      try {
-        await socket.close(1000, 'disconnected');
-      } catch (_) {
-        // Already gone; nothing to do.
-      }
-    }
+    await _dropConnection(awaitSubscription: false, reason: 'disconnected');
     _credential = null;
     _resubscribed = false;
     _desiredSessionId = null;
@@ -483,6 +489,33 @@ class HubClient {
     _lastErrorFromConnection = false;
     _state = const HubClientState();
     _flushNotify();
+  }
+
+  /// Closes the current socket and cancels its subscription. Socket teardown
+  /// **only** — deliberately no credential, state, pending or `_stopped`
+  /// resets, so [start] can reuse it to displace an in-flight attempt without
+  /// wiping the credential it is about to send or stopping the dial it is about
+  /// to make.
+  Future<void> _dropConnection({
+    bool awaitSubscription = true,
+    String reason = 'disconnected',
+  }) async {
+    final socket = _socket;
+    _socket = null;
+    final subscription = _subscription;
+    _subscription = null;
+    if (awaitSubscription) {
+      await subscription?.cancel();
+    } else {
+      unawaited(subscription?.cancel() ?? Future<void>.value());
+    }
+    if (socket != null) {
+      try {
+        await socket.close(1000, reason);
+      } catch (_) {
+        // Already gone; nothing to do.
+      }
+    }
   }
 
   /// Subscribes to [sessionId], makes it the session events are attributed to,
@@ -735,17 +768,23 @@ class HubClient {
   Future<void> _dial() async {
     final url = _url;
     if (_stopped || url == null) return;
+    final seq = ++_dialSeq;
     _setStatus(HubConnectionStatus.connecting);
     HubSocket socket;
     try {
-      socket = await _socketFactory(url);
+      socket = await _dialSocket(url);
     } catch (error) {
+      // A superseded dial reports nothing: its failure is not this attempt's.
+      if (_stopped || seq != _dialSeq) return;
       _setError('$error', connection: true);
       _scheduleReconnect();
       return;
     }
-    if (_stopped) {
-      await socket.close();
+    if (_stopped || seq != _dialSeq) {
+      // Superseded while the factory was pending: close the late socket rather
+      // than adopting it. Swallow the close's own error — an unhandled
+      // rejection inside a scheduler task is a zone error.
+      await socket.close().catchError((Object _) {});
       return;
     }
     _socket = socket;
@@ -759,6 +798,55 @@ class HubClient {
       onError: (Object _) {},
       onDone: () => _onSocketDone(socket),
     );
+  }
+
+  /// Dials through [_socketFactory] but bounds the wait with [_connectTimeout].
+  ///
+  /// The deadline is scheduled through the injected scheduler so a test can
+  /// drive it. If it expires first, the returned future fails and a socket that
+  /// arrives afterwards is closed and dropped — never adopted, and never sent a
+  /// `hello`.
+  ///
+  /// A generation bump (a stop, or a new [start]) cancels the timer but does
+  /// not settle the completer, so a `_dial` still awaiting a stalled factory
+  /// stays pending until the factory itself resolves. That is deliberate: the
+  /// caller is superseded and its result is discarded by the generation guard
+  /// in `_dial`, and the factory is bounded in production by the OS connect
+  /// timeout. Failing it here would be extra machinery for no observable gain.
+  Future<HubSocket> _dialSocket(Uri url) {
+    final completer = Completer<HubSocket>();
+    // Captured now, not read from `_url` at expiry: `_url` is overwritten by
+    // every `start()`, so a superseded dial would otherwise name the wrong host.
+    final endpoint = '${url.host}:${url.port}';
+    final timer = _scheduler.schedule(_connectTimeout, () {
+      if (completer.isCompleted) return;
+      completer.completeError(
+        TimeoutException(
+          'could not reach $endpoint within '
+          '${_connectTimeout.inSeconds} seconds',
+        ),
+      );
+    }, kind: HubTimerKind.connect);
+    _connectTimer = timer;
+    unawaited(() async {
+      try {
+        final socket = await _socketFactory(url);
+        timer.cancel();
+        if (identical(_connectTimer, timer)) _connectTimer = null;
+        if (completer.isCompleted) {
+          // The deadline already failed this dial; the socket is too late.
+          unawaited(socket.close().catchError((Object _) {}));
+          return;
+        }
+        completer.complete(socket);
+      } catch (error, stackTrace) {
+        timer.cancel();
+        if (identical(_connectTimer, timer)) _connectTimer = null;
+        if (completer.isCompleted) return;
+        completer.completeError(error, stackTrace);
+      }
+    }());
+    return completer.future;
   }
 
   Future<void> _onSocketDone(HubSocket socket) async {
@@ -816,6 +904,11 @@ class HubClient {
   void _cancelAuthWatchdog() {
     _authTimer?.cancel();
     _authTimer = null;
+  }
+
+  void _cancelConnectDeadline() {
+    _connectTimer?.cancel();
+    _connectTimer = null;
   }
 
   void _onAuthTimeout() {

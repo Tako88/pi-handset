@@ -82,12 +82,6 @@ what it would cost, so it can be picked up cold.
 
 **Bugs, diagnosed and unfixed**
 
-- **Pairing against an unreachable host spins forever.** `HubClient` awaits
-  `_socketFactory(url)` with no deadline, and the 10s watchdog is armed only *after*
-  the socket exists — so a typo'd or unroutable address hangs until Android's own TCP
-  timeout, which is minutes rather than seconds. Fix: race the connect against a ~10s
-  deadline, name the host in the error, and close a socket that arrives late. Test
-  first: a factory that never completes.
 - **The transcript disables Android's predictive-back preview.** The system back button
   is wired with `PopScope(canPop: false)`, which is what stops it exiting the app — but
   the same flag suppresses the peek-at-the-previous-screen gesture preview. The honest
@@ -116,6 +110,29 @@ what it would cost, so it can be picked up cold.
 
 **Known residuals, accepted at the time**
 
+- **A rejected credential still redials in the background until you re-pair.** Bounded
+  and payload-free (capped backoff, one connect plus one `hello` per attempt), but it
+  does not stop on its own. Stopping it needs a terminal "credential rejected" signal,
+  which the hub deliberately does not send — the same path guards ~2^40 pairing tickets
+  — and a client-only heuristic risks giving up on a healthy-but-slow hub. Upgrade path
+  if ever wanted: a bounded give-up on consecutive auth timeouts that does **not**
+  delete the stored token. Not built.
+- **A cold start against an unreachable host still shows the root spinner for up to the
+  10s deadline**, because `_bootstrap` awaits the first dial before rendering the form.
+  Bounded now, but rendering the form before the dial lands is a change not taken.
+- **The pairing submit button stays live during an attempt**, so a double-tap restarts
+  it. Safe — the displaced attempt is disposed — but it is a restart, not a queue.
+- **A background error can wipe a half-typed pairing code.** `PairingScreen` clears the
+  code field whenever `lastError` *changes* — harmless while the form was disabled
+  during a redial, not harmless now that the fields are live. In practice the
+  stale-token loop repeats one identical message, so the change-guard holds; a
+  differently-worded error landing mid-typing would clear the field.
+- **A displaced pairing attempt's `paired` frame can still win a microtask race.**
+  `_onPaired` has no generation guard, and the shell persists `_pendingEndpoint` on
+  `connected`, so a frame already queued when a new submit lands can pair host B's
+  endpoint with host A's token. The normal path closes the socket first, so the window
+  is sub-millisecond and the next re-pair fixes it. Accepted: guarding it cannot be
+  tested cleanly with the current fakes, and a test that cannot fail is not a test.
 - **Deploy gate: adding an event payload kind needs the hub restarted AND pi
   restarted (or `/reload`ed).** The hub validates an inbound payload's kind against
   the shared list, which it reads at startup, so a bridge that emits a newly added

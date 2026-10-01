@@ -30,7 +30,9 @@ class PairingScreen extends StatefulWidget {
   /// The client's most recent error, shown verbatim when present.
   final String? lastError;
 
-  /// True while a pairing attempt is in flight.
+  /// Indicator only; never gates input. The fields and the submit button stay
+  /// live while an attempt is in flight, so a background redial can never
+  /// dead-end the pairing form. Submitting during an attempt is a restart.
   final bool busy;
 
   static const String missingHostError = 'Enter the hub address.';
@@ -91,6 +93,11 @@ class _PairingScreenState extends State<PairingScreen> {
     }
     setState(() => _error = null);
     widget.onSubmit(host, port, code);
+    // A pairing code is single-use and hub attempts are capped, so a spent code
+    // must not stay in the field ready to be resubmitted. Cleared here rather
+    // than only on a changed `lastError`: an identical repeat failure would
+    // otherwise leave it behind.
+    _code.clear();
   }
 
   @override
@@ -111,7 +118,6 @@ class _PairingScreenState extends State<PairingScreen> {
                 TextField(
                   key: const Key('pairing-host'),
                   controller: _host,
-                  enabled: !widget.busy,
                   keyboardType: TextInputType.url,
                   decoration: const InputDecoration(
                     labelText: 'Host',
@@ -122,7 +128,6 @@ class _PairingScreenState extends State<PairingScreen> {
                 TextField(
                   key: const Key('pairing-port'),
                   controller: _port,
-                  enabled: !widget.busy,
                   keyboardType: TextInputType.number,
                   decoration: const InputDecoration(labelText: 'Port'),
                 ),
@@ -130,7 +135,6 @@ class _PairingScreenState extends State<PairingScreen> {
                 TextField(
                   key: const Key('pairing-code'),
                   controller: _code,
-                  enabled: !widget.busy,
                   autocorrect: false,
                   enableSuggestions: false,
                   maxLength: 12,
@@ -166,7 +170,7 @@ class _PairingScreenState extends State<PairingScreen> {
                 const SizedBox(height: 24),
                 FilledButton(
                   key: const Key('pairing-submit'),
-                  onPressed: widget.busy ? null : _submit,
+                  onPressed: _submit,
                   child: widget.busy
                       ? Semantics(
                           key: const Key('pairing-busy'),

@@ -153,6 +153,62 @@ void main() {
     expect(semantics.properties.liveRegion, isTrue);
   });
 
+  testWidgets('a busy pairing screen still lets the user type and submit', (
+    tester,
+  ) async {
+    String? host;
+    String? code;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PairingScreen(
+          onSubmit: (h, p, c) {
+            host = h;
+            code = c;
+          },
+          initialHost: '10.0.0.2',
+          busy: true,
+        ),
+      ),
+    );
+
+    // `busy` is an indicator, never a gate: a background redial must not stop
+    // the user from typing or re-pairing.
+    await tester.enterText(find.byKey(const Key('pairing-host')), '10.0.0.9');
+    await tester.enterText(find.byKey(const Key('pairing-code')), 'ABCD2345');
+    await tester.pump();
+    expect(find.text('10.0.0.9'), findsOneWidget);
+    expect(find.text('ABCD2345'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('pairing-submit')));
+    await tester.pump();
+
+    expect(host, '10.0.0.9');
+    expect(code, 'ABCD2345');
+  });
+
+  testWidgets('submitting clears the spent code so it cannot be retried', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PairingScreen(
+          onSubmit: (host, port, code) {},
+          initialHost: '10.0.0.2',
+        ),
+      ),
+    );
+
+    await tester.enterText(find.byKey(const Key('pairing-code')), 'ABCD2345');
+    await tester.tap(find.byKey(const Key('pairing-submit')));
+    await tester.pump();
+
+    // A ticket is single-use and hub attempts are capped, so a code left in the
+    // field can only be resubmitted into a failure. The clear has to happen on
+    // submit, not only when the error text changes: an identical repeat failure
+    // would leave it behind.
+    expect(find.text('ABCD2345'), findsNothing);
+  });
+
   testWidgets('the busy spinner is announced', (tester) async {
     await tester.pumpWidget(
       MaterialApp(

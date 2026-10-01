@@ -238,6 +238,7 @@ class FakeScheduler implements HubScheduler {
   List<FakeTimer> get authTimers => _ofKind(HubTimerKind.auth);
   List<FakeTimer> get commandTimers => _ofKind(HubTimerKind.command);
   List<FakeTimer> get notifyTimers => _ofKind(HubTimerKind.notify);
+  List<FakeTimer> get connectTimers => _ofKind(HubTimerKind.connect);
 
   /// Fires every pending notification timer, in order. Coalescing timers are
   /// the only kind existing tests mean by "flush"; watchdogs and reconnects are
@@ -258,6 +259,13 @@ class FakeScheduler implements HubScheduler {
   /// Fires per-command timeouts.
   void fireCommandTimeouts() {
     for (final timer in List<FakeTimer>.of(commandTimers)) {
+      timer.fire();
+    }
+  }
+
+  /// Fires the connect deadline(s), simulating the bounded dial wait elapsing.
+  void fireConnectDeadline() {
+    for (final timer in List<FakeTimer>.of(connectTimers)) {
       timer.fire();
     }
   }
@@ -293,10 +301,17 @@ class FakeSocketFactory {
   /// [FakeHubSocket] to make it succeed, or leave null to create a fresh one.
   Object? Function()? onDial;
 
+  /// Invoked on every dial when set, returning a future the test controls.
+  /// Takes precedence over [onDial]; lets a test hold a dial open (a future
+  /// that never completes), which [onDial] cannot express.
+  Future<HubSocket> Function(Uri url)? onDialFuture;
+
   FakeHubSocket get last => sockets.last;
 
   Future<HubSocket> call(Uri url) async {
     urls.add(url);
+    final held = onDialFuture;
+    if (held != null) return held(url);
     final result = onDial?.call();
     if (result == null) {
       final socket = FakeHubSocket();
