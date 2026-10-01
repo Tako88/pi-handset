@@ -323,6 +323,68 @@ void main() {
     expect(kept.dy, lessThan(stream.dy));
   });
 
+  testWidgets('a live reasoning row renders above the in-flight reply', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      wrap(
+        const SessionTranscript(
+          streamingThinking: 'why it works',
+          streaming: true,
+          streamingText: 'the answer',
+        ),
+      ),
+    );
+
+    expect(find.text('why it works'), findsOneWidget);
+    expect(find.text('the answer'), findsOneWidget);
+    final reasoning = tester.getTopLeft(find.text('why it works'));
+    final reply = tester.getTopLeft(find.text('the answer'));
+    expect(reasoning.dy, lessThan(reply.dy));
+  });
+
+  testWidgets('the live reasoning row is not a tap target', (tester) async {
+    await tester.pumpWidget(
+      wrap(const SessionTranscript(streamingThinking: 'why it works')),
+    );
+
+    // A control that vanishes (or whose expansion resets) mid-turn is a control
+    // changing under the user, so the live row cannot be collapsed.
+    await tester.tap(find.text('why it works'));
+    await tester.pump();
+
+    expect(find.text('why it works'), findsOneWidget);
+  });
+
+  testWidgets('a committed message replaces the live reasoning row', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      wrap(const SessionTranscript(streamingThinking: 'why it works')),
+    );
+    expect(find.byKey(TranscriptView.liveThinkingKey), findsOneWidget);
+
+    await tester.pumpWidget(
+      wrap(
+        SessionTranscript(
+          blocks: [
+            const TranscriptBlock(
+              kind: TranscriptBlockKind.thinking,
+              id: 't1',
+              text: 'why it works',
+            ),
+            textBlock('a1', 'the answer'),
+          ],
+        ),
+      ),
+    );
+
+    // One producer at a time: the live row is gone, and exactly one committed
+    // block carries the text.
+    expect(find.byKey(TranscriptView.liveThinkingKey), findsNothing);
+    expect(find.text('why it works'), findsOneWidget);
+  });
+
   testWidgets('each block is wrapped in a RepaintBoundary keyed by block id', (
     tester,
   ) async {

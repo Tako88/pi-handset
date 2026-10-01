@@ -17,7 +17,7 @@ and so is transcript parity with the pi TUI (M1–M3).
 
 | | `pc/` (Node + TypeScript) | `app/` (Flutter + Dart) |
 |---|---|---|
-| Suite | 284 tests passing | 200 tests passing |
+| Suite | 305 tests passing | 218 tests passing |
 | Static gate | `tsc --noEmit` clean | `flutter analyze` clean |
 | Product code | hub, protocol codec, pi bridge | protocol codec, client, UI |
 
@@ -27,13 +27,18 @@ and the snapshot history, shows a live `Working…`/`Thinking…`/`Responding…
 above the composer, renders tool calls as collapsed blocks that pair each result to
 its call, and follows the newest message until you scroll away — where a jump-to-latest
 button appears. The status is precise rather than a guess: the bridge relays a
-**content-free** `thinking` phase frame, so a slow first token is never mislabelled as
-thinking.
+**content-free** `thinking` phase frame first, so a slow first token is never
+mislabelled as thinking. The reasoning itself streams too — into its own row above
+the reply, replaced by the committed thinking block when the message lands.
 
 One deliberate tradeoff worth knowing: opening a long transcript lays it out once
-(O(n)) because starting at the bottom requires it; streaming frames stay lazy. And the
-one thing not streamed live is thinking *content* — it appears in full when the
-assistant message commits, because streaming it would double the bytes already relayed.
+(O(n)) because starting at the bottom requires it; streaming frames stay lazy. A
+thinking-heavy turn roughly doubles the relayed bytes, since the reasoning arrives
+once as deltas and again inside the committed message — the committed copy is the
+one the transcript keeps, and the live row is retired in the same update that
+commits it. The exception: a reasoning-heavy message that exceeds the relay cap
+arrives as a byte-count notice instead, so the live row is replaced by that notice
+rather than by the thinking block.
 
 **Done:** the wire protocol and codec, single-use pairing tickets, the persisted
 pairing token, the discovery file and the lock that makes `serve` exclusive, the
@@ -43,8 +48,8 @@ pure Dart codec, the app — client, pairing, session list and transcript — th
 bridge driven inside a real `pi` against a faux provider including its silence as
 a process, `serve` minting pairing codes on demand, the real client attaching to
 a real hub with a real `pi` behind it, and the manual pass: pairing through the UI,
-a live model streaming into a rendered transcript, and a hub restart survived
-without re-pairing.
+a live model streaming into a rendered transcript, a hub restart survived
+without re-pairing, and the reasoning streaming live above the reply.
 
 **What is left** is not milestone work — it is an agenda, listed next.
 
@@ -75,9 +80,6 @@ what it would cost, so it can be picked up cold.
   the whole window is collapsed to a byte-count notice rather than becoming a wall.
   The real fix is paging — a `fetchOlder` cursor on `history-request` — which is why
   the window is described as a stopgap, not a design.
-- **Thinking content is not streamed live.** Only the content-free `thinking` phase
-  frame is relayed; the text arrives when the assistant message commits. Streaming it
-  would double the bytes already relayed.
 - **Tool rendering is generic.** Every tool gets the same collapsed block; there are no
   per-tool renderers — no diff, no file, no table.
 - **Images are `[image]` placeholders**, and **links are styled but not tappable** (the
@@ -97,6 +99,12 @@ what it would cost, so it can be picked up cold.
 - The bridge's pi types are a hand-declared structural slice, not pi's real ones.
 - `app/test/integration/attach_path_test.dart`'s restart case asserts a stable end
   state, not the restart itself — a non-deterministic regression gate.
+- **Live reasoning is best-effort.** A mid-turn `snapshot` (resync, reconnect,
+  re-subscribe) drops the live reasoning row, exactly as it already drops the live
+  reply row. A provider that emits no `thinking_delta` — only `thinking_end` — shows
+  no live row for that block: nothing is lost, because the committed message carries
+  it. And redacted reasoning streams as raw deltas before the commit replaces it with
+  `[reasoning redacted]`.
 
 ### What the manual pass actually found
 

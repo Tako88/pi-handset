@@ -3,13 +3,14 @@
 //
 // Every event shape M9/M10b ever saw came from `fauxAssistantMessage`, which
 // streams a clean text_start/text_delta/text_end and nothing else. A thinking
-// model also emits thinking_start/thinking_delta/thinking_end, which
-// `normalizeAssistantEvent` deliberately ignores. This test is that path with
-// no script: it drives the model from the same real `HubClient`, then asserts
-// the reply arrived, that `message` preceded the settled state, that the
-// command result was successful, and that no unexpected payload kind — a
-// leaked `thinking` frame, a stray error `status`, a duplicate message —
-// reached the client. A scripted stream cannot catch any of those.
+// model also emits thinking_start/thinking_delta/thinking_end, which now stream
+// through the SAME channel as the reply, tagged with `phase: 'thinking'`. This
+// test is that path with no script: it drives the model from the same real
+// `HubClient`, then asserts the reply arrived (and only the reply streamed as
+// reply text), that `message` preceded the settled state, that the command
+// result was successful, and that no unexpected payload kind — a stray error
+// `status`, a duplicate message — reached the client. A scripted stream cannot
+// catch any of those.
 //
 // COST: this drives a paid provider and is deliberately NOT under `test/`, so
 // plain `flutter test` never runs or bills it. Run it explicitly:
@@ -44,10 +45,10 @@ const String expectedReply = 'LIVE_OK';
 /// unbounded.
 const Duration livePromptTimeout = Duration(seconds: 120);
 
-/// The payload kinds this run is allowed to produce. `thinking` frames are
-/// ignored by the bridge and must never appear; `status`/`tool` are unexpected
-/// for a one-line answer. Anything outside this set is a defect this test
-/// exists to surface.
+/// The payload kinds this run is allowed to produce. Streamed reasoning is a
+/// `stream` frame carrying `phase: 'thinking'`, so it is in this set by kind;
+/// `status`/`tool` are unexpected for a one-line answer. Anything outside this
+/// set is a defect this test exists to surface.
 const Set<String> expectedKinds = {'stream', 'message', 'agent'};
 
 void main() {
@@ -232,18 +233,18 @@ void main() {
       //
       // This model (`opencode-go/deepseek-v4.1-flash`) emits thinking frames
       // even for a one-line prompt: dumping the raw event stream for
-      // `Reply with exactly: LIVE_OK` yields 6 thinking_delta / 1 thinking_start
-      // / 1 thinking_end plus 3 text_delta / 1 text_start / 1 text_end, with a
-      // final text of `LIVE_OK`. The bridge ignores `thinking_*` by design, so
-      // the app must see exactly `LIVE_OK` here. (Under this test's minimal
-      // `-ne -nc` context the model can skip reasoning, so piArgs appends a
-      // system instruction to force it; that keeps this path genuinely
-      // exercised.) Equality (not containment) is what makes a leaked reasoning
-      // delta fail: the accumulated text would then be the reasoning followed
-      // by `LIVE_OK`, which `contains` would wave through while the transcript
-      // was corrupted.
+      // `Reply with exactly: LIVE_OK` yields thinking_start / several
+      // thinking_delta / thinking_end plus text_start / text_delta / text_end,
+      // with a final text of `LIVE_OK`. Reasoning streams through the SAME
+      // channel as the reply now, tagged with `phase: 'thinking'`, so the reply
+      // is the phase-free half of it. Leaving the phase-bearing frames in would
+      // concatenate the reasoning onto `LIVE_OK` — a corrupted transcript that
+      // `contains` would wave through, which is why this is equality.
       final streamedText = events
-          .where((payload) => payload['kind'] == 'stream')
+          .where(
+            (payload) =>
+                payload['kind'] == 'stream' && payload['phase'] == null,
+          )
           .map((payload) => payload['text']! as String)
           .join()
           .trim();

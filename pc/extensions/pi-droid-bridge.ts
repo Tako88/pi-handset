@@ -139,11 +139,11 @@ function boundMessage(
  * payload. Total and explicit: every variant either emits or states why it is
  * ignored, and an unrecognized variant is *also* an explicit ignore.
  *
- * Only text deltas stream content; the final `done` message and `error` status
- * are forwarded so the transcript can settle, and `thinking_start` emits a
- * content-free phase frame so the status indicator can say "Thinking…".
- * Thinking and tool-call *deltas* are deliberately not streamed in this
- * milestone.
+ * Text and reasoning deltas stream content; the final `done` message and `error`
+ * status are forwarded so the transcript can settle, and `thinking_start` emits a
+ * content-free phase frame so the status indicator can say "Thinking…" before the
+ * first reasoning chunk lands. Tool-call deltas are deliberately not streamed:
+ * the call arrives whole in the committed message.
  */
 export function normalizeAssistantEvent(
   event: AssistantMessageEvent,
@@ -176,12 +176,24 @@ export function normalizeAssistantEvent(
       return { kind: 'ignore', reason: `block-${event.type}` };
     case 'thinking_start':
       // A content-free liveness phase: the block is empty at `*_start` (pi-ai
-      // types.d.ts), and reasoning content is never streamed. Only the phase
-      // travels, so the app can label "Thinking…" without duplicated bytes.
+      // types.d.ts). The reasoning text follows as `thinking_delta` frames, each
+      // carrying one chunk in `text` with the same phase.
       return { kind: 'emit', payload: { kind: 'stream', seq, phase: 'thinking' } };
     case 'thinking_delta':
+      // Reasoning streams like answer text, tagged so the app routes it to its
+      // own buffer instead of the reply. `thinking_start` still arrives first
+      // as a content-free liveness frame, so a slow first token is never
+      // mislabelled.
+      return {
+        kind: 'emit',
+        payload: { kind: 'stream', seq, text: event.delta, phase: 'thinking' },
+      };
     case 'thinking_end':
-      return { kind: 'ignore', reason: 'thinking-not-streamed' };
+      // Deliberately ignored, and NOT a silent drop: `thinking_end` carries the
+      // whole text of one thinking block, so emitting it would make a second
+      // producer of text the deltas already streamed. The committed assistant
+      // message arrives immediately after and is authoritative.
+      return { kind: 'ignore', reason: 'thinking-end-committed-message-authoritative' };
     case 'toolcall_start':
     case 'toolcall_delta':
     case 'toolcall_end':

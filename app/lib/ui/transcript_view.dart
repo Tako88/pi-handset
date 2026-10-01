@@ -45,6 +45,10 @@ class TranscriptView extends StatefulWidget {
   /// boundary are reused while deltas accumulate.
   static const Key streamingKey = ValueKey('transcript-streaming');
 
+  /// The live reasoning row's key. It exists only while the reasoning streams,
+  /// and is replaced by the committed thinking block when the message lands.
+  static const Key liveThinkingKey = ValueKey('transcript-live-thinking');
+
   @override
   State<TranscriptView> createState() => _TranscriptViewState();
 }
@@ -149,11 +153,15 @@ class _TranscriptViewState extends State<TranscriptView> {
   Widget build(BuildContext context) {
     final blocks = widget.transcript.blocks;
     final truncated = widget.transcript.truncated;
+    final liveThinking = widget.transcript.streamingThinking.isNotEmpty;
     final streaming =
         widget.transcript.streaming &&
         widget.transcript.streamingText.isNotEmpty;
     final itemCount =
-        blocks.length + (truncated ? 1 : 0) + (streaming ? 1 : 0);
+        blocks.length +
+        (truncated ? 1 : 0) +
+        (liveThinking ? 1 : 0) +
+        (streaming ? 1 : 0);
     if (itemCount == 0) {
       return const Center(child: Text(TranscriptView.emptyMessage));
     }
@@ -179,6 +187,19 @@ class _TranscriptViewState extends State<TranscriptView> {
               );
             }
             final blockIndex = truncated ? index - 1 : index;
+            if (blockIndex == blocks.length && liveThinking) {
+              return RepaintBoundary(
+                key: TranscriptView.liveThinkingKey,
+                child: ThinkingBlock(
+                  block: TranscriptBlock(
+                    kind: TranscriptBlockKind.thinking,
+                    id: 'live-thinking',
+                    text: widget.transcript.streamingThinking,
+                    complete: false,
+                  ),
+                ),
+              );
+            }
             if (blockIndex >= blocks.length) {
               return RepaintBoundary(
                 key: TranscriptView.streamingKey,

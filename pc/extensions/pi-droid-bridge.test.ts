@@ -333,9 +333,19 @@ test('every real AssistantMessageEvent variant is explicitly emitted or ignored'
   }
 });
 
-test('thinking_delta is explicitly ignored, not silently dropped', () => {
+test('thinking_delta streams its chunk, tagged with the thinking phase', () => {
   const result = normalizeAssistantEvent(sampleAssistantEvent('thinking_delta'), 1);
+  assert.deepEqual(result, {
+    kind: 'emit',
+    payload: { kind: 'stream', seq: 1, text: 'hmm', phase: 'thinking' },
+  });
+});
+
+test('thinking_end emits nothing: the committed message is authoritative', () => {
+  const result = normalizeAssistantEvent(sampleAssistantEvent('thinking_end'), 1);
   assert.equal(result.kind, 'ignore');
+  if (result.kind !== 'ignore') return;
+  assert.equal(result.reason, 'thinking-end-committed-message-authoritative');
 });
 
 test('thinking_start emits a content-free phase frame with no reasoning text', () => {
@@ -518,6 +528,35 @@ test('consecutive text deltas get strictly increasing stream seqs', () => {
   update('b');
   const streams = parsed(socket).slice(before).filter((m) => (m.payload as { kind?: string })?.kind === 'stream');
   assert.deepEqual(streams.map((m) => (m.payload as { seq: number }).seq), [1, 2]);
+});
+
+test('thinking and text deltas share one stream seq sequence', () => {
+  const harness = makeHarness();
+  harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  const before = socket.sent.length;
+  const update = (assistantMessageEvent: AssistantMessageEvent): void => {
+    harness.pi.handlers.get('message_update')!(
+      { type: 'message_update', message: {}, assistantMessageEvent },
+      harness.startCtx,
+    );
+  };
+  update(sampleAssistantEvent('thinking_start'));
+  update(sampleAssistantEvent('thinking_delta'));
+  // An empty delta is a shape pi-ai can produce; it must still take a seq.
+  update({ type: 'thinking_delta', contentIndex: 0, delta: '', partial: {} });
+  update(sampleAssistantEvent('text_delta'));
+  const streams = parsed(socket)
+    .slice(before)
+    .filter((m) => (m.payload as { kind?: string })?.kind === 'stream')
+    .map((m) => m.payload as { seq: number; text?: string; phase?: string });
+  assert.deepEqual(streams, [
+    { kind: 'stream', seq: 1, phase: 'thinking' },
+    { kind: 'stream', seq: 2, text: 'hmm', phase: 'thinking' },
+    { kind: 'stream', seq: 3, text: '', phase: 'thinking' },
+    { kind: 'stream', seq: 4, text: 'hello' },
+  ]);
 });
 
 // ---------------------------------------------------------------------------

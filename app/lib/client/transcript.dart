@@ -27,7 +27,9 @@ class TranscriptBlock {
   /// Text blocks: the user's own message styling.
   final bool fromUser;
 
-  /// Text blocks: false renders plain `Text` (in-flight), true renders markdown.
+  /// False while the block is still arriving. Text blocks: plain `Text` rather
+  /// than markdown. Thinking blocks: the live row, which is not collapsible and
+  /// is replaced by the committed block when the message lands.
   final bool complete;
 
   final String? toolName;

@@ -114,11 +114,14 @@ export interface StreamPayload {
 }
 
 /**
- * Lifecycle phases a `stream` frame may signal. `thinking` is emitted on
- * `thinking_start` as a content-free liveness signal (the frame carries no
- * `text`), before any reasoning delta. A frame may carry `text` and/or `phase`;
- * at least one is required. Reasoning content is deliberately never streamed —
- * it arrives in full in the committed `message`.
+ * Lifecycle phases a `stream` frame may signal, and the tag that marks one.
+ *
+ * `thinking` is emitted twice over: on `thinking_start` as a content-free
+ * liveness signal (the frame carries no `text`), then on every
+ * `thinking_delta` with that chunk in `text`. A frame carries `text` and/or
+ * `phase`; at least one is required. The committed `message` stays
+ * authoritative — it is what the transcript renders the durable reasoning
+ * block from, and what replaces the streamed one.
  */
 export const STREAM_PHASES = ['thinking'] as const;
 export type StreamPhase = (typeof STREAM_PHASES)[number];

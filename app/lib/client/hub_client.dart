@@ -79,6 +79,13 @@ class SessionTranscript {
   /// Text accumulated from `stream` deltas since the last baseline.
   final String streamingText;
 
+  /// Reasoning accumulated from `phase: 'thinking'` stream deltas since the last
+  /// baseline. Kept separate from [streamingText] so a reasoning chunk can never
+  /// be mistaken for the reply. Only the committed assistant message retires it
+  /// mid-turn — a settle, an error status or a snapshot also clears it as
+  /// teardown, exactly as they clear the reply buffer.
+  final String streamingThinking;
+
   /// True while deltas are being appended; cleared on `agent_settled` (the
   /// protocol's terminal state), never on a message-level completion.
   final bool streaming;
@@ -96,6 +103,7 @@ class SessionTranscript {
     this.entries = const [],
     this.blocks = const [],
     this.streamingText = '',
+    this.streamingThinking = '',
     this.streaming = false,
     this.thinking = false,
     this.agentState = 'idle',
@@ -108,6 +116,7 @@ class SessionTranscript {
     List<Object?>? entries,
     List<TranscriptBlock>? blocks,
     String? streamingText,
+    String? streamingThinking,
     bool? streaming,
     bool? thinking,
     String? agentState,
@@ -118,6 +127,7 @@ class SessionTranscript {
     entries: entries ?? this.entries,
     blocks: blocks ?? this.blocks,
     streamingText: streamingText ?? this.streamingText,
+    streamingThinking: streamingThinking ?? this.streamingThinking,
     streaming: streaming ?? this.streaming,
     thinking: thinking ?? this.thinking,
     agentState: agentState ?? this.agentState,
@@ -739,13 +749,26 @@ class HubClient {
         final seq = (payload['seq']! as num).toInt();
         final lastSeq = seq > transcript.lastSeq ? seq : transcript.lastSeq;
         final text = payload['text'];
-        if (text is String) {
+        final isThinking = payload['phase'] == 'thinking';
+        if (text is String && isThinking) {
+          // Reasoning streams like the reply but into its own buffer, so the
+          // two can never be confused on the wire or on screen.
+          _putTranscript(
+            sessionId,
+            transcript.copyWith(
+              streamingThinking: transcript.streamingThinking + text,
+              thinking: true,
+              lastSeq: lastSeq,
+            ),
+          );
+        } else if (text is String) {
           _putTranscript(
             sessionId,
             transcript.copyWith(
               streamingText: transcript.streamingText + text,
               streaming: true,
-              // The first byte of text proves thinking is over.
+              // The first byte of text proves thinking is over. The reasoning
+              // buffer survives: only the commit retires it.
               thinking: false,
               lastSeq: lastSeq,
             ),
@@ -776,6 +799,7 @@ class HubClient {
             agentState: agentState,
             streaming: running ? transcript.streaming : false,
             streamingText: running ? transcript.streamingText : '',
+            streamingThinking: running ? transcript.streamingThinking : '',
             thinking: running ? transcript.thinking : false,
           ),
         );
@@ -794,6 +818,10 @@ class HubClient {
           sessionId,
           _withEntries(transcript, [...transcript.entries, message]).copyWith(
             streamingText: fromAssistant ? '' : transcript.streamingText,
+            // Cleared in the SAME update that commits the message: the commit
+            // carries the reasoning block itself, so a later clear would render
+            // the same reasoning twice.
+            streamingThinking: fromAssistant ? '' : transcript.streamingThinking,
             streaming: fromAssistant ? false : transcript.streaming,
             thinking: fromAssistant ? false : transcript.thinking,
           ),
@@ -808,6 +836,7 @@ class HubClient {
           sessionId,
           _withEntries(transcript, [...transcript.entries, payload]).copyWith(
             thinking: isErrorStatus ? false : transcript.thinking,
+            streamingThinking: isErrorStatus ? '' : transcript.streamingThinking,
           ),
         );
     }

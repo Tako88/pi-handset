@@ -559,13 +559,17 @@ test('a real pi with the bridge registers and a hub prompt streams from the faux
     'the streamed text must be exactly what the faux provider was scripted with',
   );
   assert.deepEqual(
-    collected.streams.map((stream) => stream.seq),
-    collected.streams.map((_, index) => index + 1),
+    // The whole stream channel must be contiguous, not just its text half:
+    // reasoning deltas consume seqs too, so a text-only view of the sequence
+    // would show gaps that are not really gaps. Compared in ARRIVAL order —
+    // sorting would wave through out-of-order delivery on an ordered channel.
+    [...collected.streams, ...collected.phases].map((frame) => frame.seq),
+    [...collected.streams, ...collected.phases].map((_frame, index) => index + 1),
     'stream seq must be contiguous and start at 1',
   );
 });
 
-test('a thinking recipe emits a content-free phase frame before the assistant message', async () => {
+test('a thinking recipe streams the reasoning before the assistant message', async () => {
   const collected = await drivePrompt({
     PI_DROID_FAUX_MODE: 'thinking',
     PI_DROID_FAUX_THINKING: 'FAUX_REASONING',
@@ -575,17 +579,34 @@ test('a thinking recipe emits a content-free phase frame before the assistant me
   assert.equal(collected.result.ok, true, `prompt was refused: ${String(collected.result.error)}`);
   assert.ok(collected.settled, 'the agent never settled');
 
-  assert.ok(collected.phases.length > 0, 'a thinking reply must emit a phase frame');
-  // The phase frame is content-free by construction: it carries no reasoning.
+  assert.ok(collected.phases.length > 0, 'a thinking reply must emit the liveness phase frame');
   for (const phase of collected.phases) {
-    assert.deepEqual(Object.keys(phase.payload).sort(), ['kind', 'phase', 'seq']);
     assert.equal(phase.payload.phase, 'thinking');
-    assert.equal(JSON.stringify(phase.payload).includes('FAUX_REASONING'), false);
   }
+  // The first frame of the phase carries no text: it exists to label
+  // "Thinking…" before the first chunk lands. Later frames carry the chunks.
+  assert.equal(
+    collected.phases[0]!.payload.text,
+    undefined,
+    'the liveness frame must be content-free',
+  );
   assert.equal(
     collected.phaseBeforeAssistant,
     true,
     'the phase frame must precede the assistant message it announces',
+  );
+
+  // The reasoning itself now streams, one chunk per frame, tagged with its phase
+  // so the app can route it away from the reply. This is what the faux provider
+  // is scripted with (`faux-provider.ts` opts into `reasoning: true`).
+  const streamedReasoning = collected.phases
+    .filter((phase) => typeof phase.payload.text === 'string')
+    .map((phase) => phase.payload.text as string)
+    .join('');
+  assert.equal(
+    streamedReasoning,
+    'FAUX_REASONING',
+    'the reasoning must arrive in full, chunk by chunk, before the commit',
   );
 
   const assistantMessages = collected.messages.filter((entry) => entry.role === 'assistant');
@@ -595,8 +616,8 @@ test('a thinking recipe emits a content-free phase frame before the assistant me
     0,
     'the thinking recipe runs no tools',
   );
-  // The thinking content is not streamed; it arrives in full inside the
-  // committed message, which is where the transcript renders it from.
+  // The committed message stays authoritative, and is what the transcript
+  // renders the durable thinking block from.
   assert.match(
     JSON.stringify(assistantMessages[0]!.payload.message),
     /FAUX_REASONING/,
@@ -605,7 +626,7 @@ test('a thinking recipe emits a content-free phase frame before the assistant me
   assert.equal(
     collected.streams.map((stream) => stream.text).join(''),
     FAUX_TEXT,
-    'phase frames must not pollute the streamed text',
+    'reasoning frames must not pollute the streamed reply text',
   );
 });
 

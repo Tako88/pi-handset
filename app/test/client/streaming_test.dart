@@ -4,6 +4,7 @@
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pi_droid/client/hub_client.dart';
+import 'package:pi_droid/client/transcript.dart';
 
 import 'support/fakes.dart';
 
@@ -49,6 +50,29 @@ Map<String, Object?> statusFrame(String event, String message) => {
   'protocolVersion': 1,
   'type': 'event',
   'payload': {'kind': 'status', 'event': event, 'message': message},
+};
+
+/// A reasoning chunk: a `stream` frame that carries both its phase and its text.
+Map<String, Object?> thinkingDelta(int seq, String text) => {
+  'protocolVersion': 1,
+  'type': 'event',
+  'payload': {'kind': 'stream', 'seq': seq, 'phase': 'thinking', 'text': text},
+};
+
+/// A committed assistant message carrying a thinking block and a reply.
+Map<String, Object?> messageWithThinking(String thinking, String text) => {
+  'protocolVersion': 1,
+  'type': 'event',
+  'payload': {
+    'kind': 'message',
+    'message': {
+      'role': 'assistant',
+      'content': [
+        {'type': 'thinking', 'thinking': thinking},
+        {'type': 'text', 'text': text},
+      ],
+    },
+  },
 };
 
 /// The marker the bridge substitutes for an oversized message.
@@ -257,9 +281,142 @@ void main() {
     expect(transcript.streaming, isFalse);
   });
 
+  test('reasoning deltas accumulate in their own buffer, not the reply', () async {
+    factory.last.receive(agent('running'));
+    factory.last.receive(phase(1));
+    factory.last.receive(thinkingDelta(2, 'why '));
+    factory.last.receive(thinkingDelta(3, 'so'));
+    await pumpEventQueue();
+
+    final transcript = client.transcript('s1')!;
+    expect(transcript.streamingThinking, 'why so');
+    expect(transcript.streamingText, isEmpty);
+    expect(transcript.thinking, isTrue);
+  });
+
+  test('the first reply delta does not clear the live reasoning', () async {
+    factory.last.receive(agent('running'));
+    factory.last.receive(thinkingDelta(1, 'why'));
+    factory.last.receive(stream(2, 'hi'));
+    await pumpEventQueue();
+
+    // The commit is the only thing that retires the live row mid-turn: clearing
+    // it here would make the reasoning vanish mid-answer and reappear at commit.
+    final transcript = client.transcript('s1')!;
+    expect(transcript.streamingThinking, 'why');
+    expect(transcript.streamingText, 'hi');
+    expect(transcript.thinking, isFalse);
+  });
+
+  test('a second liveness frame after text does not reset the buffer', () async {
+    factory.last.receive(agent('running'));
+    factory.last.receive(thinkingDelta(1, 'first'));
+    factory.last.receive(stream(2, 'hi'));
+    // thinking -> text -> thinking within one turn.
+    factory.last.receive(phase(3));
+    await pumpEventQueue();
+
+    expect(client.transcript('s1')!.streamingThinking, 'first');
+  });
+
   test(
-    'a relayed user message appends without wiping the in-flight reply; an assistant message commits and clears it',
+    'the committed assistant message replaces the live reasoning with one block',
     () async {
+      factory.last.receive(agent('running'));
+      factory.last.receive(thinkingDelta(1, 'why'));
+      factory.last.receive(messageWithThinking('why', 'done'));
+      await pumpEventQueue();
+
+      final transcript = client.transcript('s1')!;
+      expect(
+        transcript.streamingThinking,
+        isEmpty,
+        reason: 'the live buffer must clear in the same update that commits',
+      );
+      final thinking = transcript.blocks
+          .where((block) => block.kind == TranscriptBlockKind.thinking)
+          .toList();
+      expect(thinking, hasLength(1), reason: 'two producers must not render twice');
+      expect(thinking.single.text, 'why');
+    },
+  );
+
+  test('a tool-turn commit clears the reasoning buffer too', () async {
+    factory.last.receive(agent('running'));
+    factory.last.receive(thinkingDelta(1, 'why'));
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'event',
+      'payload': {
+        'kind': 'message',
+        'message': {
+          'role': 'assistant',
+          'content': [
+            {'type': 'thinking', 'thinking': 'why'},
+            {
+              'type': 'toolCall',
+              'id': 't1',
+              'name': 'bash',
+              'arguments': <String, Object?>{},
+            },
+          ],
+        },
+      },
+    });
+    // The next turn's reasoning starts fresh rather than appending to the old.
+    factory.last.receive(thinkingDelta(2, 'and'));
+    await pumpEventQueue();
+
+    final transcript = client.transcript('s1')!;
+    expect(transcript.streamingThinking, 'and');
+    final thinking = transcript.blocks
+        .where((b) => b.kind == TranscriptBlockKind.thinking)
+        .toList();
+    expect(thinking, hasLength(1));
+    expect(thinking.single.text, 'why');
+  });
+
+  test('a mid-turn snapshot drops the live reasoning, as it drops live text', () async {
+    factory.last.receive(agent('running'));
+    factory.last.receive(thinkingDelta(1, 'why'));
+    factory.last.receive(stream(2, 'hi'));
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'snapshot',
+      'sessionId': 's1',
+      'lastSeq': 2,
+      'agentState': 'running',
+      'entries': <Object?>[],
+      'truncated': false,
+    });
+    await pumpEventQueue();
+
+    // Deliberate, not accidental: a snapshot is a wholesale replacement of the
+    // baseline, and the live reply text is dropped with it today.
+    final transcript = client.transcript('s1')!;
+    expect(transcript.streamingThinking, isEmpty);
+    expect(transcript.streamingText, isEmpty);
+  });
+
+  test('settling clears an unterminated reasoning buffer', () async {
+    factory.last.receive(agent('running'));
+    factory.last.receive(thinkingDelta(1, 'why'));
+    factory.last.receive(agent('settled'));
+    await pumpEventQueue();
+
+    expect(client.transcript('s1')!.streamingThinking, isEmpty);
+  });
+
+  test('an error status clears an unterminated reasoning buffer', () async {
+    factory.last.receive(agent('running'));
+    factory.last.receive(thinkingDelta(1, 'why'));
+    factory.last.receive(statusFrame('error', 'boom'));
+    await pumpEventQueue();
+
+    expect(client.transcript('s1')!.streamingThinking, isEmpty);
+  });
+
+  test('an assistant message commits and clears the reply; a steer does not', () async {
       factory.last.receive(agent('running'));
       factory.last.receive(stream(1, 'partial'));
       factory.last.receive(messageFrame('user', 'a steer'));
