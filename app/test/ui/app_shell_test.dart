@@ -45,6 +45,34 @@ Future<void> pressSystemBack(WidgetTester tester, FakeScheduler scheduler) async
   await settle(tester, scheduler);
 }
 
+/// Pumps the app with the phone reporting [brightness] as its dark-mode setting.
+///
+/// The ambient `MediaQuery` is supplied explicitly rather than by setting
+/// `platformBrightnessTestValue`: that override only reaches a tree that has not
+/// been pumped yet, so a second pump in the same test would silently keep the
+/// first scheme and the assertion would be vacuous.
+Future<void> pumpWithBrightness(
+  WidgetTester tester,
+  Harness harness,
+  Brightness brightness,
+) async {
+  await tester.pumpWidget(
+    MediaQuery(
+      data: MediaQueryData(platformBrightness: brightness),
+      child: harness.app(),
+    ),
+  );
+  // A theme change is animated (`AnimatedTheme`), so the new scheme is only
+  // fully painted once that 200ms animation has been advanced.
+  await tester.pump(const Duration(milliseconds: 300));
+  await pumpBootstrap(tester);
+}
+
+/// The colour scheme the rendered tree actually paints with — read from the
+/// live element, not from the MaterialApp constructor.
+ColorScheme renderedScheme(WidgetTester tester) =>
+    Theme.of(tester.element(find.byType(Scaffold).first)).colorScheme;
+
 Map<String, Object?> sessionsFrame(List<Map<String, Object?>> sessions) => {
   'protocolVersion': 1,
   'type': 'sessions',
@@ -96,6 +124,31 @@ class ThrowingTokenStore extends InMemoryTokenStore {
 }
 
 void main() {
+  testWidgets('the app renders dark when the phone is dark', (tester) async {
+    await pumpWithBrightness(
+      tester,
+      Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787)),
+      Brightness.light,
+    );
+    final light = renderedScheme(tester);
+
+    await pumpWithBrightness(
+      tester,
+      Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787)),
+      Brightness.dark,
+    );
+    final dark = renderedScheme(tester);
+
+    expect(light.brightness, Brightness.light);
+    expect(dark.brightness, Brightness.dark);
+    // The colours themselves must change: a `themeMode`-only change that never
+    // reached a second scheme would still satisfy the brightness assertions.
+    expect(
+      dark.surface.computeLuminance(),
+      lessThan(light.surface.computeLuminance()),
+    );
+  });
+
   testWidgets('a remembered endpoint and token auto-connect and list sessions', (
     tester,
   ) async {

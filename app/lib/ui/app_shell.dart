@@ -142,6 +142,11 @@ class _PiDroidAppState extends State<PiDroidApp> {
   @override
   Widget build(BuildContext context) => MaterialApp(
     title: 'pi',
+    // `themeMode` defaults to `ThemeMode.system`, so which of these applies is
+    // decided by the phone's own dark-mode setting — no in-app toggle to keep
+    // in sync with it.
+    theme: ThemeData(brightness: Brightness.light),
+    darkTheme: ThemeData(brightness: Brightness.dark),
     home: Builder(builder: _home),
   );
 
