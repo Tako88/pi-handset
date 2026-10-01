@@ -17,7 +17,7 @@ and so is transcript parity with the pi TUI (M1–M3).
 
 | | `pc/` (Node + TypeScript) | `app/` (Flutter + Dart) |
 |---|---|---|
-| Suite | 354 tests passing | 256 tests passing |
+| Suite | 409 tests passing | 323 tests passing |
 | Static gate | `tsc --noEmit` clean | `flutter analyze` clean |
 | Product code | hub, protocol codec, pi bridge | protocol codec, client, UI |
 
@@ -58,6 +58,19 @@ a live model streaming into a rendered transcript, a hub restart survived withou
 re-pairing — the phone reconnects to the stable viewer port while the bridge finds
 the new ephemeral agent port through the discovery file — and the reasoning
 streaming live above the reply.
+
+**Browse and start a project session.** The phone can open a folder browser over the
+PC's home directory and start an app session whose `pi` child runs *in the chosen
+folder* rather than in a fresh temp dir. The hub lists only directories whose
+`realpath` stays under `$HOME`, offering a symlink only when its target does too. When
+the folder carries trust-requiring project resources — pi's `.pi/*` set in the folder
+itself, or an `.agents/skills` in it or an ancestor — and pi has no saved decision,
+the app asks Trust / Do not trust and writes the answer into pi's own `trust.json`;
+a resource-free folder is started without a prompt. Listings are capped by both entry
+count and bytes, and the browser says so when a listing is truncated. The whole flow
+is gated on a `capabilities` array the hub sends with the first `sessions` frame: an
+older hub that lacks it never receives the new frames, and the FAB keeps its old
+direct-start behaviour instead.
 
 **What is left** is not milestone work — it is an agenda, listed next.
 
@@ -176,6 +189,54 @@ what it would cost, so it can be picked up cold.
   does not, a spawned pi never registers; the registration reaper kills it and the
   start silently yields no row. The hermetic capstone proves the mechanism with an
   equivalent settings file.
+- **The old-hub compatibility gate is a capability array, not a version.** The first
+  post-auth `sessions` frame carries `capabilities: ["list-dirs","project-session"]`; a
+  hub that predates them omits the field. The app then refuses `list-dirs` and
+  `start-session{cwd}` **locally, without sending**, and the FAB falls back to the old
+  direct start. This is load-bearing in two directions: an unknown viewer frame is
+  closed `4003`, which the app treats as terminal (no reconnect), and an old hub
+  ignores the extra `cwd`/`trust` fields and answers `ok` while spawning in a temp dir
+  — a silent wrong-directory session. Neither can happen, because the new frames are
+  never handed to a hub that cannot honour them.
+- **The trust write is neither atomic nor locked.** `saveTrustDecision` mirrors pi's
+  `writeTrustFile`: a direct `writeFileSync` (after `mkdirSync`), with no temp file and
+  no rename, so a crash mid-write can leave the store torn or empty, and a concurrent
+  `pi /trust` can lose one update. pi serializes its own writes with `proper-lockfile`
+  on `${trustPath}.lock`; check its current options before adopting, as that exact
+  protocol is deliberately not taken here to avoid a new runtime dependency.
+- **A malformed trust store is refused loudly, not read as "no decision".** pi throws
+  on malformed JSON, a non-object root, or a value that is not `true`/`false`/`null`,
+  so a spawned child throws on the same file no matter what the hub does; this mirrors
+  pi's documented strictness rather than a behaviour we test against pi. The hub-side
+  half is verified: `readTrustStore` throws `TrustStoreError` and `hub.ts` answers the
+  listing or the start with a `command-result` failure rather than `ok`. A missing file
+  is `{}`, and a `null` value means "no decision" and the ancestor walk continues —
+  both matching pi.
+- **`PI_CODING_AGENT_DIR` is honoured (with `~` expansion).** The trust file is
+  `<getAgentDir()>/trust.json` — `$PI_CODING_AGENT_DIR/trust.json` when set, else
+  `~/.pi/agent/trust.json` — so a user with the variable set gets decisions written
+  where their own pi reads them.
+- **A symlink is offered only while its `realpath` stays under `$HOME`.** The browser
+  realpaths each entry and drops any that resolves outside home, so a link cannot walk
+  the listing out of the permitted tree.
+- **The seven `removeDir` sites were audited, not sampled.** Every temp-dir removal in
+  the spawner — `reap`, the sync-throw catch, `spawnedPid===undefined`, `closed`,
+  `error` with no pid, `exit` with no pid, and `terminate` — is guarded by
+  `Entry.owned`, and a test matrix asserts a chosen project directory survives every
+  exit path. Only a hub-spawned temp dir is ever removed.
+- **pi's "Trust parent folder" is not offered.** The app reduces pi's three-way prompt
+  to Trust / Do not trust; granting a parent is done from the PC.
+- **Spike: project-local `.pi/extensions` load headlessly under `--approve`, not
+  `--no-approve`.** A spike extension in a temp project wrote its marker file under
+  `pi --mode rpc --approve` and did not under `--no-approve`, so the project spawn
+  passes `--approve` exactly when the effective trust decision is true (`--no-approve`
+  otherwise, per `defaultProjectArgs` in `pc/src/hub/spawner.ts`). Hand-run spike on
+  the dev host with `pi` 0.87.1; no committed script or test pins it.
+- **Spike: dropping `--no-session` persists no session file before a turn.** Started
+  with no prompt and stopped, pi created the per-cwd session *directory*
+  (`~/.pi/agent/sessions/--<encoded-cwd>--/`) but wrote no `.jsonl`, and nothing landed
+  under the project. The feature does not branch on it: the child runs in the project
+  dir either way. Same hand-run spike as above; no committed trace.
 
 ### What the manual pass actually found
 
