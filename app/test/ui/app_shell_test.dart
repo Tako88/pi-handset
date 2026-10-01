@@ -149,6 +149,22 @@ void main() {
     );
   });
 
+  testWidgets('the session list names the hub it is attached to', (
+    tester,
+  ) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+
+    // The address is typed during pairing and then never shown again, so with
+    // the phone on Tailscale and more than one hub reachable there is nothing
+    // on screen that says which machine this list came from.
+    expect(find.text('pi sessions · 10.0.0.5:8787'), findsOneWidget);
+  });
+
   testWidgets('a remembered endpoint and token auto-connect and list sessions', (
     tester,
   ) async {
@@ -208,7 +224,7 @@ void main() {
     await pressSystemBack(tester, h.scheduler);
 
     expect(find.byKey(const Key('compose-field')), findsNothing);
-    expect(find.text('pi sessions'), findsOneWidget);
+    expect(find.text('pi sessions · 10.0.0.5:8787'), findsOneWidget);
   });
 
   testWidgets('the keyboard does not cover the composer', (tester) async {

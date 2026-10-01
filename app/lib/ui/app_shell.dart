@@ -150,6 +150,14 @@ class _PiDroidAppState extends State<PiDroidApp> {
     home: Builder(builder: _home),
   );
 
+  /// The sessions header. The host is the useful half of the paired address, and
+  /// the port is included because pairing accepts a non-default one.
+  String _sessionsTitle() {
+    final endpoint = _endpoint;
+    if (endpoint == null) return 'pi sessions';
+    return 'pi sessions · ${endpoint.encode()}';
+  }
+
   Widget _home(BuildContext context) {
     if (_loading) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
@@ -170,7 +178,10 @@ class _PiDroidAppState extends State<PiDroidApp> {
     if (activeId == null) {
       return Scaffold(
         appBar: AppBar(
-          title: const Text('pi sessions'),
+          // Naming the hub is the only place the paired address is visible once
+          // pairing is done — which is exactly when a wrong host is hardest to
+          // notice, since everything else looks the same.
+          title: Text(_sessionsTitle()),
           actions: [
             IconButton(
               key: const Key('change-hub'),
