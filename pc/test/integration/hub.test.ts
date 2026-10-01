@@ -1,4 +1,14 @@
 import assert from 'node:assert/strict';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { afterEach, test } from 'node:test';
 
 import { WebSocket } from 'ws';
@@ -11,6 +21,7 @@ import {
   CLOSE_RATE_LIMITED,
   createHub,
 } from '../../src/hub/hub.ts';
+import { canonicalizePath } from '../../src/hub/folders.ts';
 import { createTicketStore } from '../../src/hub/pairing.ts';
 import type { Spawner } from '../../src/hub/spawner.ts';
 import { PROTOCOL_VERSION } from '../../src/protocol/protocol.ts';
@@ -19,6 +30,14 @@ const TOKEN = 'a'.repeat(64);
 
 const running: Array<{ close(): Promise<void> }> = [];
 const clients: Client[] = [];
+const scratchDirs: string[] = [];
+
+/** A temp directory to stand in for the user's home; removed in `afterEach`. */
+function scratchHome(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-droid-hub-test-'));
+  scratchDirs.push(dir);
+  return dir;
+}
 
 afterEach(async () => {
   // Never leak a socket or a listener: tear down clients, then hubs, even when
@@ -35,6 +54,8 @@ afterEach(async () => {
   while (running.length > 0) {
     await running.pop()!.close();
   }
+  for (const dir of scratchDirs) rmSync(dir, { recursive: true, force: true });
+  scratchDirs.length = 0;
 });
 
 async function startHub(
@@ -54,6 +75,8 @@ async function startHub(
 /** A controllable in-process spawner; no child process is ever created. */
 interface FakeSpawner extends Spawner {
   spawnCalls: number;
+  /** The options passed to each `spawn`, in call order. */
+  spawnArgs: Array<{ cwd?: string; trust?: boolean } | undefined>;
   killCalls: number;
   closeCalls: number;
   confirmed: number[];
@@ -69,6 +92,7 @@ interface FakeSpawner extends Spawner {
 function makeFakeSpawner(): FakeSpawner {
   const fake: FakeSpawner = {
     spawnCalls: 0,
+    spawnArgs: [],
     killCalls: 0,
     closeCalls: 0,
     confirmed: [],
@@ -77,8 +101,9 @@ function makeFakeSpawner(): FakeSpawner {
     spawnImpl: async () => 4242,
     closeDelayMs: 0,
     closeFinished: false,
-    async spawn() {
+    async spawn(options) {
       fake.spawnCalls += 1;
+      fake.spawnArgs.push(options);
       return fake.spawnImpl();
     },
     owns(pid) {
@@ -993,6 +1018,7 @@ test('a viewer is pushed the current session list — empty — on authenticatio
     protocolVersion: PROTOCOL_VERSION,
     type: 'sessions',
     sessions: [],
+    capabilities: ['list-dirs', 'project-session'],
   });
 });
 
@@ -1061,6 +1087,7 @@ test('registering an agent pushes an updated session list to every authenticated
     protocolVersion: PROTOCOL_VERSION,
     type: 'sessions',
     sessions: [{ sessionId: 's1', label: 'my session', agentState: 'idle', origin: 'pc' }],
+    capabilities: ['list-dirs', 'project-session'],
   };
   assert.deepEqual(await first.nextSessions(2000), expected);
   assert.deepEqual(await second.nextSessions(2000), expected);
@@ -1806,4 +1833,450 @@ test('a viewer sending agent-settled is closed as a capability violation', async
 
   const { code } = await closed(viewer);
   assert.equal(code, CLOSE_CAPABILITY);
+});
+
+// ---------------------------------------------------------------------------
+// Folder browsing and project sessions
+// ---------------------------------------------------------------------------
+
+test('the sessions frame advertises the hub capabilities', async () => {
+  const hub = await startHub();
+  const viewer = await connect(hub.viewerPort);
+
+  viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'hello', token: TOKEN });
+
+  const frame = await viewer.nextSessions(2000);
+  assert.deepEqual(
+    frame.capabilities,
+    ['list-dirs', 'project-session'],
+    'a viewer gates folder browsing on this field; a pre-capabilities hub omits it',
+  );
+});
+
+test('list-dirs without a path lists the canonical home root', async () => {
+  const home = scratchHome();
+  mkdirSync(join(home, 'Beta'));
+  mkdirSync(join(home, 'alpha'));
+  const hub = await startHub({ homeDir: home, trustPath: join(home, 'agent', 'trust.json') });
+  const viewer = await connect(hub.viewerPort);
+  await helloViewer(viewer);
+
+  viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'list-dirs', id: 'dirs-1' });
+
+  const reply = await viewer.next(2000);
+  assert.equal(reply.type, 'dir-listing');
+  assert.equal(reply.id, 'dirs-1');
+  assert.equal(reply.root, canonicalizePath(home));
+  assert.equal(reply.path, canonicalizePath(home));
+  assert.deepEqual(reply.entries, ['alpha', 'Beta']);
+  assert.equal(reply.trust, null);
+  assert.equal(reply.trustRequired, false);
+  assert.equal(reply.truncated, false);
+});
+
+test('list-dirs with an in-home path lists that directory', async () => {
+  const home = scratchHome();
+  mkdirSync(join(home, 'project', 'inner'), { recursive: true });
+  mkdirSync(join(home, 'project', 'Another'));
+  const hub = await startHub({ homeDir: home, trustPath: join(home, 'agent', 'trust.json') });
+  const viewer = await connect(hub.viewerPort);
+  await helloViewer(viewer);
+
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'list-dirs',
+    id: 'dirs-2',
+    path: join(home, 'project'),
+  });
+
+  const reply = await viewer.next(2000);
+  assert.equal(reply.path, canonicalizePath(join(home, 'project')));
+  assert.equal(reply.root, canonicalizePath(home));
+  assert.deepEqual(reply.entries, ['Another', 'inner']);
+  assert.equal(reply.trust, null);
+  assert.equal(reply.trustRequired, false);
+});
+
+test('list-dirs rejects an outside, relative or nonexistent path as a command-result failure', async () => {
+  const home = scratchHome();
+  const outside = scratchHome();
+  const hub = await startHub({ homeDir: home, trustPath: join(home, 'agent', 'trust.json') });
+  const viewer = await connect(hub.viewerPort);
+  await helloViewer(viewer);
+
+  const attempts: Array<[string, unknown]> = [
+    ['d1', outside],
+    ['d2', 'relative/dir'],
+    ['d3', join(home, 'missing')],
+    ['d4', ''],
+    ['d5', 7],
+  ];
+  for (const [id, path] of attempts) {
+    viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'list-dirs', id, path });
+    const reply = await viewer.next(2000);
+    assert.equal(reply.type, 'command-result');
+    assert.equal(reply.id, id);
+    assert.equal(reply.ok, false);
+  }
+
+  // A bad path never closes the connection; the browser survives one bad folder.
+  viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'list-dirs', id: 'd6' });
+  assert.equal((await viewer.next(2000)).type, 'dir-listing');
+});
+
+test('list-dirs reports trustRequired for a folder carrying project resources', async () => {
+  const home = scratchHome();
+  const project = join(home, 'project');
+  mkdirSync(join(project, '.pi'), { recursive: true });
+  writeFileSync(join(project, '.pi', 'settings.json'), '{}');
+  const hub = await startHub({ homeDir: home, trustPath: join(home, 'agent', 'trust.json') });
+  const viewer = await connect(hub.viewerPort);
+  await helloViewer(viewer);
+
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'list-dirs',
+    id: 'dirs-3',
+    path: project,
+  });
+
+  const reply = await viewer.next(2000);
+  assert.equal(reply.trustRequired, true);
+  assert.equal(reply.trust, null, 'no decision is stored yet');
+});
+
+test('list-dirs is delivered unbudgeted even when the viewer budget is exhausted', async () => {
+  const home = scratchHome();
+  mkdirSync(join(home, 'visible'));
+  const hub = await startHub({
+    homeDir: home,
+    trustPath: join(home, 'agent', 'trust.json'),
+    maxViewerBytes: 1,
+  });
+  const viewer = await connect(hub.viewerPort);
+  // A 1-byte budget drops the post-auth `sessions` push, so authenticate without
+  // waiting for it and prove the requested listing still arrives.
+  viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'hello', token: TOKEN });
+  await barrier(viewer);
+
+  viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'list-dirs', id: 'dirs-4' });
+
+  const reply = await viewer.next(2000);
+  assert.equal(reply.type, 'dir-listing');
+  assert.deepEqual(reply.entries, ['visible']);
+});
+
+test('list-dirs truncates a directory at the byte cap and stays under the frame cap', async () => {
+  const home = scratchHome();
+  const big = join(home, 'big');
+  mkdirSync(big);
+  for (let i = 0; i < 5000; i += 1) {
+    mkdirSync(join(big, `entry-${String(i).padStart(4, '0')}-${'x'.repeat(40)}`));
+  }
+  const maxDirBytes = 4096;
+  const hub = await startHub({
+    homeDir: home,
+    trustPath: join(home, 'agent', 'trust.json'),
+    maxDirBytes,
+  });
+  const viewer = await connect(hub.viewerPort);
+  await helloViewer(viewer);
+
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'list-dirs',
+    id: 'dirs-5',
+    path: big,
+  });
+
+  const reply = await viewer.next(2000);
+  assert.equal(reply.truncated, true);
+  const entries = reply.entries as string[];
+  assert.ok(entries.length > 0 && entries.length < 5000);
+  const encoded = Buffer.byteLength(JSON.stringify(reply));
+  assert.ok(encoded < maxDirBytes + 1024, `frame ${encoded} should stay near the budget`);
+  assert.ok(encoded < 1024 * 1024, 'frame must stay under the default maxPayload');
+});
+
+test('an agent listener cannot send list-dirs', async () => {
+  const hub = await startHub();
+  const agent = await connect(hub.agentPort);
+  await helloTokened(agent);
+
+  agent.send({ protocolVersion: PROTOCOL_VERSION, type: 'list-dirs', id: 'd1' });
+
+  assert.equal((await closed(agent)).code, CLOSE_CAPABILITY);
+});
+
+test('start-session with a cwd spawns in the canonical directory and persists the trust decision', async () => {
+  const home = scratchHome();
+  const project = join(home, 'project');
+  mkdirSync(project);
+  // The parent of trust.json does not exist yet: the write must create it.
+  const trustPath = join(home, 'agent-dir', 'trust.json');
+  const spawner = makeFakeSpawner();
+  const hub = await startHub({ spawner, homeDir: home, trustPath });
+  const viewer = await connect(hub.viewerPort);
+  await helloViewer(viewer);
+
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'start-session',
+    id: 'start-1',
+    cwd: project,
+    trust: true,
+  });
+
+  const result = await viewer.next(2000);
+  assert.equal(result.type, 'command-result');
+  assert.equal(result.id, 'start-1');
+  assert.equal(result.ok, true);
+  assert.deepEqual(spawner.spawnArgs, [{ cwd: canonicalizePath(project), trust: true }]);
+
+  const saved = JSON.parse(readFileSync(trustPath, 'utf-8')) as Record<string, boolean>;
+  assert.equal(saved[canonicalizePath(project)], true);
+  assert.ok(readFileSync(trustPath, 'utf-8').endsWith('\n'), 'pi writes a trailing newline');
+});
+
+test('start-session refuses an invalid cwd without spawning', async () => {
+  const home = scratchHome();
+  const outside = scratchHome();
+  const project = join(home, 'project');
+  mkdirSync(project);
+  const file = join(home, 'notes.txt');
+  writeFileSync(file, 'x');
+  const spawner = makeFakeSpawner();
+  const hub = await startHub({ spawner, homeDir: home, trustPath: join(home, 'trust.json') });
+  const viewer = await connect(hub.viewerPort);
+  await helloViewer(viewer);
+
+  const attempts: Array<[string, unknown]> = [
+    ['s1', outside],
+    ['s2', 'relative'],
+    ['s3', ''],
+    ['s4', file],
+    ['s5', join(home, 'nonexistent')],
+    ['s6', 7],
+  ];
+  for (const [id, cwd] of attempts) {
+    viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'start-session', id, cwd });
+    const result = await viewer.next(2000);
+    assert.equal(result.type, 'command-result');
+    assert.equal(result.id, id);
+    assert.equal(result.ok, false);
+  }
+
+  // A non-boolean trust is refused outright, before any spawn.
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'start-session',
+    id: 's7',
+    cwd: project,
+    trust: 'yes',
+  });
+  const badTrust = await viewer.next(2000);
+  assert.equal(badTrust.type, 'command-result');
+  assert.equal(badTrust.id, 's7');
+  assert.equal(badTrust.ok, false);
+
+  assert.equal(spawner.spawnCalls, 0, 'a refused request must never spawn');
+  assert.deepEqual(spawner.spawnArgs, []);
+
+  // A valid cwd still works after the failures.
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'start-session',
+    id: 's8',
+    cwd: project,
+  });
+  assert.equal((await viewer.next(2000)).ok, true);
+  assert.equal(spawner.spawnCalls, 1);
+});
+
+test('start-session re-checks a directory that vanished before the spawn', async () => {
+  const home = scratchHome();
+  const project = join(home, 'project');
+  mkdirSync(project);
+  const spawner = makeFakeSpawner();
+  const hub = await startHub({ spawner, homeDir: home, trustPath: join(home, 'trust.json') });
+  const viewer = await connect(hub.viewerPort);
+  await helloViewer(viewer);
+
+  // Resolve a real dir, then remove it before the request: the hub must
+  // re-resolve immediately before spawning, not trust the listing's path.
+  rmSync(project, { recursive: true, force: true });
+
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'start-session',
+    id: 's1',
+    cwd: project,
+  });
+
+  assert.equal((await viewer.next(2000)).ok, false);
+  assert.equal(spawner.spawnCalls, 0);
+});
+
+test('start-session passes a saved ancestor decision without rewriting the store', async () => {
+  const home = scratchHome();
+  const project = join(home, 'project');
+  mkdirSync(join(project, '.pi'), { recursive: true });
+  writeFileSync(join(project, '.pi', 'settings.json'), '{}');
+  const trustPath = join(home, 'agent', 'trust.json');
+  mkdirSync(dirname(trustPath), { recursive: true });
+  const existing = `${JSON.stringify({ [canonicalizePath(home)]: true }, null, 2)}\n`;
+  writeFileSync(trustPath, existing);
+  const before = statSync(trustPath).mtimeMs;
+
+  const spawner = makeFakeSpawner();
+  const hub = await startHub({ spawner, homeDir: home, trustPath });
+  const viewer = await connect(hub.viewerPort);
+  await helloViewer(viewer);
+
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'start-session',
+    id: 's1',
+    cwd: project,
+  });
+  assert.equal((await viewer.next(2000)).ok, true);
+
+  assert.deepEqual(spawner.spawnArgs, [{ cwd: canonicalizePath(project), trust: true }]);
+  assert.equal(readFileSync(trustPath, 'utf-8'), existing, 'the store must not be rewritten');
+  assert.equal(statSync(trustPath).mtimeMs, before, 'mtime must be unchanged');
+});
+
+test('start-session skips a null-valued decision and uses the grandparent', async () => {
+  const home = scratchHome();
+  const parent = join(home, 'mid');
+  const project = join(parent, 'project');
+  mkdirSync(join(project, '.pi'), { recursive: true });
+  writeFileSync(join(project, '.pi', 'settings.json'), '{}');
+  const trustPath = join(home, 'agent', 'trust.json');
+  mkdirSync(dirname(trustPath), { recursive: true });
+  writeFileSync(
+    trustPath,
+    `${JSON.stringify(
+      { [canonicalizePath(parent)]: null, [canonicalizePath(home)]: true },
+      null,
+      2,
+    )}\n`,
+  );
+
+  const spawner = makeFakeSpawner();
+  const hub = await startHub({ spawner, homeDir: home, trustPath });
+  const viewer = await connect(hub.viewerPort);
+  await helloViewer(viewer);
+
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'start-session',
+    id: 's1',
+    cwd: project,
+  });
+  assert.equal((await viewer.next(2000)).ok, true);
+
+  // `null` is "no decision": the walk continues past it to the grandparent,
+  // picking up the grandparent's `true` (a stop-at-null bug would yield false).
+  assert.deepEqual(spawner.spawnArgs, [{ cwd: canonicalizePath(project), trust: true }]);
+});
+
+test('a malformed trust store fails listing and start loudly and is left byte-identical', async () => {
+  const home = scratchHome();
+  const project = join(home, 'project');
+  mkdirSync(join(project, '.pi'), { recursive: true });
+  writeFileSync(join(project, '.pi', 'settings.json'), '{}');
+  // A directory with no trust-requiring resources: here the store is read
+  // only because the viewer supplied trust explicitly.
+  const plain = join(home, 'plain');
+  mkdirSync(plain);
+  const trustPath = join(home, 'agent', 'trust.json');
+  mkdirSync(dirname(trustPath), { recursive: true });
+  const malformed = '{ this is not json';
+  writeFileSync(trustPath, malformed);
+
+  const spawner = makeFakeSpawner();
+  const hub = await startHub({ spawner, homeDir: home, trustPath });
+  const viewer = await connect(hub.viewerPort);
+  await helloViewer(viewer);
+
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'list-dirs',
+    id: 'd1',
+    path: project,
+  });
+  const listing = await viewer.next(2000);
+  assert.equal(listing.type, 'command-result');
+  assert.equal(listing.ok, false);
+
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'start-session',
+    id: 's1',
+    cwd: project,
+  });
+  const result = await viewer.next(2000);
+  assert.equal(result.type, 'command-result');
+  assert.equal(result.ok, false);
+  assert.equal(spawner.spawnCalls, 0);
+
+  // Supplying trust explicitly does not skip the store read: pi reads it for
+  // the existing decision, so the malformed store must still fail loudly.
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'start-session',
+    id: 's2',
+    cwd: plain,
+    trust: true,
+  });
+  assert.equal((await viewer.next(2000)).ok, false);
+  assert.equal(spawner.spawnCalls, 0);
+
+  // A malformed store is loud, never a silent "no decision", and it must be
+  // left exactly as it was found.
+  assert.equal(readFileSync(trustPath, 'utf-8'), malformed);
+
+  // The connection is still usable: a later request is answered.
+  viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'list-dirs', id: 'd2' });
+  assert.equal((await viewer.next(2000)).type, 'dir-listing');
+});
+
+test('a trust.json that is a directory fails loudly without crashing', async () => {
+  const home = scratchHome();
+  const project = join(home, 'project');
+  mkdirSync(join(project, '.pi'), { recursive: true });
+  writeFileSync(join(project, '.pi', 'settings.json'), '{}');
+  const trustPath = join(home, 'agent', 'trust.json');
+  // A directory where the store should be: reading it raises EISDIR, which the
+  // trust reader wraps as a loud TrustStoreError.
+  mkdirSync(trustPath, { recursive: true });
+
+  const spawner = makeFakeSpawner();
+  const hub = await startHub({ spawner, homeDir: home, trustPath });
+  const viewer = await connect(hub.viewerPort);
+  await helloViewer(viewer);
+
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'list-dirs',
+    id: 'd1',
+    path: project,
+  });
+  const listing = await viewer.next(2000);
+  assert.equal(listing.type, 'command-result');
+  assert.equal(listing.ok, false);
+
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'start-session',
+    id: 's1',
+    cwd: project,
+  });
+  assert.equal((await viewer.next(2000)).ok, false);
+  assert.equal(spawner.spawnCalls, 0);
+
+  // The hub is still alive and serving.
+  viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'list-dirs', id: 'd2' });
+  assert.equal((await viewer.next(2000)).type, 'dir-listing');
 });
