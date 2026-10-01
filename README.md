@@ -105,6 +105,18 @@ what it would cost, so it can be picked up cold.
   no live row for that block: nothing is lost, because the committed message carries
   it. And redacted reasoning streams as raw deltas before the commit replaces it with
   `[reasoning redacted]`.
+- **Streamed reasoning is witnessed by hand, not by the default suite.** `flutter test`
+  covers the wire shapes it arrives in, but never a live model emitting them, so the
+  only automated end-to-end check is the opt-in, paid `test_live/attach_live_test.dart`
+  — which is outside `flutter test`'s glob on purpose. The duplication trap (the live
+  row and the committed block both carrying the reasoning) was confirmed absent on the
+  phone instead.
+- **A changed bridge reaches a running `pi` on reload, whose trigger is not pinned
+  down.** The extension loader bypasses the module cache, so the file is re-read on
+  every load, and a bridge change was observed going live in a process started before
+  it without a restart. Whether that came from a session replacement or something else
+  is unverified; a `pi` restart is the sure path, and a stale bridge shows up as the
+  phone missing a behaviour the code claims.
 
 ### What the manual pass actually found
 
