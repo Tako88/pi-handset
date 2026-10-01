@@ -1,0 +1,8 @@
+{
+  "protocolVersion": 1,
+  "type": "agent-settled",
+  "sessionId": "sess-1",
+  "label": "work",
+  "text": "Done.",
+  "truncated": false
+}

@@ -41,7 +41,12 @@ import {
   isAgentMessageType,
   isViewerMessageType,
 } from '../protocol/protocol.ts';
-import type { AgentState, SessionOrigin, SessionsMessage } from '../protocol/protocol.ts';
+import type {
+  AgentSettledMessage,
+  AgentState,
+  SessionOrigin,
+  SessionsMessage,
+} from '../protocol/protocol.ts';
 import { compareToken } from './auth.ts';
 import { ByteBudget } from './backpressure.ts';
 import type { TicketStore } from './pairing.ts';
@@ -241,6 +246,32 @@ function pushSessions(state: State, connection: Connection): void {
 function broadcastSessions(state: State): void {
   for (const viewer of state.viewers) {
     if (viewer.authenticated) pushSessions(state, viewer);
+  }
+}
+
+/**
+ * Tells every authenticated viewer that a session settled. A notification is
+ * viewer-scoped, not subscriber-scoped: the phone must be able to notify for a
+ * session it is not viewing. Best-effort (`sessionId` null) deliberately: a
+ * throttled viewer cannot be allowed to trigger a resync storm for a 200-char
+ * snippet.
+ */
+function broadcastAgentSettled(
+  state: State,
+  session: Session,
+  text: string,
+  truncated: boolean,
+): void {
+  const message: AgentSettledMessage = {
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'agent-settled',
+    sessionId: session.sessionId,
+    label: session.label,
+    text,
+    truncated,
+  };
+  for (const viewer of state.viewers) {
+    if (viewer.authenticated) sendToViewer(viewer, message, null);
   }
 }
 
@@ -494,6 +525,16 @@ function handleEvent(
       session.agentState = payload.state;
       broadcastSessions(state);
     }
+  } else if (kind === 'settled') {
+    if (typeof payload.text !== 'string' || typeof payload.truncated !== 'boolean') {
+      closeWith(connection, CLOSE_PROTOCOL);
+      return;
+    }
+    // A notification concern, not a transcript frame: broadcast to EVERY
+    // authenticated viewer, then return so it is not also relayed to
+    // subscribers (the fall-through would deliver every settle twice).
+    broadcastAgentSettled(state, session, payload.text, payload.truncated);
+    return;
   } else if (!(EVENT_PAYLOAD_KINDS as readonly unknown[]).includes(kind)) {
     // `message`/`tool`/`status` are relayed untouched; only a genuinely
     // unknown kind is a protocol violation.

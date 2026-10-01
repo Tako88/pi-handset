@@ -1,0 +1,9 @@
+{
+  "protocolVersion": 1,
+  "type": "event",
+  "payload": {
+    "kind": "settled",
+    "text": "Done.",
+    "truncated": false
+  }
+}

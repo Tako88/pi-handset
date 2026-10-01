@@ -31,4 +31,54 @@ void main() {
           'here a shipped app cannot open its hub WebSocket',
     );
   });
+
+  test('main manifest declares the notification permissions', () {
+    final xml = File('android/app/src/main/AndroidManifest.xml').readAsStringSync();
+
+    for (final permission in const [
+      'android.permission.POST_NOTIFICATIONS',
+      'android.permission.FOREGROUND_SERVICE',
+      'android.permission.FOREGROUND_SERVICE_SPECIAL_USE',
+    ]) {
+      expect(
+        RegExp(
+          '<uses-permission\\s+android:name="${RegExp.escape(permission)}"\\s*/>',
+        ).hasMatch(xml),
+        isTrue,
+        reason: '$permission must be in the main manifest',
+      );
+    }
+  });
+
+  test('main manifest declares the specialUse foreground service', () {
+    final xml = File('android/app/src/main/AndroidManifest.xml').readAsStringSync();
+
+    // The service must be non-exported, typed `specialUse` (so it is not
+    // subject to the dataSync cap), and torn down with the task so a stale
+    // persistent notification cannot linger.
+    expect(
+      RegExp(
+        r'<service\s+[^>]*android:name="\.HubConnectionService"[^>]*>',
+        dotAll: true,
+      ).hasMatch(xml),
+      isTrue,
+      reason: 'the service must be declared in the main manifest',
+    );
+    expect(
+      RegExp(
+        r'<service\s+[^>]*android:name="\.HubConnectionService"[^>]*android:foregroundServiceType="specialUse"[^>]*android:stopWithTask="true"',
+        dotAll: true,
+      ).hasMatch(xml),
+      isTrue,
+      reason: 'the service must be specialUse and stopWithTask',
+    );
+    expect(
+      RegExp(
+        r'<property\s+android:name="android\.app\.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"\s+android:value="[^"]+"\s*/>',
+        dotAll: true,
+      ).hasMatch(xml),
+      isTrue,
+      reason: 'a specialUse service needs its subtype property',
+    );
+  });
 }

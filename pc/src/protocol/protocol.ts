@@ -73,6 +73,9 @@ export const HISTORY_MAX_BYTES = 768 * 1024;
  *   watermark asks for a `snapshot`. An empty list is a real value (there are
  *   no sessions), not an absence.
  * - `event` { payload } — routed normalized events.
+ * - `agent-settled` { sessionId, label, text, truncated } — a session settled;
+ *   broadcast to every authenticated viewer (not subscriber-scoped), because the
+ *   phone must be able to notify for a session it is not viewing.
  * - `snapshot` { sessionId, lastSeq, agentState, entries: unknown[], truncated }
  *   — `lastSeq`/`agentState` are hub-tracked; `entries` are agent-supplied and
  *   may be truncated.
@@ -108,7 +111,7 @@ export const SESSION_ORIGINS = ['app', 'pc'] as const;
 export type SessionOrigin = (typeof SESSION_ORIGINS)[number];
 
 /** The normalized payload kinds an `event` may carry. */
-export const EVENT_PAYLOAD_KINDS = ['stream', 'message', 'agent', 'tool', 'status', 'usage'] as const;
+export const EVENT_PAYLOAD_KINDS = ['stream', 'message', 'agent', 'tool', 'status', 'usage', 'settled'] as const;
 export type EventPayloadKind = (typeof EVENT_PAYLOAD_KINDS)[number];
 
 /** A token-stream delta, ordered by `seq`. Carried inside an `event`. A frame
@@ -153,6 +156,18 @@ export interface AgentPayload {
 }
 
 /**
+ * A session settled: the bridge's snippet of the turn's final assistant text.
+ * `text` may be empty (a turn with no assistant message); `truncated` is true
+ * when the bridge's code-point cap cut it. The hub relays this to every
+ * authenticated viewer as an `agent-settled` message.
+ */
+export interface SettledPayload {
+  kind: 'settled';
+  text: string;
+  truncated: boolean;
+}
+
+/**
  * The remaining normalized kinds (`message`, `tool`, `status`) are opaque to
  * the hub: M6's bridge owns their shape, and the hub only relays them. The
  * index signature keeps a caller's extra fields type-checked as unknowns
@@ -163,7 +178,12 @@ export interface PassthroughPayload {
   [key: string]: unknown;
 }
 
-export type EventPayload = StreamPayload | AgentPayload | ContextUsagePayload | PassthroughPayload;
+export type EventPayload =
+  | StreamPayload
+  | AgentPayload
+  | ContextUsagePayload
+  | SettledPayload
+  | PassthroughPayload;
 
 /** The single agent↔hub event, carrying a normalized payload. */
 export interface EventMessage {
@@ -248,6 +268,19 @@ export interface KillSessionMessage {
   type: 'kill-session';
   id: string;
   sessionId: string;
+}
+
+/**
+ * The hub's hub→viewer notice that a session settled. `label` is the session's
+ * current viewer-safe label; `text`/`truncated` are the bridge's snippet.
+ */
+export interface AgentSettledMessage {
+  protocolVersion: number;
+  type: 'agent-settled';
+  sessionId: string;
+  label: string;
+  text: string;
+  truncated: boolean;
 }
 
 export interface PairedMessage {
@@ -344,6 +377,7 @@ export const HUB_TO_VIEWER_MESSAGE_TYPES = [
   'command-result',
   'resync-required',
   'session-gone',
+  'agent-settled',
 ] as const;
 export type HubToViewerMessageType = (typeof HUB_TO_VIEWER_MESSAGE_TYPES)[number];
 
@@ -383,7 +417,8 @@ export type HubToViewerMessage =
   | SnapshotMessage
   | CommandResultMessage
   | ResyncRequiredMessage
-  | SessionGoneMessage;
+  | SessionGoneMessage
+  | AgentSettledMessage;
 
 /** Every message type `decode` understands. */
 export type Message =
@@ -402,7 +437,8 @@ export type Message =
   | SessionsMessage
   | SnapshotMessage
   | ResyncRequiredMessage
-  | SessionGoneMessage;
+  | SessionGoneMessage
+  | AgentSettledMessage;
 
 /** True when `type` is a message the agent listener accepts. */
 export function isAgentMessageType(type: unknown): type is AgentMessageType {
@@ -534,6 +570,15 @@ export function decode(text: string): DecodeResult {
       if (kind === 'agent') {
         if (!(AGENT_STATES as readonly unknown[]).includes(body.state)) {
           return fail('bad-state', 'agent state must be idle, running or settled');
+        }
+        return { ok: true, value: parsed as EventMessage };
+      }
+      if (kind === 'settled') {
+        if (typeof body.text !== 'string') {
+          return fail('bad-text', 'settled text must be a string');
+        }
+        if (typeof body.truncated !== 'boolean') {
+          return fail('bad-field', 'settled truncated must be a boolean');
         }
         return { ok: true, value: parsed as EventMessage };
       }
@@ -695,6 +740,21 @@ export function decode(text: string): DecodeResult {
         return fail('bad-field', 'session-gone sessionId must be a non-empty string');
       }
       return { ok: true, value: parsed as SessionGoneMessage };
+    }
+    case 'agent-settled': {
+      if (asString(message.sessionId) === null) {
+        return fail('bad-field', 'agent-settled sessionId must be a non-empty string');
+      }
+      if (asString(message.label) === null) {
+        return fail('bad-field', 'agent-settled label must be a non-empty string');
+      }
+      if (typeof message.text !== 'string') {
+        return fail('bad-field', 'agent-settled text must be a string');
+      }
+      if (typeof message.truncated !== 'boolean') {
+        return fail('bad-field', 'agent-settled truncated must be a boolean');
+      }
+      return { ok: true, value: parsed as AgentSettledMessage };
     }
     default:
       return fail('unknown-type', `unknown message type: ${String(message.type)}`);

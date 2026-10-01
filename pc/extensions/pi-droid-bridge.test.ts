@@ -29,6 +29,7 @@ import { loadOrCreateToken } from '../src/hub/auth.ts';
 // red run must fail with an unresolved import, not a loader error.
 import {
   RATE_LIMITED_RECONNECT_MS,
+  SETTLED_TEXT_MAX_CODE_POINTS,
   computeBackoff,
   installBridge,
   isActiveMode,
@@ -36,6 +37,7 @@ import {
   normalizeMessageEnd,
   projectHistory,
   readEndpoint,
+  settleText,
 } from './pi-droid-bridge.ts';
 import type {
   AssistantMessageEvent,
@@ -595,6 +597,7 @@ test('agent_settled yields the terminal agent state', () => {
     tokens: 23400,
     contextWindow: 128000,
   });
+  assert.deepEqual(emitted[2]!.payload, { kind: 'settled', text: '', truncated: false });
 });
 
 test('agent_start yields the running state', () => {
@@ -785,7 +788,7 @@ test('agent_settled reports the terminal state and then the usage', () => {
   const emitted = parsed(socket).slice(before);
   assert.deepEqual(
     emitted.map((m) => (m.payload as { kind?: string }).kind),
-    ['agent', 'usage'],
+    ['agent', 'usage', 'settled'],
   );
 });
 
@@ -1582,4 +1585,153 @@ test('readEndpoint reports no hub when there is no discovery file', () => {
     rmSync(runtimeDir, { recursive: true, force: true });
     rmSync(configDir, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Settle snippet (the notification body)
+// ---------------------------------------------------------------------------
+
+/** The last `settled` payload in a socket's sent frames, if any. */
+function settlePayload(
+  socket: FakeSocket,
+  from = 0,
+): { kind: string; text: string; truncated: boolean } | undefined {
+  return parsed(socket)
+    .slice(from)
+    .map((message) => message.payload as { kind?: string })
+    .filter((payload) => payload?.kind === 'settled')
+    .at(-1) as { kind: string; text: string; truncated: boolean } | undefined;
+}
+
+test('settleText keeps text at the cap and flags one code point over', () => {
+  assert.deepEqual(settleText('abc', 3), { text: 'abc', truncated: false });
+  assert.deepEqual(settleText('abcd', 3), { text: 'abc', truncated: true });
+});
+
+test('agent_settled emits the assistant text cached from message_end', () => {
+  const harness = makeHarness();
+  harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  harness.pi.handlers.get('message_end')!(
+    { type: 'message_end', message: { role: 'assistant', content: 'the answer' } },
+    harness.startCtx,
+  );
+  const before = socket.sent.length;
+  harness.pi.handlers.get('agent_settled')!({}, harness.startCtx);
+  const emitted = parsed(socket).slice(before);
+  assert.deepEqual(
+    emitted.map((m) => (m.payload as { kind?: string }).kind),
+    ['agent', 'usage', 'settled'],
+  );
+  assert.deepEqual(emitted[2]!.payload, {
+    kind: 'settled',
+    text: 'the answer',
+    truncated: false,
+  });
+});
+
+test('an oversized assistant message_end still yields its text, flagged truncated', () => {
+  const harness = makeHarness();
+  harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  const huge = { role: 'assistant', content: 'x'.repeat(MAX_RELAY_BYTES + 100) };
+  harness.pi.handlers.get('message_end')!(
+    { type: 'message_end', message: huge },
+    harness.startCtx,
+  );
+  const before = socket.sent.length;
+  harness.pi.handlers.get('agent_settled')!({}, harness.startCtx);
+  const settled = settlePayload(socket, before)!;
+  // The bounded message is replaced by a `{truncated:true,bytes}` marker; the
+  // snippet must come from the original message, so it is never the fallback.
+  assert.ok(settled.text.length > 0, 'must not fall back to empty');
+  assert.ok(
+    Array.from(settled.text).length <= SETTLED_TEXT_MAX_CODE_POINTS,
+    'must respect the wire cap',
+  );
+  assert.equal(settled.truncated, true);
+});
+
+test('a user message_end does not clobber the cached assistant text', () => {
+  const harness = makeHarness();
+  harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  const handler = harness.pi.handlers.get('message_end')!;
+  handler(
+    { type: 'message_end', message: { role: 'assistant', content: 'the answer' } },
+    harness.startCtx,
+  );
+  handler({ type: 'message_end', message: { role: 'user', content: 'steer' } }, harness.startCtx);
+  const before = socket.sent.length;
+  harness.pi.handlers.get('agent_settled')!({}, harness.startCtx);
+  assert.deepEqual(settlePayload(socket, before), {
+    kind: 'settled',
+    text: 'the answer',
+    truncated: false,
+  });
+});
+
+test('a toolResult message_end does not clobber the cached assistant text', () => {
+  const harness = makeHarness();
+  harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  const handler = harness.pi.handlers.get('message_end')!;
+  handler(
+    { type: 'message_end', message: { role: 'assistant', content: 'the answer' } },
+    harness.startCtx,
+  );
+  handler(
+    { type: 'message_end', message: { role: 'toolResult', content: 'output' } },
+    harness.startCtx,
+  );
+  const before = socket.sent.length;
+  harness.pi.handlers.get('agent_settled')!({}, harness.startCtx);
+  assert.deepEqual(settlePayload(socket, before), {
+    kind: 'settled',
+    text: 'the answer',
+    truncated: false,
+  });
+});
+
+test("a second turn's settle carries only the second turn's text", () => {
+  const harness = makeHarness();
+  harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  const handler = harness.pi.handlers.get('message_end')!;
+  handler(
+    { type: 'message_end', message: { role: 'assistant', content: 'first' } },
+    harness.startCtx,
+  );
+  harness.pi.handlers.get('agent_settled')!({}, harness.startCtx);
+  harness.pi.handlers.get('agent_start')!({ type: 'agent_start' }, harness.startCtx);
+  handler(
+    { type: 'message_end', message: { role: 'assistant', content: 'second' } },
+    harness.startCtx,
+  );
+  const before = socket.sent.length;
+  harness.pi.handlers.get('agent_settled')!({}, harness.startCtx);
+  assert.deepEqual(settlePayload(socket, before), {
+    kind: 'settled',
+    text: 'second',
+    truncated: false,
+  });
+});
+
+test('a settle with no assistant message carries empty text', () => {
+  const harness = makeHarness();
+  harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  const before = socket.sent.length;
+  harness.pi.handlers.get('agent_settled')!({}, harness.startCtx);
+  assert.deepEqual(settlePayload(socket, before), {
+    kind: 'settled',
+    text: '',
+    truncated: false,
+  });
 });

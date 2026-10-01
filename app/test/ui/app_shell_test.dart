@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pi_droid/client/endpoint_store.dart';
 import 'package:pi_droid/client/hub_client.dart';
+import 'package:pi_droid/client/settle_notification.dart';
 import 'package:pi_droid/client/token_store.dart';
 import 'package:pi_droid/ui/app_shell.dart';
 import 'package:pi_droid/ui/pairing_screen.dart';
@@ -86,6 +87,20 @@ Map<String, Object?> sessionsFrame(List<Map<String, Object?>> sessions) => {
   'sessions': sessions,
 };
 
+Map<String, Object?> settledFrame({
+  String sessionId = 's1',
+  String label = 'api refactor',
+  String text = 'Done.',
+  bool truncated = false,
+}) => {
+  'protocolVersion': 1,
+  'type': 'agent-settled',
+  'sessionId': sessionId,
+  'label': label,
+  'text': text,
+  'truncated': truncated,
+};
+
 const sessionS1 = {'sessionId': 's1', 'label': 'api refactor', 'agentState': 'idle'};
 const sessionS2 = {'sessionId': 's2', 'label': 'second session', 'agentState': 'idle'};
 const appSessionA1 = {
@@ -123,9 +138,15 @@ class Harness {
   final FakeSocketFactory factory = FakeSocketFactory();
   final FakeScheduler scheduler = FakeScheduler();
   final TokenStore store;
+  final FakeNotificationPresenter notifications = FakeNotificationPresenter();
   late final HubClient client;
 
-  Widget app() => PiDroidApp(client: client, tokenStore: store);
+  Widget app({String? initialSessionId}) => PiDroidApp(
+    client: client,
+    tokenStore: store,
+    notifications: notifications,
+    initialSessionId: initialSessionId,
+  );
 }
 
 /// A token store whose endpoint read fails, standing in for a broken platform
@@ -583,7 +604,13 @@ void main() {
       scheduler: FakeScheduler(),
       tokenStore: store,
     );
-    await tester.pumpWidget(PiDroidApp(client: client, tokenStore: store));
+    await tester.pumpWidget(
+      PiDroidApp(
+        client: client,
+        tokenStore: store,
+        notifications: FakeNotificationPresenter(),
+      ),
+    );
     await pumpBootstrap(tester);
 
     expect(find.byType(CircularProgressIndicator), findsNothing);
@@ -657,5 +684,248 @@ void main() {
     final frame = h.factory.last.sentFrames.last;
     expect(frame['type'], 'kill-session');
     expect(frame['sessionId'], 'a1');
+  });
+
+  // -------------------------------------------------------------------------
+  // Settle notifications
+  // -------------------------------------------------------------------------
+
+  testWidgets('a settle for another session notifies while foreground', (
+    tester,
+  ) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+    h.factory.last.receive(sessionsFrame([sessionS1, sessionS2]));
+    await settle(tester, h.scheduler);
+
+    // Foregrounded on s1; s2 settles: the app must notify.
+    await tester.tap(find.text('api refactor'));
+    await settle(tester, h.scheduler);
+
+    h.factory.last.receive(
+      settledFrame(
+        sessionId: 's2',
+        label: 'second session',
+        text: 'all  done',
+      ),
+    );
+    await settle(tester, h.scheduler);
+
+    expect(h.notifications.shown, hasLength(1));
+    expect(h.notifications.shown.single.title, 'second session');
+    // Whitespace is collapsed before it reaches the shade.
+    expect(h.notifications.shown.single.body, 'all done');
+    expect(h.notifications.shown.single.sessionId, 's2');
+  });
+
+  testWidgets('a settle for the displayed session does not notify', (
+    tester,
+  ) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+    await tester.tap(find.text('api refactor'));
+    await settle(tester, h.scheduler);
+
+    h.factory.last.receive(settledFrame(sessionId: 's1'));
+    await settle(tester, h.scheduler);
+
+    expect(h.notifications.shown, isEmpty);
+  });
+
+  testWidgets('a settle while backgrounded notifies', (tester) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+    await tester.tap(find.text('api refactor'));
+    await settle(tester, h.scheduler);
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    await tester.pump();
+
+    h.factory.last.receive(settledFrame(sessionId: 's1'));
+    await settle(tester, h.scheduler);
+
+    expect(h.notifications.shown, hasLength(1));
+  });
+
+  testWidgets('opening a session dismisses its stale notification', (
+    tester,
+  ) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+
+    // On the list: a settle for s1 notifies even though the app is foreground.
+    h.factory.last.receive(settledFrame(sessionId: 's1'));
+    await settle(tester, h.scheduler);
+    expect(h.notifications.shown, hasLength(1));
+
+    // Opening s1 from the list makes that shade entry stale.
+    await tester.tap(find.text('api refactor'));
+    await settle(tester, h.scheduler);
+
+    expect(
+      h.notifications.cancelled,
+      contains(notificationIdForSession('s1')),
+    );
+  });
+
+  testWidgets('a settle for the displayed session clears its stale notification', (
+    tester,
+  ) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+    await tester.tap(find.text('api refactor'));
+    await settle(tester, h.scheduler);
+
+    // Backgrounded: the settle for the open session raises a notification.
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    await tester.pump();
+    h.factory.last.receive(settledFrame(sessionId: 's1'));
+    await settle(tester, h.scheduler);
+    expect(h.notifications.shown, hasLength(1));
+
+    // Back on that same session, the entry is now redundant.
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+    await tester.pump();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    await tester.pump();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pump();
+    h.factory.last.receive(settledFrame(sessionId: 's1'));
+    await settle(tester, h.scheduler);
+
+    expect(
+      h.notifications.cancelled,
+      contains(notificationIdForSession('s1')),
+    );
+  });
+
+  testWidgets('a cold tap opens the session only after authentication', (
+    tester,
+  ) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app(initialSessionId: 'sess-b'));
+    await pumpBootstrap(tester);
+
+    // The client has dialled and sent `hello`, but the hub has not yet
+    // authenticated it. A `subscribe` now would be closed 4002 and loop.
+    expect(
+      h.factory.last.sentFrames.where((frame) => frame['type'] == 'subscribe'),
+      isEmpty,
+    );
+
+    h.factory.last.receive(sessionsFrame([sessionS1, sessionS2]));
+    await settle(tester, h.scheduler);
+
+    final subscribes = h.factory.last.sentFrames
+        .where((frame) => frame['type'] == 'subscribe')
+        .toList();
+    expect(subscribes, hasLength(1));
+    expect(subscribes.single['sessionId'], 'sess-b');
+  });
+
+  testWidgets('a warm tap waits for authentication, then opens immediately', (
+    tester,
+  ) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+
+    h.notifications.requestOpen.add('sess-b');
+    await tester.pump();
+    expect(
+      h.factory.last.sentFrames.where((frame) => frame['type'] == 'subscribe'),
+      isEmpty,
+    );
+
+    h.factory.last.receive(sessionsFrame([sessionS1, sessionS2]));
+    await settle(tester, h.scheduler);
+    expect(
+      h.factory.last.sentFrames
+          .where((frame) => frame['type'] == 'subscribe')
+          .map((frame) => frame['sessionId']),
+      ['sess-b'],
+    );
+
+    // Already connected: a further tap subscribes without waiting.
+    h.notifications.requestOpen.add('s2');
+    await tester.pump();
+    expect(
+      h.factory.last.sentFrames
+          .where(
+            (frame) => frame['type'] == 'subscribe' && frame['sessionId'] == 's2',
+          )
+          .length,
+      1,
+    );
+  });
+
+  testWidgets('an unknown tapped session returns to the list with the error', (
+    tester,
+  ) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app(initialSessionId: 'ghost'));
+    await pumpBootstrap(tester);
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+    // The subscribe the queue sent schedules its own notify; flush that frame
+    // so the transcript view is actually mounted.
+    await settle(tester, h.scheduler);
+
+    // The tap opened the transcript even though the session does not exist.
+    expect(h.client.state.activeSessionId, 'ghost');
+    expect(find.byKey(const Key('compose-field')), findsOneWidget);
+
+    for (var i = 0; i <= HubClient.maxConsecutiveSessionGone; i++) {
+      h.factory.last.receive({
+        'protocolVersion': 1,
+        'type': 'session-gone',
+        'sessionId': 'ghost',
+      });
+    }
+    await settle(tester, h.scheduler);
+
+    // The UI returns to the session list rather than hanging on a transcript,
+    // and says why.
+    expect(h.client.state.activeSessionId, isNull);
+    expect(find.byKey(const Key('compose-field')), findsNothing);
+    expect(find.text('pi sessions · 10.0.0.5:8787'), findsOneWidget);
+    expect(find.textContaining('the session ghost is gone'), findsOneWidget);
+  });
+
+  testWidgets('the foreground service starts once and stops on change hub', (
+    tester,
+  ) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+
+    expect(h.notifications.permissionRequests, 1);
+    expect(h.notifications.startForegroundCalls, 0);
+
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+    expect(h.notifications.startForegroundCalls, 1);
+
+    // A later registry push must not start it a second time.
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+    expect(h.notifications.startForegroundCalls, 1);
+
+    await tester.tap(find.byKey(const Key('change-hub')));
+    await tester.pumpAndSettle();
+    expect(h.notifications.stopForegroundCalls, 1);
   });
 }

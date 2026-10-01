@@ -70,6 +70,23 @@ class SessionSummary {
   );
 }
 
+/// One `agent-settled` broadcast: a session settled and the app may notify.
+/// Viewer-scoped rather than subscriber-scoped, so it may name a session the
+/// client is not viewing. Carries the bridge's snippet and its truncation flag.
+class AgentSettledEvent {
+  final String sessionId;
+  final String label;
+  final String text;
+  final bool truncated;
+
+  const AgentSettledEvent({
+    required this.sessionId,
+    required this.label,
+    required this.text,
+    required this.truncated,
+  });
+}
+
 /// The renderer-agnostic transcript for one session.
 ///
 /// [entries] hold raw relayed values exactly as they arrived (history/snapshot
@@ -262,6 +279,9 @@ class HubClient {
   final StreamController<HubClientState> _changesController =
       StreamController<HubClientState>.broadcast(sync: true);
 
+  final StreamController<AgentSettledEvent> _settlesController =
+      StreamController<AgentSettledEvent>.broadcast(sync: true);
+
   HubClientState _state = const HubClientState();
   final Map<String, _PendingCommand> _pendingCommands = {};
 
@@ -310,6 +330,11 @@ class HubClient {
   /// Coalesced notifications: at most one per scheduled frame, regardless of how
   /// many deltas arrived.
   Stream<HubClientState> get changes => _changesController.stream;
+
+  /// Settle notifications: one event per `agent-settled` frame the hub sends,
+  /// regardless of which session is active. Broadcast, so several listeners are
+  /// possible; it closes with [stop], never with [disconnect].
+  Stream<AgentSettledEvent> get settles => _settlesController.stream;
 
   /// The number of consecutive resyncs a session is allowed before the client
   /// gives up. Exposed for the tests that drive the cap.
@@ -365,6 +390,7 @@ class HubClient {
     // `changes` without anyone ever observing `disconnected`.
     _flushNotify();
     if (!_changesController.isClosed) await _changesController.close();
+    if (!_settlesController.isClosed) await _settlesController.close();
   }
 
   /// Like [stop], but leaves [changes] open so the app can point at a different
@@ -752,7 +778,24 @@ class HubClient {
         _onResyncRequired(message['sessionId']! as String);
       case 'session-gone':
         _onSessionGone(message['sessionId']! as String);
+      case 'agent-settled':
+        _onAgentSettled(message);
     }
+  }
+
+  /// Surfaces a settle for notification. Deliberately no state change and no
+  /// `_scheduleNotify`: it must not rebuild the transcript, and it must reach
+  /// the app even for a session it is not viewing or subscribed to.
+  void _onAgentSettled(Map<String, Object?> message) {
+    if (_settlesController.isClosed) return;
+    _settlesController.add(
+      AgentSettledEvent(
+        sessionId: message['sessionId']! as String,
+        label: message['label']! as String,
+        text: message['text']! as String,
+        truncated: message['truncated']! as bool,
+      ),
+    );
   }
 
   Future<void> _onPaired(String token) async {

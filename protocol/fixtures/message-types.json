@@ -15,9 +15,10 @@
     "sessions",
     "snapshot",
     "resync-required",
-    "session-gone"
+    "session-gone",
+    "agent-settled"
   ],
-  "eventPayloadKinds": ["stream", "message", "agent", "tool", "status", "usage"],
+  "eventPayloadKinds": ["stream", "message", "agent", "tool", "status", "usage", "settled"],
   "streamPhases": ["thinking"],
   "sessionOrigins": ["app", "pc"],
   "agentMessageTypes": ["register", "event", "history", "command-result"],
@@ -36,6 +37,7 @@
     "snapshot",
     "command-result",
     "resync-required",
-    "session-gone"
+    "session-gone",
+    "agent-settled"
   ]
 }
