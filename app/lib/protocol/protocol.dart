@@ -20,10 +20,13 @@ const List<String> agentStates = ['idle', 'running', 'settled'];
 /// The normalized payload kinds an `event` may carry.
 const List<String> eventPayloadKinds = ['stream', 'message', 'agent', 'tool', 'status'];
 
-/// Lifecycle phases a `stream` frame may signal. `thinking` is emitted on
-/// `thinking_start` as a content-free liveness signal (the frame carries no
-/// `text`), before any reasoning delta. A frame may carry `text` and/or
-/// `phase`; at least one is required.
+/// Lifecycle phases a `stream` frame may signal, and the tag that marks one.
+///
+/// `thinking` is emitted twice over: on `thinking_start` as a content-free
+/// liveness signal (the frame carries no `text`), then on every
+/// `thinking_delta` with that chunk in `text`. A frame carries `text` and/or
+/// `phase`; at least one is required. The committed `message` stays
+/// authoritative.
 const List<String> streamPhases = ['thinking'];
 
 /// What the loopback (agent) listener accepts besides `hello`.

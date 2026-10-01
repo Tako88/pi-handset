@@ -41,7 +41,10 @@ class TextBlock extends StatelessWidget {
 }
 
 /// Thinking is rendered visibly by default (the point of rendering it at all)
-/// and collapses to its label on tap.
+/// and collapses to its label on tap. An in-flight row (`complete == false`) is
+/// not collapsible: it is rebuilt on every delta, and a tap target that resets
+/// or vanishes mid-turn is a control changing under the user. It is replaced by
+/// the committed, collapsible block when the assistant message lands.
 class ThinkingBlock extends StatefulWidget {
   const ThinkingBlock({super.key, required this.block});
 
@@ -57,34 +60,36 @@ class _ThinkingBlockState extends State<ThinkingBlock> {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+    final body = Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.psychology, size: 16, color: colors.outline),
+              const SizedBox(width: 6),
+              Text(
+                'Thinking',
+                style: TextStyle(color: colors.outline, fontSize: 12),
+              ),
+            ],
+          ),
+          if (widget.block.complete ? _expanded : true)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                widget.block.text,
+                style: TextStyle(color: colors.onSurfaceVariant),
+              ),
+            ),
+        ],
+      ),
+    );
+    if (!widget.block.complete) return body;
     return InkWell(
       onTap: () => setState(() => _expanded = !_expanded),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(Icons.psychology, size: 16, color: colors.outline),
-                const SizedBox(width: 6),
-                Text(
-                  'Thinking',
-                  style: TextStyle(color: colors.outline, fontSize: 12),
-                ),
-              ],
-            ),
-            if (_expanded)
-              Padding(
-                padding: const EdgeInsets.only(top: 4),
-                child: Text(
-                  widget.block.text,
-                  style: TextStyle(color: colors.onSurfaceVariant),
-                ),
-              ),
-          ],
-        ),
-      ),
+      child: body,
     );
   }
 }
