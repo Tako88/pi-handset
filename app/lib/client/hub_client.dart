@@ -185,6 +185,11 @@ class HubClientState {
   /// old hub would answer with a terminal `4003` close.
   final Set<String> capabilities;
 
+  /// The per-session real pi commands, fetched on session open and
+  /// re-fetched on reconnect-restore, keyed by session id. A session never
+  /// fetched from (or one whose hub refused the list) simply has no key.
+  final Map<String, List<SlashCommand>> commands;
+
   const HubClientState({
     this.status = HubConnectionStatus.disconnected,
     this.sessions = const [],
@@ -192,6 +197,7 @@ class HubClientState {
     this.activeSessionId,
     this.lastError,
     this.capabilities = const {},
+    this.commands = const {},
   });
 
   HubClientState copyWith({
@@ -201,11 +207,13 @@ class HubClientState {
     Object? activeSessionId = _unset,
     Object? lastError = _unset,
     Set<String>? capabilities,
+    Map<String, List<SlashCommand>>? commands,
   }) => HubClientState(
     status: status ?? this.status,
     sessions: sessions ?? this.sessions,
     transcripts: transcripts ?? this.transcripts,
     capabilities: capabilities ?? this.capabilities,
+    commands: commands ?? this.commands,
     activeSessionId: identical(activeSessionId, _unset)
         ? this.activeSessionId
         : activeSessionId as String?,
@@ -219,7 +227,26 @@ class HubClientState {
 class CommandResult {
   final bool ok;
   final String? error;
-  const CommandResult({required this.ok, this.error});
+
+  /// Present only on a `listCommands` result.
+  final List<SlashCommand>? commands;
+
+  const CommandResult({required this.ok, this.error, this.commands});
+}
+
+/// One slash command pi offers for a session, as it crosses the wire: `name`
+/// and an optional `description`. pi's `source`/`sourceInfo` are deliberately
+/// dropped — the app renders a label and a subtitle only.
+class SlashCommand {
+  final String name;
+  final String? description;
+
+  const SlashCommand({required this.name, this.description});
+
+  factory SlashCommand.fromJson(Map<String, Object?> json) => SlashCommand(
+    name: json['name']! as String,
+    description: json['description'] as String?,
+  );
 }
 
 /// One directory listing: the resolved directory, the browse root, whether a
@@ -564,6 +591,9 @@ class HubClient {
     // request. Done here, in the shared body, so every open path (a user's
     // choice and the automatic restore) requests it exactly once.
     requestHistory(sessionId);
+    // Fire-and-forget: the overlay shows nothing until the list arrives, and a
+    // refusal (an old hub's `unknown command`) is deliberately surfaced nowhere.
+    unawaited(_loadCommands(sessionId));
     _scheduleNotify();
   }
 
@@ -612,6 +642,39 @@ class HubClient {
       if (args != null) message['args'] = args;
       return message;
     });
+  }
+
+  /// Asks the hub for [sessionId]'s real pi commands and completes with them.
+  ///
+  /// Routed through [_request] so the result correlates like any other command
+  /// and `session-gone` can fail it; the cache write is [_loadCommands]'s.
+  Future<CommandResult> listCommands(String sessionId, {String? id}) {
+    return _request(sessionId, id, (commandId) => <String, Object?>{
+      'protocolVersion': protocolVersion,
+      'type': 'command',
+      'id': commandId,
+      'sessionId': sessionId,
+      'name': 'listCommands',
+    });
+  }
+
+  /// Fetches [sessionId]'s commands and caches them under the id that asked —
+  /// never the currently active one.
+  ///
+  /// The live-session check is defence in depth, not a reachable branch: every
+  /// path that drops a transcript (`session-gone` past the cap, `disconnect`,
+  /// `stop`, a lost socket) fails that session's pending commands first, and a
+  /// successful result can only come from `_onCommandResult`, so the transcript
+  /// is still present when this continuation runs. It stays because that
+  /// ordering is a cross-function invariant, not a local one.
+  Future<void> _loadCommands(String sessionId) async {
+    final result = await listCommands(sessionId);
+    if (!result.ok || result.commands == null) return;
+    if (!_state.transcripts.containsKey(sessionId)) return;
+    _state = _state.copyWith(
+      commands: {..._state.commands, sessionId: result.commands!},
+    );
+    _scheduleNotify();
   }
 
   /// Asks the hub to spawn a headless app-started session.
@@ -1223,10 +1286,20 @@ class HubClient {
     final pending = _pendingCommands.remove(id);
     if (pending == null || pending.completer.isCompleted) return;
     pending.timer?.cancel();
+    final rawCommands = message['commands'];
     pending.completer.complete(
       CommandResult(
         ok: message['ok']! as bool,
         error: message['error'] as String?,
+        commands: rawCommands is List
+            ? rawCommands
+                  .map(
+                    (entry) => SlashCommand.fromJson(
+                      (entry as Map).cast<String, Object?>(),
+                    ),
+                  )
+                  .toList()
+            : null,
       ),
     );
   }
@@ -1293,9 +1366,15 @@ class HubClient {
         .toList();
     final transcripts = {..._state.transcripts};
     if (!keepTranscript) transcripts.remove(sessionId);
+    // Only the genuinely-gone branch drops the cache: under the cap the session
+    // may come back (the re-subscribe race), and a kept key avoids a flicker.
+    final commands = gaveUp
+        ? ({..._state.commands}..remove(sessionId))
+        : _state.commands;
     _state = _state.copyWith(
       sessions: sessions,
       transcripts: transcripts,
+      commands: commands,
       activeSessionId: _state.activeSessionId == sessionId
           ? null
           : _state.activeSessionId,
