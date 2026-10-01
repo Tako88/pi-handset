@@ -12,6 +12,7 @@ import 'package:pi_droid/client/hub_client.dart';
 import 'package:pi_droid/client/settle_notification.dart';
 import 'package:pi_droid/client/token_store.dart';
 import 'package:pi_droid/ui/app_shell.dart';
+import 'package:pi_droid/ui/folder_browser.dart';
 import 'package:pi_droid/ui/pairing_screen.dart';
 
 import '../client/support/fakes.dart';
@@ -85,6 +86,17 @@ Map<String, Object?> sessionsFrame(List<Map<String, Object?>> sessions) => {
   'protocolVersion': 1,
   'type': 'sessions',
   'sessions': sessions,
+};
+
+/// A `sessions` frame from a hub that advertises folder browsing. The plain
+/// [sessionsFrame] above omits it, standing in for an old hub.
+Map<String, Object?> capableSessionsFrame(
+  List<Map<String, Object?>> sessions,
+) => {
+  'protocolVersion': 1,
+  'type': 'sessions',
+  'sessions': sessions,
+  'capabilities': const ['list-dirs', 'project-session'],
 };
 
 Map<String, Object?> settledFrame({
@@ -684,6 +696,84 @@ void main() {
     final frame = h.factory.last.sentFrames.last;
     expect(frame['type'], 'kill-session');
     expect(frame['sessionId'], 'a1');
+  });
+
+  testWidgets('with the folder capabilities the FAB offers a chooser', (
+    tester,
+  ) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+    h.factory.last.receive(capableSessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+
+    await tester.tap(find.byKey(const Key('start-session')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('quick-session')), findsOneWidget);
+    expect(find.byKey(const Key('open-project')), findsOneWidget);
+    // Opening the chooser must not start anything by itself.
+    expect(
+      h.factory.last.sentFrames.where((f) => f['type'] == 'start-session'),
+      isEmpty,
+    );
+  });
+
+  testWidgets('open a project pushes the browser, and back returns to the list', (
+    tester,
+  ) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+    h.factory.last.receive(capableSessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+
+    await tester.tap(find.byKey(const Key('start-session')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('open-project')));
+    // The browser shows a spinner until its listing arrives, so settle no
+    // further than the route transition.
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.byType(FolderBrowserScreen), findsOneWidget);
+
+    await tester.pageBack();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pump(const Duration(milliseconds: 500));
+
+    expect(find.byType(FolderBrowserScreen), findsNothing);
+    expect(find.text('pi sessions · 10.0.0.5:8787'), findsOneWidget);
+  });
+
+  testWidgets('a late quick-start reply after unmount is ignored', (
+    tester,
+  ) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+    h.factory.last.receive(capableSessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+
+    await tester.tap(find.byKey(const Key('start-session')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('quick-session')));
+    await tester.pump();
+
+    final id = h.factory.last.sentFrames.last['id'];
+    // Tear the app down while the start is still in flight.
+    await tester.pumpWidget(const SizedBox.shrink());
+
+    h.factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'command-result',
+      'id': id,
+      'ok': false,
+      'error': 'too many app sessions',
+    });
+    await tester.pump();
+
+    expect(tester.takeException(), isNull);
   });
 
   // -------------------------------------------------------------------------
