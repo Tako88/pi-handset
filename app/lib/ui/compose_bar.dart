@@ -1,8 +1,9 @@
 /// The compose bar: send a `prompt` to the open session, or abort it.
 ///
-/// Presentational: it owns only the draft text and reports the two intents.
-/// Other allowlisted commands have no UI yet. A send that fails (not connected,
-/// timed out, hub-refused) surfaces through a snackbar rather than vanishing.
+/// Presentational: the owner supplies the draft controller and focus node; the
+/// bar renders them and reports the two intents. Other allowlisted commands have
+/// no UI yet. A send that fails (not connected, timed out, hub-refused) surfaces
+/// through a snackbar rather than vanishing.
 library;
 
 import 'package:flutter/material.dart';
@@ -12,11 +13,20 @@ import '../client/hub_client.dart';
 class ComposeBar extends StatefulWidget {
   const ComposeBar({
     super.key,
+    required this.controller,
+    required this.focusNode,
     required this.onSend,
     required this.onAbort,
     this.enabled = true,
   });
 
+  /// The draft. The owner supplies it because the shell must read the text to
+  /// filter commands and must write a picked name back into the field.
+  final TextEditingController controller;
+
+  /// The field's focus. The owner holds it so a command pick can return focus to
+  /// the field.
+  final FocusNode focusNode;
   final Future<CommandResult> Function(String text) onSend;
   final VoidCallback onAbort;
   final bool enabled;
@@ -26,18 +36,10 @@ class ComposeBar extends StatefulWidget {
 }
 
 class _ComposeBarState extends State<ComposeBar> {
-  final TextEditingController _controller = TextEditingController();
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
   Future<void> _send() async {
-    final text = _controller.text.trim();
+    final text = widget.controller.text.trim();
     if (text.isEmpty) return;
-    _controller.clear();
+    widget.controller.clear();
     final result = await widget.onSend(text);
     if (!mounted || result.ok) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -57,7 +59,8 @@ class _ComposeBarState extends State<ComposeBar> {
             Expanded(
               child: TextField(
                 key: const Key('compose-field'),
-                controller: _controller,
+                controller: widget.controller,
+                focusNode: widget.focusNode,
                 enabled: widget.enabled,
                 minLines: 1,
                 maxLines: 4,
