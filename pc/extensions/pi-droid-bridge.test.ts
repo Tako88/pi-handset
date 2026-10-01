@@ -21,14 +21,19 @@ import {
   EVENT_PAYLOAD_KINDS,
   MAX_RELAY_BYTES,
   PROTOCOL_VERSION,
+  type SlashCommand,
 } from '../src/protocol/protocol.ts';
 import { writeDiscovery } from '../src/hub/discovery.ts';
 import { loadOrCreateToken } from '../src/hub/auth.ts';
+// Test-only coupling: the hub's copy of the allowlist is asserted equal to the
+// bridge's so drift fails cheaply instead of only at the real-pi capstone.
+import { COMMAND_ALLOWLIST as HUB_COMMAND_ALLOWLIST } from '../src/hub/hub.ts';
 
 // Deliberately `.ts`, and deliberately written before the module exists: the
 // red run must fail with an unresolved import, not a loader error.
 import {
   RATE_LIMITED_RECONNECT_MS,
+  COMMAND_ALLOWLIST as BRIDGE_COMMAND_ALLOWLIST,
   SETTLED_TEXT_MAX_CODE_POINTS,
   computeBackoff,
   installBridge,
@@ -104,6 +109,11 @@ class StubPi implements BridgePi {
   readonly thinkingLevels: string[] = [];
   readonly sessionNames: string[] = [];
   modelAccepted = true;
+  /** pi's command list, in the shape pi returns (extra fields included). The
+   * bridge must forward only name/description. */
+  commands: Array<{ name: string; description?: string; source?: string; sourceInfo?: unknown }> = [];
+  /** A false value models an older pi with no `getCommands` at all. */
+  commandsAvailable = true;
   private sessionName: string | undefined;
 
   on(event: string, handler: BridgeHandler): () => void {
@@ -131,6 +141,14 @@ class StubPi implements BridgePi {
 
   getSessionName(): string | undefined {
     return this.sessionName;
+  }
+
+  getCommands(): SlashCommand[] {
+    // The bridge reads this through `this.pi.getCommands?.()`, so `undefined`
+    // here is exactly the "pi exposes no command list" state it must refuse.
+    return this.commandsAvailable
+      ? this.commands
+      : (undefined as unknown as SlashCommand[]);
   }
 }
 
@@ -983,6 +1001,115 @@ test('setSessionName sets the session name', async () => {
   socket.open();
   await sendCommand(harness.pi, socket, 'setSessionName', { name: 'Phone chat' });
   assert.deepEqual(harness.pi.sessionNames, ['Phone chat']);
+});
+
+test("listCommands answers with pi's commands, dropping source and absent descriptions", async () => {
+  const harness = makeHarness();
+  harness.pi.commands = [
+    {
+      name: 'review',
+      description: 'Review the working tree',
+      source: 'extension',
+      sourceInfo: { path: '/ext/review.md' },
+    },
+    { name: 'implement-vetted', source: 'prompt', sourceInfo: { path: '/prompts/implement-vetted.md' } },
+  ];
+  harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'listCommands');
+  // `source`/`sourceInfo` must not travel, and an absent description must not
+  // become an empty string: the app needs a label and an optional subtitle only.
+  assert.deepEqual(parsed(socket).at(-1), {
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'command-result',
+    id: 'c-listCommands',
+    ok: true,
+    commands: [
+      { name: 'review', description: 'Review the working tree' },
+      { name: 'implement-vetted' },
+    ],
+  });
+});
+
+test('listCommands reports failure when pi has no getCommands method', async () => {
+  const harness = makeHarness();
+  // Older pi: the method is absent, so the bridge's optional call must
+  // short-circuit. Deleting it is what exercises `?.`; a present method that
+  // returns `undefined` takes the `raw === undefined` guard instead.
+  (harness.pi as { getCommands?: unknown }).getCommands = undefined;
+  harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'listCommands');
+  const result = parsed(socket).at(-1) as {
+    type: string;
+    ok: boolean;
+    error?: string;
+    commands?: unknown;
+  };
+  assert.equal(result.type, 'command-result');
+  assert.equal(result.ok, false);
+  // The specific reason matters: a plain allowlist refusal would also be
+  // `ok:false`, so this pins the bridge's own no-list branch.
+  assert.equal(result.error, 'commands unavailable');
+  assert.equal(result.commands, undefined);
+});
+
+test('listCommands reports failure when getCommands returns undefined', async () => {
+  const harness = makeHarness();
+  harness.pi.commandsAvailable = false;
+  harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'listCommands');
+  const result = parsed(socket).at(-1) as {
+    type: string;
+    ok: boolean;
+    error?: string;
+    commands?: unknown;
+  };
+  assert.equal(result.type, 'command-result');
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'commands unavailable');
+  assert.equal(result.commands, undefined);
+});
+
+test('listCommands preserves duplicate names in pi order', async () => {
+  const harness = makeHarness();
+  harness.pi.commands = [
+    { name: 'review', description: 'first' },
+    { name: 'other' },
+    { name: 'review', description: 'second' },
+    // Malformed entries are skipped by the `continue` path, never crash the
+    // loop and never reach the wire.
+    null,
+    42,
+    'oops',
+  ] as unknown as typeof harness.pi.commands;
+  harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'listCommands');
+  const result = parsed(socket).at(-1) as {
+    commands: Array<{ name: string; description?: string }>;
+  };
+  // Duplicates are preserved and ordered: a future dedupe must be deliberate.
+  assert.deepEqual(result.commands, [
+    { name: 'review', description: 'first' },
+    { name: 'other' },
+    { name: 'review', description: 'second' },
+  ]);
+});
+
+test('the bridge and hub command allowlists are identical', () => {
+  // Drift is silent and costly: the hub-allows/bridge-refuses direction yields
+  // `command not allowed`, the other `unknown command`, and the only other net
+  // is the real-pi capstone, which pays a pi spawn. This is test-only coupling.
+  assert.deepEqual(
+    [...BRIDGE_COMMAND_ALLOWLIST].sort(),
+    [...HUB_COMMAND_ALLOWLIST].sort(),
+  );
 });
 
 // ---------------------------------------------------------------------------

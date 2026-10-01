@@ -49,6 +49,35 @@ const harnessPath = fileURLToPath(new URL('./support/faux-provider.ts', import.m
 const FAUX_TEXT = 'FAUX_OK';
 /** The body a `/ping` template expands to. Chosen by the test, asserted verbatim. */
 const TEMPLATE_MARKER = 'TEMPLATE_EXPANDED_OK';
+/** The front-matter description the capstone asserts survives onto the wire. */
+const TEMPLATE_DESCRIPTION_SENTINEL = 'TEMPLATE_DESCRIPTION_SENTINEL';
+/** pi's built-in slash commands; `getCommands` must never offer one. */
+const BUILTIN_COMMAND_NAMES = [
+  'settings',
+  'model',
+  'tree',
+  'thinking',
+  'scoped-models',
+  'export',
+  'import',
+  'share',
+  'bug',
+  'copy',
+  'name',
+  'session',
+  'changelog',
+  'hotkeys',
+  'fork',
+  'clone',
+  'trust',
+  'login',
+  'logout',
+  'new',
+  'compact',
+  'resume',
+  'reload',
+  'quit',
+];
 /** Generous: a real pi boots slower than any fake, and this box may be busy. */
 const BOOT_TIMEOUT_MS = 20_000;
 const STREAM_TIMEOUT_MS = 30_000;
@@ -532,15 +561,37 @@ async function collectPrompt(viewer: Viewer, id: string, timeoutMs: number): Pro
 }
 
 /**
- * Boots a hub, a real pi carrying the bridge and the faux harness, and drives
- * one prompt end to end. Returns everything the hub relayed to the viewer.
- * Children, hubs and viewers are torn down by `afterEach`.
+ * Reads relayed messages until the `command-result` for `id` arrives. Absence is
+ * a real failure, not a quietly shorter list.
  */
-async function drivePrompt(
+async function collectCommandResult(
+  viewer: Viewer,
+  id: string,
+  timeoutMs: number,
+): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const message = await viewer.tryNext(Math.min(1000, Math.max(1, deadline - Date.now())));
+    if (message === undefined) continue;
+    if (message.type === 'command-result' && message.id === id) return message;
+  }
+  throw new Error(`timed out waiting for the command-result for ${id}`);
+}
+
+interface Booted {
+  viewer: Viewer;
+  session: SessionSummary;
+}
+
+/**
+ * Boots a hub, a real pi carrying the bridge and the faux harness, subscribes a
+ * viewer to its session, and requests history. Children, hubs and viewers are
+ * torn down by `afterEach`.
+ */
+async function bootPi(
   extraEnv: Record<string, string> = {},
   extraArgs: string[] = [],
-  promptText = 'say the word',
-): Promise<Collected> {
+): Promise<Booted> {
   const { token } = loadOrCreateToken(configDir);
   const hub = await startHub({ token });
   publishDiscovery(hub);
@@ -577,6 +628,21 @@ async function drivePrompt(
     type: 'history-request',
     sessionId: session.sessionId,
   });
+
+  return { viewer, session };
+}
+
+/**
+ * Boots a hub, a real pi carrying the bridge and the faux harness, and drives
+ * one prompt end to end. Returns everything the hub relayed to the viewer.
+ * Children, hubs and viewers are torn down by `afterEach`.
+ */
+async function drivePrompt(
+  extraEnv: Record<string, string> = {},
+  extraArgs: string[] = [],
+  promptText = 'say the word',
+): Promise<Collected> {
+  const { viewer, session } = await bootPi(extraEnv, extraArgs);
 
   const id = 'prompt-1';
   viewer.send({
@@ -828,6 +894,60 @@ test('a slash command from the phone runs as a command, not as literal text', as
     `the template was not expanded; the user message was ${JSON.stringify(text)}`,
   );
   assert.ok(!text.includes('/ping'), 'the raw command text was sent verbatim');
+});
+
+test("a real pi's command list reaches the viewer", async () => {
+  // The description lives in front-matter and is deliberately one distinctive
+  // string: the assertion is on the front-matter value, not on pi's body-first-
+  // line fallback (truncated to 60 chars).
+  const templatePath = join(tmpRoot, 'ping.md');
+  writeFileSync(
+    templatePath,
+    [
+      '---',
+      `description: '${TEMPLATE_DESCRIPTION_SENTINEL}'`,
+      '---',
+      TEMPLATE_MARKER,
+      '',
+    ].join('\n'),
+  );
+
+  const { viewer, session } = await bootPi({}, ['--prompt-template', templatePath]);
+  const id = 'list-1';
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'command',
+    id,
+    sessionId: session.sessionId,
+    name: 'listCommands',
+  });
+
+  const result = await collectCommandResult(viewer, id, STREAM_TIMEOUT_MS);
+  assert.equal(result.ok, true, `listCommands was refused: ${String(result.error)}`);
+  const commands = result.commands as Array<{ name: string; description?: string }>;
+  assert.ok(Array.isArray(commands), 'the result must carry a command list');
+
+  // O3: a CLI template's front-matter description survives as the entry's
+  // description. Not an exact list length: discovered skills may add entries.
+  const ping = commands.find((command) => command.name === 'ping');
+  assert.ok(
+    ping,
+    `the list must contain the CLI template 'ping', got ${commands
+      .map((command) => command.name)
+      .join(', ')}`,
+  );
+  assert.equal(
+    ping.description,
+    TEMPLATE_DESCRIPTION_SENTINEL,
+    'the template front-matter description must travel as the command description',
+  );
+
+  // O2: pi's built-ins live in a separate constant that `getCommands` never
+  // references, so no built-in may appear in the list.
+  const offered = new Set(commands.map((command) => command.name));
+  for (const name of BUILTIN_COMMAND_NAMES) {
+    assert.ok(!offered.has(name), `built-in ${name} must never be offered`);
+  }
 });
 
 // ---------------------------------------------------------------------------

@@ -533,6 +533,54 @@ test("a viewer's command reaches the registered agent and its command-result ret
   });
 });
 
+test('listCommands is forwarded to the agent and its result returns to the viewer', async () => {
+  const hub = await startHub();
+  const agent = await connect(hub.agentPort);
+  const viewer = await connect(hub.viewerPort);
+  await helloTokened(agent);
+  await helloViewer(viewer);
+
+  agent.send({ protocolVersion: PROTOCOL_VERSION, type: 'register', sessionId: 's1' });
+  await barrier(agent);
+
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'command',
+    id: 'c1',
+    sessionId: 's1',
+    name: 'listCommands',
+  });
+
+  const forwarded = await agent.next();
+  assert.equal(forwarded.type, 'command');
+  assert.equal(forwarded.id, 'c1');
+  assert.equal(forwarded.sessionId, 's1');
+  assert.equal(forwarded.name, 'listCommands');
+
+  // The `commands` payload must reach the viewer verbatim: the hub applies no
+  // per-name branch and no semantic merge.
+  const commands = [
+    { name: 'review', description: 'Review the working tree' },
+    { name: 'implement-vetted' },
+  ];
+  agent.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'command-result',
+    id: 'c1',
+    ok: true,
+    commands,
+  });
+
+  const result = await viewer.next();
+  assert.deepEqual(result, {
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'command-result',
+    id: 'c1',
+    ok: true,
+    commands,
+  });
+});
+
 test('two viewers issuing the same command id each get their own result', async () => {
   const hub = await startHub();
   const agent = await connect(hub.agentPort);
