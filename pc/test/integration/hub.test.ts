@@ -522,14 +522,23 @@ test("a viewer's command reaches the registered agent and its command-result ret
   assert.equal(forwarded.sessionId, 's1');
   assert.equal(forwarded.name, 'prompt');
 
-  agent.send({ protocolVersion: PROTOCOL_VERSION, type: 'command-result', id: 'c1', ok: true });
+  agent.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'command-result',
+    id: 'c1',
+    ok: true,
+    queued: true,
+  });
 
   const result = await viewer.next();
+  // The hub is opaque: it forwards the parsed frame, so the optional field a
+  // newer bridge adds survives without a hub change.
   assert.deepEqual(result, {
     protocolVersion: PROTOCOL_VERSION,
     type: 'command-result',
     id: 'c1',
     ok: true,
+    queued: true,
   });
 });
 

@@ -41,10 +41,18 @@ class _ComposeBarState extends State<ComposeBar> {
     if (text.isEmpty) return;
     widget.controller.clear();
     final result = await widget.onSend(text);
-    if (!mounted || result.ok) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(result.error ?? 'the hub refused that command')),
-    );
+    if (!mounted) return;
+    if (!result.ok) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(result.error ?? 'the hub refused that command')),
+      );
+      return;
+    }
+    if (result.queued == true) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Queued for the running turn')),
+      );
+    }
   }
 
   @override

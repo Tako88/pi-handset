@@ -66,6 +66,38 @@ void main() {
     expect(result.error, isNull);
   });
 
+  test('a queued command-result is reported as queued', () async {
+    final future = client.sendCommand('s1', 'prompt', args: {'text': 'hi'});
+    final id = factory.last.lastSent['id']! as String;
+
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'command-result',
+      'id': id,
+      'ok': true,
+      'queued': true,
+    });
+
+    final result = await future;
+    expect(result.queued, isTrue);
+  });
+
+  test('a command-result without queued reports unknown, not false', () async {
+    final future = client.sendCommand('s1', 'prompt', args: {'text': 'hi'});
+    final id = factory.last.lastSent['id']! as String;
+
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'command-result',
+      'id': id,
+      'ok': true,
+    });
+
+    final result = await future;
+    // Absent means "unknown": the app must not read silence as "not queued".
+    expect(result.queued, isNull);
+  });
+
   test(
     'results route to the caller that issued them, not by arrival order',
     () async {

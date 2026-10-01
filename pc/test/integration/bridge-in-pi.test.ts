@@ -690,6 +690,13 @@ test('a real pi with the bridge registers and a hub prompt streams from the faux
   // assumed. Real pi delivers the completion as a `message_end` extension event.
   assert.ok(collected.result, 'no command-result arrived for the prompt');
   assert.equal(collected.result.ok, true, `prompt was refused: ${String(collected.result.error)}`);
+  // An idle prompt is never queued, so the raw forwarded frame must carry no
+  // queued key at all — not even `false`.
+  assert.equal(
+    collected.result.queued,
+    undefined,
+    'an idle prompt reply must not report queued',
+  );
   assert.ok(collected.running, 'the agent never reported the running state');
   assert.ok(collected.settled, 'the agent never settled');
 

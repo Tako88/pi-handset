@@ -736,6 +736,7 @@ test('a prompt while the agent is streaming is queued as a steer', async () => {
     type: 'command-result',
     id: 'c-prompt',
     ok: true,
+    queued: true,
   });
 });
 
@@ -802,6 +803,75 @@ test('an isIdle() that throws fails the command loudly instead of crashing', asy
     id: 'c-prompt',
     ok: false,
     error: 'runner is not active',
+  });
+});
+
+test('an idle prompt reply carries no queued flag', async () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  ctx.setIdle(true);
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'prompt', { text: 'now' });
+  // Only a steer chose to queue. An idle prompt is dispatched exactly as
+  // before, so its reply must stay the frame an older app already understands.
+  assert.deepEqual(parsed(socket).at(-1), {
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'command-result',
+    id: 'c-prompt',
+    ok: true,
+  });
+});
+
+test('an explicit steer reply carries no queued flag', async () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  ctx.setIdle(false);
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'steer', { text: 's' });
+  // `steer` names its mode; it is not the bridge deciding to queue a plain
+  // prompt mid-turn, so it must not claim the queued signal.
+  assert.deepEqual(parsed(socket).at(-1), {
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'command-result',
+    id: 'c-steer',
+    ok: true,
+  });
+});
+
+test('an explicit followup reply carries no queued flag', async () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  ctx.setIdle(false);
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'followup', { text: 'f' });
+  // `followup` names its mode too — it forces `followUp` regardless of idle,
+  // so, like `steer`, it must not claim the queued signal.
+  assert.deepEqual(parsed(socket).at(-1), {
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'command-result',
+    id: 'c-followup',
+    ok: true,
+  });
+});
+
+test('a refused prompt reply carries no queued flag', async () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  ctx.setIdle(false);
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'prompt', {});
+  // A refusal is not a queue: `ok:false` must stand alone, with no queued hint
+  // the app could render as success.
+  assert.deepEqual(parsed(socket).at(-1), {
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'command-result',
+    id: 'c-prompt',
+    ok: false,
+    error: 'missing text',
   });
 });
 
@@ -1134,6 +1204,24 @@ test("listCommands answers with pi's commands, dropping source and absent descri
       { name: 'review', description: 'Review the working tree' },
       { name: 'implement-vetted' },
     ],
+  });
+});
+
+test('a listCommands reply carries no queued flag', async () => {
+  const harness = makeHarness();
+  harness.pi.commands = [{ name: 'review' }];
+  harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'listCommands');
+  // `sendCommandResult` is a shared path; only the prompt branch may set the
+  // queued key, so a command result must stay exactly its own shape.
+  assert.deepEqual(parsed(socket).at(-1), {
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'command-result',
+    id: 'c-listCommands',
+    ok: true,
+    commands: [{ name: 'review' }],
   });
 });
 
