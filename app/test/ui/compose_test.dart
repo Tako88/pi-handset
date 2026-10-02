@@ -27,6 +27,7 @@ void main() {
           return const CommandResult(ok: true);
         },
         onAbort: () {},
+        onFollowUp: ok,
       )),
     );
 
@@ -36,6 +37,120 @@ void main() {
 
     expect(sent, 'hello pi');
     expect(find.text('hello pi'), findsNothing);
+  });
+
+  testWidgets('long-pressing send runs the message after this turn',
+      (tester) async {
+    final controller = TextEditingController();
+    final focusNode = FocusNode();
+    addTearDown(controller.dispose);
+    addTearDown(focusNode.dispose);
+    String? sent;
+    await tester.pumpWidget(
+      wrap(ComposeBar(
+        controller: controller,
+        focusNode: focusNode,
+        onSend: (text) async {
+          sent = 'prompt:$text';
+          return const CommandResult(ok: true);
+        },
+        onAbort: () {},
+        onFollowUp: (text) async {
+          sent = 'followup:$text';
+          return const CommandResult(ok: true);
+        },
+      )),
+    );
+
+    await tester.enterText(find.byKey(const Key('compose-field')), 'after this');
+    await tester.longPress(find.byKey(const Key('compose-send')));
+    await tester.pump();
+
+    // A long press must not also fire the tap: the two gestures send different
+    // commands, and a follow-up that arrived as a steer would redirect the turn
+    // it was meant to follow.
+    expect(sent, 'followup:after this');
+  });
+
+  testWidgets('a follow-up confirms the send, not the timing', (tester) async {
+    final controller = TextEditingController();
+    final focusNode = FocusNode();
+    addTearDown(controller.dispose);
+    addTearDown(focusNode.dispose);
+    await tester.pumpWidget(
+      wrap(ComposeBar(
+        controller: controller,
+        focusNode: focusNode,
+        onSend: ok,
+        onAbort: () {},
+        onFollowUp: ok,
+      )),
+    );
+
+    await tester.enterText(find.byKey(const Key('compose-field')), 'after this');
+    await tester.longPress(find.byKey(const Key('compose-send')));
+    await tester.pump();
+    await tester.pump();
+
+    // The app knows it sent a `followup`; whether pi queues it or runs it now is
+    // pi's call — an idle agent ignores the mode entirely. So the notice claims
+    // the send, never when it will land.
+    expect(find.text('Sent as a follow-up'), findsOneWidget);
+  });
+
+  testWidgets('a refused follow-up reports the error, not a confirmation',
+      (tester) async {
+    final controller = TextEditingController();
+    final focusNode = FocusNode();
+    addTearDown(controller.dispose);
+    addTearDown(focusNode.dispose);
+    await tester.pumpWidget(
+      wrap(ComposeBar(
+        controller: controller,
+        focusNode: focusNode,
+        onSend: ok,
+        onAbort: () {},
+        onFollowUp: (_) async =>
+            const CommandResult(ok: false, error: 'the hub said no'),
+      )),
+    );
+
+    await tester.enterText(find.byKey(const Key('compose-field')), 'after this');
+    await tester.longPress(find.byKey(const Key('compose-send')));
+    await tester.pump();
+    await tester.pump();
+
+    // A failed send must never be confirmed: the error check has to precede the
+    // follow-up notice, or a refusal reads as delivered.
+    expect(find.text('the hub said no'), findsOneWidget);
+    expect(find.text('Sent as a follow-up'), findsNothing);
+  });
+
+  testWidgets('a disabled bar ignores the long press too', (tester) async {
+    final controller = TextEditingController();
+    final focusNode = FocusNode();
+    addTearDown(controller.dispose);
+    addTearDown(focusNode.dispose);
+    var followUps = 0;
+    await tester.pumpWidget(
+      wrap(ComposeBar(
+        controller: controller,
+        focusNode: focusNode,
+        enabled: false,
+        onSend: ok,
+        onAbort: () {},
+        onFollowUp: (text) async {
+          followUps += 1;
+          return const CommandResult(ok: true);
+        },
+      )),
+    );
+
+    await tester.enterText(find.byKey(const Key('compose-field')), 'after this');
+    await tester.longPress(find.byKey(const Key('compose-send')));
+    await tester.pump();
+
+    expect(followUps, 0);
   });
 
   testWidgets('the compose field asks the keyboard for a newline, not a send',
@@ -50,6 +165,7 @@ void main() {
         focusNode: focusNode,
         onSend: ok,
         onAbort: () {},
+        onFollowUp: ok,
       )),
     );
 
@@ -73,6 +189,7 @@ void main() {
           return const CommandResult(ok: true);
         },
         onAbort: () {},
+        onFollowUp: ok,
       )),
     );
 
@@ -94,6 +211,7 @@ void main() {
         onSend: (_) async =>
             const CommandResult(ok: false, error: 'not connected'),
         onAbort: () {},
+        onFollowUp: ok,
       )),
     );
 
@@ -116,6 +234,7 @@ void main() {
         focusNode: focusNode,
         onSend: ok,
         onAbort: () {},
+        onFollowUp: ok,
       )),
     );
 
@@ -140,6 +259,7 @@ void main() {
         focusNode: focusNode,
         onSend: (_) async => const CommandResult(ok: true, queued: true),
         onAbort: () {},
+        onFollowUp: ok,
       )),
     );
 
@@ -163,6 +283,7 @@ void main() {
         focusNode: focusNode,
         onSend: (_) async => const CommandResult(ok: true, queued: null),
         onAbort: () {},
+        onFollowUp: ok,
       )),
     );
 
@@ -190,6 +311,7 @@ void main() {
           queued: true,
         ),
         onAbort: () {},
+        onFollowUp: ok,
       )),
     );
 
@@ -214,6 +336,7 @@ void main() {
         focusNode: focusNode,
         onSend: ok,
         onAbort: () => aborted = true,
+        onFollowUp: ok,
       )),
     );
 

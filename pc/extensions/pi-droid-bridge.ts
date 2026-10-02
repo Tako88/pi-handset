@@ -303,6 +303,17 @@ export const COMMAND_ALLOWLIST = new Set([
   'listCommands',
 ]);
 
+/**
+ * The refusal for a command name the bridge will not dispatch — either because
+ * the allowlist has no such name, or because the allowlist has it and the
+ * dispatcher has no case for it.
+ *
+ * Exported and shared so the guard test pins the *path*, not a copy of the
+ * string: with two literals, editing one would let a missing case answer with a
+ * different message and the guard would pass over a real hole.
+ */
+export const COMMAND_NOT_ALLOWED = 'command not allowed';
+
 const BACKOFF_BASE_MS = 500;
 const BACKOFF_CAP_MS = 30_000;
 /**
@@ -918,7 +929,7 @@ class Bridge {
   private async dispatch(command: CommandMessage): Promise<void> {
     try {
       if (!COMMAND_ALLOWLIST.has(command.name)) {
-        this.sendCommandResult(command.id, false, 'command not allowed');
+        this.sendCommandResult(command.id, false, COMMAND_NOT_ALLOWED);
         return;
       }
       const ctx = this.ctx;
@@ -1049,7 +1060,7 @@ class Bridge {
         return { ok: true };
       }
       default:
-        return { ok: false, error: 'command not allowed' };
+        return { ok: false, error: COMMAND_NOT_ALLOWED };
     }
   }
 
