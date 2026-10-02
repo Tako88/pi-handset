@@ -50,6 +50,30 @@ void main() {
     }
   });
 
+  test('main manifest declares no media or camera permission', () {
+    // Sending one gallery image needs no runtime permission: the picker uses
+    // the system photo picker / document UI, which grants per-item access. Pin
+    // that no broad media or camera permission is declared, because the other
+    // manifest tests assert presence only and so cannot catch an added one.
+    final xml = File('android/app/src/main/AndroidManifest.xml').readAsStringSync();
+
+    for (final permission in const [
+      'android.permission.READ_MEDIA_IMAGES',
+      'android.permission.READ_EXTERNAL_STORAGE',
+      'android.permission.WRITE_EXTERNAL_STORAGE',
+      'android.permission.CAMERA',
+    ]) {
+      expect(
+        RegExp(
+          '<uses-permission\\s+android:name="${RegExp.escape(permission)}"',
+        ).hasMatch(xml),
+        isFalse,
+        reason: '$permission must not be declared: the gallery picker needs no '
+            'broad media or camera permission',
+      );
+    }
+  });
+
   test('main manifest declares the specialUse foreground service', () {
     final xml = File('android/app/src/main/AndroidManifest.xml').readAsStringSync();
 
