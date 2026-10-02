@@ -524,7 +524,7 @@ export interface ResyncRequiredMessage {
 
 /** The hub capabilities this protocol version advertises on the `sessions`
  * frame. Canonical; a viewer gates folder browsing on their presence. */
-export const HUB_CAPABILITIES = ['list-dirs', 'project-session', 'session-control'] as const;
+export const HUB_CAPABILITIES = ['list-dirs', 'project-session', 'session-control', 'attachments'] as const;
 export type HubCapability = (typeof HUB_CAPABILITIES)[number];
 
 /**

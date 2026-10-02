@@ -1108,7 +1108,7 @@ test('a viewer is pushed the current session list — empty — on authenticatio
     protocolVersion: PROTOCOL_VERSION,
     type: 'sessions',
     sessions: [],
-    capabilities: ['list-dirs', 'project-session', 'session-control'],
+    capabilities: ['list-dirs', 'project-session', 'session-control', 'attachments'],
   });
 });
 
@@ -1205,7 +1205,7 @@ test('registering an agent pushes an updated session list to every authenticated
     protocolVersion: PROTOCOL_VERSION,
     type: 'sessions',
     sessions: [{ sessionId: 's1', label: 'my session', agentState: 'idle', origin: 'pc' }],
-    capabilities: ['list-dirs', 'project-session', 'session-control'],
+    capabilities: ['list-dirs', 'project-session', 'session-control', 'attachments'],
   };
   assert.deepEqual(await first.nextSessions(2000), expected);
   assert.deepEqual(await second.nextSessions(2000), expected);
@@ -1966,7 +1966,7 @@ test('the sessions frame advertises the hub capabilities', async () => {
   const frame = await viewer.nextSessions(2000);
   assert.deepEqual(
     frame.capabilities,
-    ['list-dirs', 'project-session', 'session-control'],
+    ['list-dirs', 'project-session', 'session-control', 'attachments'],
     'a viewer gates folder browsing on this field; a pre-capabilities hub omits it',
   );
 });

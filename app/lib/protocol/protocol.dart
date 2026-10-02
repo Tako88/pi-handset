@@ -54,12 +54,16 @@ const String capabilityProjectSession = 'project-session';
 /// The hub capability that lets a viewer drive session-control commands.
 const String capabilitySessionControl = 'session-control';
 
+/// The hub capability that lets the composer send image attachments.
+const String capabilityAttachments = 'attachments';
+
 /// The hub capabilities this protocol version advertises on the `sessions`
 /// frame. Canonical; a viewer gates folder browsing on their presence.
 const List<String> hubCapabilities = [
   capabilityListDirs,
   capabilityProjectSession,
   capabilitySessionControl,
+  capabilityAttachments,
 ];
 
 /// What the loopback (agent) listener accepts besides `hello`.
