@@ -17,7 +17,7 @@ and so is transcript parity with the pi TUI (M1–M3).
 
 | | `pc/` (Node + TypeScript) | `app/` (Flutter + Dart) |
 |---|---|---|
-| Suite | 488 tests passing | 481 tests passing |
+| Suite | 519 tests passing | 520 tests passing |
 | Static gate | `tsc --noEmit` clean | `flutter analyze` clean |
 | Product code | hub, protocol codec, pi bridge | protocol codec, client, UI |
 
@@ -93,9 +93,10 @@ overflow. Opening the `/` overlay refetches the list, so a PC-side `/reload` or 
 newly added extension shows up without reopening the session. The built-ins are still
 unreachable — see issue #3.
 
-**Session menu.** The transcript's ⋮ menu is the supported way to compact a session,
-rename it, choose its thinking level and switch its model. The menu shows the active
-level and the current model, both riding the existing `usage` event payload — the same
+**Session menu.** The transcript's ⋮ menu is the supported way to start a new session,
+**fork** the current one, compact it, rename it, choose its thinking level and switch
+its model. The menu shows the active level and the current model, both riding the
+existing `usage` event payload — the same
 payload that already carries the context reading. The list is pi's **auth-configured**
 model set, delivered on the existing `command-result` frame as an optional `models`
 field: no new frame type and no capability gate, so an old hub answers `unknown
@@ -107,6 +108,23 @@ and a failure to compact (including an automatic one) reaches the transcript as 
 notice. A *typed* `/compact` is still not a command over this path — see the built-ins
 trap above. The same trap applies to a *typed* `/model`: it asks the model rather than
 switching anything, so the menu is the way.
+
+**New and fork.** The same menu can replace the session. **New session** starts a fresh
+one; **Fork** branches from an earlier user message, picked from a tree of the session's
+own messages (user messages only, because a fork lands *before* the chosen turn). Both
+run in the session's own `pi` and are gated on the hub's `session-control` capability,
+so the two menu items are hidden without it. **New is not the FAB.** The FAB spawns a
+new `pi` process — in a fresh temp dir, or a chosen project folder — and consumes a
+session slot; New keeps the same process, folder and model and replaces the session in
+place. New asks for confirmation first, because the on-screen transcript is replaced
+(the old session file, if any, stays on disk — a quick `--no-session` session leaves
+nothing behind). The app follows the replacement rather than the ack: the command
+result means only "the bridge handed this to pi", and the new session is confirmed
+when it registers, at which point the phone re-subscribes to it and requests its
+history (empty for New; the branch prefix for Fork). Deploying this needs **an APK
+rebuild AND pi `/reload` AND a hub restart** — the four new command names and the new
+capability are read at import. See [known limits](docs/known-limits.md) for the
+semantics, the 15 s replacement timeout, and why `/tree` and `/resume` are not offered.
 
 **Tool rendering.** Tool calls render by kind, not as a generic text blob: the bridge
 normalizes each call and result into a typed `tool` payload, and the app paints it by
