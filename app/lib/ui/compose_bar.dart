@@ -10,6 +10,7 @@ library;
 
 import 'package:flutter/material.dart';
 
+import '../client/attachment.dart';
 import '../client/hub_client.dart';
 
 class ComposeBar extends StatefulWidget {
@@ -21,6 +22,9 @@ class ComposeBar extends StatefulWidget {
     required this.onAbort,
     required this.onFollowUp,
     this.enabled = true,
+    this.attachment,
+    this.onAttach,
+    this.onRemoveAttachment,
   });
 
   /// The draft. The owner supplies it because the shell must read the text to
@@ -39,6 +43,17 @@ class ComposeBar extends StatefulWidget {
   final Future<CommandResult> Function(String text) onFollowUp;
   final bool enabled;
 
+  /// The image picked for this send, or null for no chip.
+  final PickedImage? attachment;
+
+  /// Opens the gallery. Optional: an old hub advertises no attachments
+  /// capability, so the shell passes null and no attach button renders — the
+  /// capability gate.
+  final VoidCallback? onAttach;
+
+  /// Removes the picked image. Null disables the remove button.
+  final VoidCallback? onRemoveAttachment;
+
   @override
   State<ComposeBar> createState() => _ComposeBarState();
 }
@@ -53,7 +68,16 @@ class _ComposeBarState extends State<ComposeBar> {
     required bool followUp,
   }) async {
     final text = widget.controller.text.trim();
-    if (text.isEmpty) return;
+    if (text.isEmpty) {
+      // The bridge refuses an empty `text`, so an image alone cannot be sent.
+      // Say why rather than leaving a dead tap.
+      if (widget.attachment != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Add a caption to send the image')),
+        );
+      }
+      return;
+    }
     widget.controller.clear();
     final result = await send(text);
     if (!mounted) return;
@@ -85,37 +109,86 @@ class _ComposeBarState extends State<ComposeBar> {
       top: false,
       child: Padding(
         padding: const EdgeInsets.all(8),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.end,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            Expanded(
-              child: TextField(
-                key: const Key('compose-field'),
-                controller: widget.controller,
-                focusNode: widget.focusNode,
-                enabled: widget.enabled,
-                minLines: 1,
-                maxLines: 4,
-                textInputAction: TextInputAction.newline,
-                decoration: const InputDecoration(
-                  hintText: 'Message pi',
-                  border: OutlineInputBorder(),
-                  isDense: true,
+            if (widget.attachment != null)
+              Align(
+                alignment: Alignment.centerLeft,
+                child: SizedBox(
+                  key: const Key('compose-attachment'),
+                  height: 48,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(4),
+                        child: SizedBox(
+                          width: 40,
+                          height: 40,
+                          child: Image.memory(
+                            widget.attachment!.bytes,
+                            cacheWidth: 80,
+                            fit: BoxFit.cover,
+                            errorBuilder: (context, error, stack) =>
+                                const Icon(Icons.broken_image),
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        key: const Key('compose-attachment-remove'),
+                        onPressed: widget.enabled
+                            ? widget.onRemoveAttachment
+                            : null,
+                        icon: const Icon(Icons.close),
+                        tooltip: 'Remove image',
+                      ),
+                    ],
+                  ),
                 ),
               ),
-            ),
-            IconButton(
-              key: const Key('compose-abort'),
-              onPressed: widget.enabled ? widget.onAbort : null,
-              icon: const Icon(Icons.stop_circle_outlined),
-              tooltip: 'Abort',
-            ),
-            IconButton(
-              key: const Key('compose-send'),
-              onPressed: widget.enabled ? _send : null,
-              onLongPress: widget.enabled ? _followUp : null,
-              icon: const Icon(Icons.send),
-              tooltip: 'Send (long-press to run after this turn)',
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Expanded(
+                  child: TextField(
+                    key: const Key('compose-field'),
+                    controller: widget.controller,
+                    focusNode: widget.focusNode,
+                    enabled: widget.enabled,
+                    minLines: 1,
+                    maxLines: 4,
+                    textInputAction: TextInputAction.newline,
+                    decoration: InputDecoration(
+                      hintText: 'Message pi',
+                      border: const OutlineInputBorder(),
+                      isDense: true,
+                      suffixIcon: widget.onAttach == null
+                          ? null
+                          : IconButton(
+                              key: const Key('compose-attach'),
+                              onPressed:
+                                  widget.enabled ? widget.onAttach : null,
+                              icon: const Icon(Icons.add_photo_alternate_outlined),
+                              tooltip: 'Attach an image',
+                            ),
+                    ),
+                  ),
+                ),
+                IconButton(
+                  key: const Key('compose-abort'),
+                  onPressed: widget.enabled ? widget.onAbort : null,
+                  icon: const Icon(Icons.stop_circle_outlined),
+                  tooltip: 'Abort',
+                ),
+                IconButton(
+                  key: const Key('compose-send'),
+                  onPressed: widget.enabled ? _send : null,
+                  onLongPress: widget.enabled ? _followUp : null,
+                  icon: const Icon(Icons.send),
+                  tooltip: 'Send (long-press to run after this turn)',
+                ),
+              ],
             ),
           ],
         ),

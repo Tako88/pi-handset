@@ -4,11 +4,13 @@
 // failed pairing and a broken store all have to reach the screen.
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pi_droid/client/attachment.dart';
 import 'package:pi_droid/client/endpoint_store.dart';
 import 'package:pi_droid/client/hub_client.dart';
 import 'package:pi_droid/client/hub_socket.dart';
@@ -171,6 +173,21 @@ Map<String, Object?> controlSessionsFrame(
   'capabilities': const ['session-control'],
 };
 
+/// A `sessions` frame from a hub that can send image attachments.
+Map<String, Object?> attachmentsSessionsFrame(
+  List<Map<String, Object?>> sessions,
+) => {
+  'protocolVersion': 1,
+  'type': 'sessions',
+  'sessions': sessions,
+  'capabilities': const ['attachments'],
+};
+
+/// A 1x1 PNG, enough for `Image.memory` to have real bytes to decode.
+final Uint8List onePixelPng = base64Decode(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+);
+
 /// A `command-result` carrying a `listTree` projection.
 Map<String, Object?> treeReply(
   String id,
@@ -242,11 +259,15 @@ class Harness {
   final FakeNotificationPresenter notifications = FakeNotificationPresenter();
   late final HubClient client;
 
-  Widget app({String? initialSessionId}) => PiDroidApp(
+  Widget app({
+    String? initialSessionId,
+    Future<PickedImage?> Function()? pickImage,
+  }) => PiDroidApp(
     client: client,
     tokenStore: store,
     notifications: notifications,
     initialSessionId: initialSessionId,
+    pickImage: pickImage,
   );
 }
 
@@ -303,6 +324,22 @@ Future<Map<String, Object?>> tapModelItem(WidgetTester tester, Harness h) async 
   await tester.tap(find.byKey(const Key('session-menu-model')));
   await tester.pumpAndSettle();
   return h.factory.last.sentFrames.lastWhere((f) => f['name'] == 'listModels');
+}
+
+/// Boots a harness whose hub advertises `attachments`, optionally with a fake
+/// gallery picker, and opens `s1`.
+Future<Harness> openAttachmentsSession(
+  WidgetTester tester, {
+  Future<PickedImage?> Function()? pickImage,
+}) async {
+  final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+  await tester.pumpWidget(h.app(pickImage: pickImage));
+  await pumpBootstrap(tester);
+  h.factory.last.receive(attachmentsSessionsFrame([sessionS1]));
+  await settle(tester, h.scheduler);
+  await tester.tap(find.text('api refactor'));
+  await settle(tester, h.scheduler);
+  return h;
 }
 
 void main() {
@@ -2050,5 +2087,188 @@ void main() {
     await tester.tap(find.byKey(const Key('change-hub')));
     await tester.pumpAndSettle();
     expect(h.notifications.stopForegroundCalls, 1);
+  });
+
+  testWidgets('a hub without attachments shows no attach button', (
+    tester,
+  ) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+    await tester.tap(find.text('api refactor'));
+    await settle(tester, h.scheduler);
+
+    // An old hub cannot carry the image, so the affordance is omitted rather
+    // than offered and silently dropped.
+    expect(find.byKey(const Key('compose-attach')), findsNothing);
+  });
+
+  testWidgets('the attach button appears with the attachments capability', (
+    tester,
+  ) async {
+    await openAttachmentsSession(tester);
+    expect(find.byKey(const Key('compose-attach')), findsOneWidget);
+  });
+
+  testWidgets('picking an image shows a removable thumbnail', (tester) async {
+    await openAttachmentsSession(
+      tester,
+      pickImage: () async => PickedImage(onePixelPng, 'image/png'),
+    );
+
+    await tester.tap(find.byKey(const Key('compose-attach')));
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.byKey(const Key('compose-attachment')), findsOneWidget);
+  });
+
+  testWidgets('a captioned attachment rides the prompt args and clears', (
+    tester,
+  ) async {
+    final h = await openAttachmentsSession(
+      tester,
+      pickImage: () async => PickedImage(onePixelPng, 'image/png'),
+    );
+
+    await tester.tap(find.byKey(const Key('compose-attach')));
+    await tester.pump();
+    await tester.pump();
+    await tester.enterText(find.byKey(const Key('compose-field')), 'hi pi');
+    await tester.tap(find.byKey(const Key('compose-send')));
+    await tester.pump();
+    await tester.pump();
+
+    final command = h.factory.last.sentFrames.lastWhere(
+      (frame) => frame['name'] == 'prompt',
+    );
+    expect(command['type'], 'command');
+    expect(command['sessionId'], 's1');
+    expect(command['args'], {
+      'text': 'hi pi',
+      'images': [
+        {'data': base64Encode(onePixelPng), 'mimeType': 'image/png'},
+      ],
+    });
+    // The image belongs to that one send; a leftover chip would silently ride
+    // the next message too.
+    expect(find.byKey(const Key('compose-attachment')), findsNothing);
+  });
+
+  testWidgets('an over-cap image is refused locally and nothing is sent', (
+    tester,
+  ) async {
+    final h = await openAttachmentsSession(
+      tester,
+      pickImage: () async =>
+          PickedImage(Uint8List(maxAttachmentBytes + 1), 'image/png'),
+    );
+
+    await tester.tap(find.byKey(const Key('compose-attach')));
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.text('That image is too large to send'), findsOneWidget);
+    expect(find.byKey(const Key('compose-attachment')), findsNothing);
+    // The guard fires before any frame: an over-cap frame would be dropped by
+    // the hub's maxPayload with no reply, which is the silent timeout.
+    expect(
+      h.factory.last.sentFrames.where(
+        (frame) => frame['type'] == 'command' && frame['name'] == 'prompt',
+      ),
+      isEmpty,
+    );
+  });
+
+  testWidgets('cancelling the picker leaves the composer untouched', (
+    tester,
+  ) async {
+    final h = await openAttachmentsSession(tester, pickImage: () async => null);
+
+    await tester.tap(find.byKey(const Key('compose-attach')));
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.byKey(const Key('compose-attachment')), findsNothing);
+    expect(tester.takeException(), isNull);
+    expect(
+      h.factory.last.sentFrames.where((frame) => frame['name'] == 'prompt'),
+      isEmpty,
+    );
+  });
+
+  testWidgets('a picker error is shown, not mistaken for a cancel', (
+    tester,
+  ) async {
+    await openAttachmentsSession(
+      tester,
+      pickImage: () async => throw StateError('gallery denied'),
+    );
+
+    await tester.tap(find.byKey(const Key('compose-attach')));
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.text('Could not open the gallery'), findsOneWidget);
+    expect(find.byKey(const Key('compose-attachment')), findsNothing);
+  });
+
+  testWidgets('a picked attachment does not leak into another session', (
+    tester,
+  ) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(
+      h.app(pickImage: () async => PickedImage(onePixelPng, 'image/png')),
+    );
+    await pumpBootstrap(tester);
+    h.factory.last.receive(attachmentsSessionsFrame([sessionS1, sessionS2]));
+    await settle(tester, h.scheduler);
+
+    await tester.tap(find.text('api refactor'));
+    await settle(tester, h.scheduler);
+    await tester.tap(find.byKey(const Key('compose-attach')));
+    await tester.pump();
+    await tester.pump();
+    expect(find.byKey(const Key('compose-attachment')), findsOneWidget);
+
+    // Switch to the other session: the image belonged to s1 and must not follow.
+    await pressSystemBack(tester, h.scheduler);
+    await tester.tap(find.text('second session'));
+    await settle(tester, h.scheduler);
+    expect(find.byKey(const Key('compose-attachment')), findsNothing);
+
+    await tester.enterText(find.byKey(const Key('compose-field')), 'hi pi');
+    await tester.tap(find.byKey(const Key('compose-send')));
+    await tester.pump();
+
+    final command = h.factory.last.sentFrames.lastWhere(
+      (frame) => frame['name'] == 'prompt',
+    );
+    expect(command['sessionId'], 's2');
+    expect(command['args'], {'text': 'hi pi'});
+  });
+
+  testWidgets('a capability downgrade drops a stale pick', (tester) async {
+    final h = await openAttachmentsSession(
+      tester,
+      pickImage: () async => PickedImage(onePixelPng, 'image/png'),
+    );
+
+    await tester.tap(find.byKey(const Key('compose-attach')));
+    await tester.pump();
+    await tester.pump();
+    expect(find.byKey(const Key('compose-attachment')), findsOneWidget);
+
+    // The hub downgrades in place (same session, no attachments capability).
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+    expect(find.byKey(const Key('compose-attachment')), findsNothing);
+
+    // Capability returns later: the old pick must not resurrect.
+    h.factory.last.receive(attachmentsSessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+    expect(find.byKey(const Key('compose-attachment')), findsNothing);
   });
 }
