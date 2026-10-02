@@ -36,6 +36,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:pi_droid/client/hub_client.dart';
 import 'package:pi_droid/client/hub_socket.dart';
 import 'package:pi_droid/client/scheduler.dart';
+import 'package:pi_droid/client/tool_view.dart';
 import 'package:pi_droid/client/transcript.dart';
 import 'package:pi_droid/protocol/ticket.dart';
 
@@ -601,6 +602,17 @@ void main() {
           reason: 'the result must pair with its call, not render as an orphan',
         );
         expect(tools.single.text, contains('FAUX_TOOL_CONTENT'));
+        // The bridge normalizes the read into a structured file view, and the
+        // client attaches it to the call row: without this the app would still
+        // render every tool as one generic collapsed block (#6).
+        expect(
+          tools.single.toolView,
+          isA<FileView>(),
+          reason:
+              'the tools recipe (a real read) must relay a file view, got '
+              '${tools.single.toolView}',
+        );
+        expect((tools.single.toolView! as FileView).path, endsWith('faux-tool.txt'));
       } finally {
         await attach.teardown();
       }

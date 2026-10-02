@@ -10,7 +10,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pi_droid/client/hub_client.dart';
+import 'package:pi_droid/client/tool_view.dart';
 import 'package:pi_droid/client/transcript.dart';
+import 'package:pi_droid/ui/tool_views.dart';
 import 'package:pi_droid/ui/transcript_blocks.dart';
 import 'package:pi_droid/ui/transcript_view.dart';
 
@@ -61,6 +63,7 @@ void main() {
     String? toolName = 'read',
     Object? toolArgs = const {'path': '/etc/hostname'},
     Object? toolResult,
+    ToolView? toolView,
     bool isError = false,
     String text = '',
   }) => TranscriptBlock(
@@ -69,8 +72,25 @@ void main() {
     toolName: toolName,
     toolArgs: toolArgs,
     toolResult: toolResult,
+    toolView: toolView,
     isError: isError,
     text: text,
+  );
+
+  // A file-view tool block with distinguishable per-line bodies, used by the
+  // single-expanded-row tests below.
+  TranscriptBlock viewTool(
+    String id,
+    String prefix, {
+    bool hasResult = false,
+  }) => toolBlock(
+    id: id,
+    toolName: 'read',
+    toolResult: hasResult ? const {'role': 'toolResult'} : null,
+    toolView: FileView(
+      path: '$prefix.txt',
+      content: List.generate(12, (i) => '$prefix$i').join('\n'),
+    ),
   );
 
   testWidgets('a tool block is collapsed with a capped preview and a more-lines count', (
@@ -471,5 +491,513 @@ void main() {
     await tester.pump();
 
     expect(find.textContaining('the private thought'), findsNothing);
+  });
+
+  // -------------------------------------------------------------------------
+  // Per-kind bodies (M4 step 19)
+  // -------------------------------------------------------------------------
+
+  testWidgets('a diff view renders added and removed lines distinctly', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      wrap(
+        SessionTranscript(
+          blocks: [
+            toolBlock(
+              toolName: 'edit',
+              toolArgs: const {'path': 'app/foo.dart'},
+              toolResult: const {'role': 'toolResult'},
+              toolView: const DiffView(
+                path: 'app/foo.dart',
+                lines: [
+                  DiffLine(diffLineCtx, 'unchanged'),
+                  DiffLine(diffLineAdd, 'added line'),
+                  DiffLine(diffLineDel, 'removed line'),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    expect(find.text('app/foo.dart +1 −1'), findsOneWidget);
+    expect(find.text('+ added line'), findsOneWidget);
+    expect(find.text('- removed line'), findsOneWidget);
+
+    Color? colorOf(String text) => tester
+        .widget<Container>(
+          find.ancestor(of: find.text(text), matching: find.byType(Container)).first,
+        )
+        .color;
+    expect(
+      colorOf('+ added line'),
+      isNot(colorOf('- removed line')),
+      reason: 'an addition and a removal must be distinguishable, not one colour',
+    );
+  });
+
+  testWidgets('a file view shows its path, range and body', (tester) async {
+    await tester.pumpWidget(
+      wrap(
+        SessionTranscript(
+          blocks: [
+            toolBlock(
+              toolResult: const {'role': 'toolResult'},
+              toolView: const FileView(
+                path: 'lib/foo.dart',
+                content: 'alpha\nbeta',
+                startLine: 10,
+                endLine: 11,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    expect(find.text('lib/foo.dart:10-11'), findsOneWidget);
+    expect(find.text('alpha'), findsOneWidget);
+    expect(find.text('beta'), findsOneWidget);
+  });
+
+  testWidgets('a command view shows the command and its output', (tester) async {
+    await tester.pumpWidget(
+      wrap(
+        SessionTranscript(
+          blocks: [
+            toolBlock(
+              toolName: 'bash',
+              toolResult: const {'role': 'toolResult'},
+              toolView: const CommandView(
+                command: 'ls -la',
+                output: 'total 0\nfoo.txt',
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    expect(find.text('ls -la'), findsOneWidget, reason: 'the header summary');
+    expect(find.text('\$ ls -la'), findsOneWidget, reason: 'the body pane');
+    expect(find.text('foo.txt'), findsOneWidget);
+  });
+
+  testWidgets('a matches view groups hits by file with line numbers', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      wrap(
+        SessionTranscript(
+          blocks: [
+            toolBlock(
+              toolName: 'grep',
+              toolResult: const {'role': 'toolResult'},
+              toolView: const MatchesView(
+                matches: [
+                  Match(file: 'lib/a.dart', line: 12, text: 'hello'),
+                  Match(file: 'lib/b.dart', line: 3, text: 'world'),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    expect(find.text('lib/a.dart'), findsOneWidget);
+    expect(find.text('12: hello'), findsOneWidget);
+    expect(find.text('lib/b.dart'), findsOneWidget);
+    expect(find.text('3: world'), findsOneWidget);
+  });
+
+  testWidgets('a path-only match renders the path without a line number', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      wrap(
+        SessionTranscript(
+          blocks: [
+            toolBlock(
+              toolName: 'find',
+              toolResult: const {'role': 'toolResult'},
+              toolView: const MatchesView(
+                matches: [Match(file: 'lib/c.dart', line: 0, text: '')],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    expect(find.text('lib/c.dart'), findsOneWidget);
+    expect(
+      find.textContaining('0:'),
+      findsNothing,
+      reason: 'a find match carries no line number and must not invent one',
+    );
+  });
+
+  testWidgets('a table view renders columns and rows', (tester) async {
+    await tester.pumpWidget(
+      wrap(
+        SessionTranscript(
+          blocks: [
+            toolBlock(
+              toolName: 'ls',
+              toolResult: const {'role': 'toolResult'},
+              toolView: const TableView(
+                columns: ['name', 'type'],
+                rows: [
+                  ['src', 'directory'],
+                  ['a.txt', 'file'],
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    expect(find.textContaining('src'), findsOneWidget);
+    expect(find.textContaining('a.txt'), findsOneWidget);
+    expect(find.textContaining('directory'), findsOneWidget);
+  });
+
+  testWidgets('an empty matches view says so, it does not crash', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      wrap(
+        SessionTranscript(
+          blocks: [
+            toolBlock(
+              toolName: 'grep',
+              toolResult: const {'role': 'toolResult'},
+              toolView: const MatchesView(matches: []),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    expect(find.text('no matches'), findsWidgets);
+  });
+
+  testWidgets('an empty table view says so, it does not crash', (tester) async {
+    await tester.pumpWidget(
+      wrap(
+        SessionTranscript(
+          blocks: [
+            toolBlock(
+              toolName: 'ls',
+              toolResult: const {'role': 'toolResult'},
+              toolView: const TableView(columns: ['name', 'type'], rows: []),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    expect(find.text('empty directory'), findsWidgets);
+  });
+
+  testWidgets('a generic view falls back to the result-text preview', (
+    tester,
+  ) async {
+    final result = List.generate(12, (i) => 'line $i').join('\n');
+    await tester.pumpWidget(
+      wrap(
+        SessionTranscript(
+          blocks: [
+            toolBlock(
+              toolName: 'mytool',
+              toolResult: const {'role': 'toolResult'},
+              toolView: const GenericView(target: 'target'),
+              text: result,
+            ),
+          ],
+        ),
+      ),
+    );
+
+    expect(find.text('target'), findsOneWidget);
+    expect(find.textContaining('line 0'), findsOneWidget);
+    expect(find.textContaining('line $toolResultPreviewLines'), findsNothing);
+    expect(
+      find.textContaining('(${12 - toolResultPreviewLines} more lines)'),
+      findsOneWidget,
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // Truncation marker + capped preview (M4 step 21)
+  // -------------------------------------------------------------------------
+
+  testWidgets('a truncated view renders an explicit marker', (tester) async {
+    await tester.pumpWidget(
+      wrap(
+        SessionTranscript(
+          blocks: [
+            toolBlock(
+              toolResult: const {'role': 'toolResult'},
+              toolView: const FileView(
+                path: 'a.txt',
+                content: 'only line',
+                truncated: true,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    expect(find.text(ToolViewBody.truncationMarker), findsOneWidget);
+  });
+
+  testWidgets('a truncated generic view renders the marker too', (tester) async {
+    await tester.pumpWidget(
+      wrap(
+        SessionTranscript(
+          blocks: [
+            toolBlock(
+              toolResult: const {'role': 'toolResult'},
+              toolView: const GenericView(target: 'blob', truncated: true),
+              text: 'payload',
+            ),
+          ],
+        ),
+      ),
+    );
+
+    expect(find.text(ToolViewBody.truncationMarker), findsOneWidget);
+  });
+
+  testWidgets('a long non-truncated view renders a capped preview', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      wrap(
+        SessionTranscript(
+          blocks: [
+            toolBlock(
+              toolResult: const {'role': 'toolResult'},
+              toolView: FileView(
+                path: 'long.txt',
+                content: List.generate(12, (i) => 'row $i').join('\n'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    expect(find.text('row 0'), findsOneWidget);
+    expect(find.text('row $toolResultPreviewLines'), findsNothing);
+    expect(
+      find.textContaining('(${12 - toolResultPreviewLines} more lines)'),
+      findsOneWidget,
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // Single-expanded-row derivation (M4 step 20)
+  // -------------------------------------------------------------------------
+
+  testWidgets('while running, only the last result-less tool expands', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      wrap(
+        SessionTranscript(
+          agentState: 'running',
+          blocks: [viewTool('t1', 'a'), viewTool('t2', 'b')],
+        ),
+      ),
+    );
+
+    expect(find.text('b11'), findsOneWidget, reason: 'the last call is expanded');
+    expect(find.text('a11'), findsNothing, reason: 'the earlier call is collapsed');
+    expect(
+      find.text('a0'),
+      findsOneWidget,
+      reason: 'a collapsed row still shows its capped preview',
+    );
+  });
+
+  testWidgets('a completed last tool collapses once no result-less call remains', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      wrap(
+        SessionTranscript(
+          agentState: 'running',
+          blocks: [viewTool('t1', 'a', hasResult: true), viewTool('t2', 'b')],
+        ),
+      ),
+    );
+    expect(find.text('b11'), findsOneWidget);
+
+    await tester.pumpWidget(
+      wrap(
+        SessionTranscript(
+          agentState: 'running',
+          blocks: [viewTool('t1', 'a', hasResult: true), viewTool('t2', 'b', hasResult: true)],
+        ),
+      ),
+    );
+    expect(find.text('b11'), findsNothing);
+    expect(find.text('a11'), findsNothing);
+  });
+
+  testWidgets('a new result-less block expands the newest one', (tester) async {
+    await tester.pumpWidget(
+      wrap(
+        SessionTranscript(
+          agentState: 'running',
+          blocks: [viewTool('t1', 'a', hasResult: true), viewTool('t2', 'b', hasResult: true)],
+        ),
+      ),
+    );
+    expect(find.text('c11'), findsNothing);
+
+    await tester.pumpWidget(
+      wrap(
+        SessionTranscript(
+          agentState: 'running',
+          blocks: [
+            viewTool('t1', 'a', hasResult: true),
+            viewTool('t2', 'b', hasResult: true),
+            viewTool('t3', 'c'),
+          ],
+        ),
+      ),
+    );
+    expect(find.text('c11'), findsOneWidget);
+    expect(find.text('a11'), findsNothing);
+    expect(find.text('b11'), findsNothing);
+  });
+
+  testWidgets('a settle collapses every tool row', (tester) async {
+    await tester.pumpWidget(
+      wrap(
+        SessionTranscript(
+          agentState: 'running',
+          blocks: [viewTool('t1', 'a'), viewTool('t2', 'b')],
+        ),
+      ),
+    );
+    expect(find.text('b11'), findsOneWidget);
+
+    await tester.pumpWidget(
+      wrap(
+        SessionTranscript(
+          agentState: 'settled',
+          blocks: [viewTool('t1', 'a'), viewTool('t2', 'b')],
+        ),
+      ),
+    );
+    expect(find.text('a11'), findsNothing);
+    expect(find.text('b11'), findsNothing);
+  });
+
+  testWidgets('a tap expands exactly one tool row', (tester) async {
+    await tester.pumpWidget(
+      wrap(
+        SessionTranscript(
+          agentState: 'running',
+          blocks: [viewTool('t1', 'a'), viewTool('t2', 'b')],
+        ),
+      ),
+    );
+    expect(find.text('b11'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('t1')));
+    await tester.pump();
+
+    expect(find.text('a11'), findsOneWidget);
+    expect(find.text('b11'), findsNothing, reason: 'only one row may be expanded');
+  });
+
+  testWidgets(
+    'a view attached to a dropped result row does not expand while another runs',
+    (tester) async {
+      // The `done` annotation frame arrived (so a view is attached) but the
+      // `toolResult` message was dropped, leaving the row result-less. It must
+      // not be mistaken for the in-flight call.
+      await tester.pumpWidget(
+        wrap(
+          SessionTranscript(
+            agentState: 'running',
+            blocks: [viewTool('t1', 'a'), viewTool('t2', 'b')],
+          ),
+        ),
+      );
+
+      expect(find.text('a11'), findsNothing, reason: 'the dropped-result row stays collapsed');
+      expect(find.text('b11'), findsOneWidget);
+    },
+  );
+
+  testWidgets('running expands an earlier outstanding call past a completed one', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      wrap(
+        SessionTranscript(
+          agentState: 'running',
+          blocks: [viewTool('t1', 'a'), viewTool('t2', 'b', hasResult: true)],
+        ),
+      ),
+    );
+
+    expect(
+      find.text('a11'),
+      findsOneWidget,
+      reason: 'the last result-less call is earlier in the row list',
+    );
+    expect(find.text('b11'), findsNothing);
+  });
+
+  testWidgets('tapping the expanded row collapses it', (tester) async {
+    await tester.pumpWidget(
+      wrap(
+        SessionTranscript(
+          agentState: 'running',
+          blocks: [viewTool('t1', 'a'), viewTool('t2', 'b')],
+        ),
+      ),
+    );
+    expect(find.text('b11'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('t2')));
+    await tester.pump();
+
+    expect(find.text('b11'), findsNothing);
+    expect(find.text('a11'), findsNothing, reason: 'no other row was expanded');
+  });
+
+  testWidgets('a tap survives an unrelated rebuild of the same transcript', (
+    tester,
+  ) async {
+    final blocks = [viewTool('t1', 'a'), viewTool('t2', 'b')];
+    await tester.pumpWidget(
+      wrap(SessionTranscript(agentState: 'running', blocks: blocks)),
+    );
+    expect(find.text('b11'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('t1')));
+    await tester.pump();
+    expect(find.text('a11'), findsOneWidget);
+
+    // A fresh widget with the same content rebuilds TranscriptView. The
+    // derivation is unchanged, so it must not stomp the manual tap.
+    await tester.pumpWidget(
+      wrap(SessionTranscript(agentState: 'running', blocks: blocks)),
+    );
+    expect(find.text('a11'), findsOneWidget);
+    expect(find.text('b11'), findsNothing);
   });
 }

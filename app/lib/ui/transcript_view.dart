@@ -69,10 +69,21 @@ class _TranscriptViewState extends State<TranscriptView> {
   /// before the new content is laid out.
   bool _following = true;
 
+  /// The id of the tool row whose body is expanded, or null when every tool row
+  /// is collapsed. There is exactly one: the derivation below owns it while a
+  /// turn runs, and a tap replaces it.
+  String? _expandedToolId;
+
+  /// The last id the derivation selected, tracked apart from [_expandedToolId]
+  /// so a rebuild that derives the same current tool does not stomp a manual
+  /// tap.
+  String? _lastDerivedToolId;
+
   @override
   void initState() {
     super.initState();
     _controller.addListener(_onScroll);
+    _adoptDerived(_currentToolId(widget.transcript));
     // A tall transcript must open at its newest row, not its oldest.
     WidgetsBinding.instance.addPostFrameCallback((_) => _jumpToBottom());
   }
@@ -87,12 +98,38 @@ class _TranscriptViewState extends State<TranscriptView> {
   @override
   void didUpdateWidget(TranscriptView oldWidget) {
     super.didUpdateWidget(oldWidget);
+    // Collapse what is no longer current: the in-flight call moved on, or the
+    // turn settled. A no-op while the derivation is unchanged.
+    _adoptDerived(_currentToolId(widget.transcript));
     // Read the flag *before* the change is laid out: once the list grows, a
     // follower's old offset no longer looks like the bottom.
     final wasFollowing = _following;
     if (wasFollowing) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _jumpToBottom());
     }
+  }
+
+  /// The in-flight tool: while the agent runs, the LAST tool row with no result
+  /// yet. Null once every call has a result, or the turn is not running — which
+  /// collapses every row.
+  String? _currentToolId(SessionTranscript transcript) {
+    if (transcript.agentState != 'running') return null;
+    for (var i = transcript.blocks.length - 1; i >= 0; i--) {
+      final block = transcript.blocks[i];
+      if (block.kind == TranscriptBlockKind.tool && block.toolResult == null) {
+        return block.id;
+      }
+    }
+    return null;
+  }
+
+  /// Auto-expands the derived current tool, collapsing when it changes or the
+  /// turn settles. A no-op when the derivation is unchanged, so a manual tap
+  /// survives rebuilds.
+  void _adoptDerived(String? derived) {
+    if (derived == _lastDerivedToolId) return;
+    _lastDerivedToolId = derived;
+    _expandedToolId = derived;
   }
 
   void _onScroll() {
@@ -241,7 +278,14 @@ class _TranscriptViewState extends State<TranscriptView> {
       case TranscriptBlockKind.thinking:
         return ThinkingBlock(block: block);
       case TranscriptBlockKind.tool:
-        return ToolBlock(block: block);
+        final expanded = block.id == _expandedToolId;
+        return ToolBlock(
+          block: block,
+          expanded: expanded,
+          onToggle: () => setState(() {
+            _expandedToolId = expanded ? null : block.id;
+          }),
+        );
       case TranscriptBlockKind.notice:
         return NoticeBlock(block: block);
     }
