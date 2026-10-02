@@ -3,6 +3,7 @@
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pi_droid/client/hub_client.dart';
+import 'package:pi_droid/client/tool_view.dart';
 
 import 'support/fakes.dart';
 
@@ -142,5 +143,79 @@ void main() {
 
     client.requestHistory('s1', sinceSeq: -5);
     expect(factory.last.lastSent['sinceSeq'], 1);
+  });
+
+  test('a resync snapshot re-attaches a tool view the stream dropped', () async {
+    // The live stream carried the call and its result, but the bridge's `done`
+    // annotation frame was dropped under backlog, so the block has no view.
+    Object toolCall() => {
+      'type': 'message',
+      'message': {
+        'role': 'assistant',
+        'content': [
+          {
+            'type': 'toolCall',
+            'id': 'call-1',
+            'name': 'read',
+            'arguments': {'path': 'faux-tool.txt'},
+          },
+        ],
+      },
+    };
+    Object toolResult() => {
+      'type': 'message',
+      'message': {
+        'role': 'toolResult',
+        'toolCallId': 'call-1',
+        'toolName': 'read',
+        'content': [
+          {'type': 'text', 'text': 'body'},
+        ],
+      },
+    };
+    const Object toolFrame = {
+      'kind': 'tool',
+      'toolCallId': 'call-1',
+      'name': 'read',
+      'status': 'done',
+      'view': {'type': 'file', 'path': 'faux-tool.txt', 'content': 'body'},
+    };
+    Map<String, Object?> snapshot(List<Object?> entries) => {
+      'protocolVersion': 1,
+      'type': 'snapshot',
+      'sessionId': 's1',
+      'lastSeq': 2,
+      'agentState': 'settled',
+      'entries': entries,
+      'truncated': false,
+    };
+
+    client.subscribe('s1');
+    await pumpEventQueue();
+    factory.last.receive(snapshot([toolCall(), toolResult()]));
+    await pumpEventQueue();
+    expect(
+      client.transcript('s1')!.blocks.single.toolView,
+      isNull,
+      reason: 'without the annotation frame there is no structured view',
+    );
+
+    // The hub announces the drop; the client re-requests history.
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'resync-required',
+      'sessionId': 's1',
+      'reason': 'backpressure',
+    });
+    await pumpEventQueue();
+    expect(factory.last.lastSent['type'], 'history-request');
+
+    // The unbudgeted snapshot carries the annotated frame, so the view comes
+    // back — collapsed, because the transcript now comes from history.
+    factory.last.receive(snapshot([toolCall(), toolFrame, toolResult()]));
+    await pumpEventQueue();
+    final block = client.transcript('s1')!.blocks.single;
+    expect(block.toolView, isA<FileView>());
+    expect(block.toolResult, isNotNull);
   });
 }

@@ -9,7 +9,9 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
+import '../client/tool_view.dart';
 import '../client/transcript.dart';
+import 'tool_views.dart';
 
 /// A committed or in-flight text block. Plain `Text` until [TranscriptBlock.complete],
 /// then markdown; the user's own messages are aligned and tinted apart.
@@ -94,35 +96,48 @@ class _ThinkingBlockState extends State<ThinkingBlock> {
   }
 }
 
-/// A tool call row: collapsed by default, showing the tool name, its arguments
-/// and a capped result preview; tap to expand the full result. An error result
-/// is tinted and iconed apart. The TUI's own `[Showing lines … Full output: …]`
-/// note is inside the result and renders verbatim — the path is never fetched
-/// (the phone cannot read the PC's temp file).
-class ToolBlock extends StatefulWidget {
-  const ToolBlock({super.key, required this.block});
+/// A tool call row: a header of icon + name + summary, and a body dispatched
+/// by the bridge's normalized view — or the generic result preview when the
+/// frame carried none (version skew). Controlled by [TranscriptView], which owns
+/// the single-expanded-row rule; tapping always toggles, because the row always
+/// has a header. An error result is tinted and iconed apart. The TUI's own
+/// `[Showing lines … Full output: …]` note is inside the result and renders
+/// verbatim — the path is never fetched (the phone cannot read the PC's temp
+/// file).
+class ToolBlock extends StatelessWidget {
+  const ToolBlock({
+    super.key,
+    required this.block,
+    required this.expanded,
+    required this.onToggle,
+  });
 
   final TranscriptBlock block;
-
-  @override
-  State<ToolBlock> createState() => _ToolBlockState();
-}
-
-class _ToolBlockState extends State<ToolBlock> {
-  bool _expanded = false;
+  final bool expanded;
+  final VoidCallback onToggle;
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final block = widget.block;
     final name = block.toolName ?? 'tool';
+    final view = block.toolView;
+    final summary = toolSummary(view, toolName: block.toolName);
     final args = argumentsLabel(block.toolArgs);
-    final hasResult = block.toolResult != null;
-    final preview = previewToolResult(block.text);
-    final body = _expanded ? block.text : preview.shown;
     final accent = block.isError ? colors.error : colors.outline;
+    final Widget body = view == null
+        ? GenericToolBody(
+            text: block.text,
+            expanded: expanded,
+            isError: block.isError,
+          )
+        : ToolViewBody(
+            view: view,
+            expanded: expanded,
+            text: block.text,
+            isError: block.isError,
+          );
     return InkWell(
-      onTap: hasResult ? () => setState(() => _expanded = !_expanded) : null,
+      onTap: onToggle,
       child: Container(
         margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -147,35 +162,20 @@ class _ToolBlockState extends State<ToolBlock> {
                   name,
                   style: TextStyle(fontWeight: FontWeight.w600, color: colors.onSurface),
                 ),
-                if (args.isNotEmpty) ...[
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      args,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(color: colors.onSurfaceVariant, fontSize: 12),
-                    ),
-                  ),
-                ],
-              ],
-            ),
-            if (hasResult && body.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 4),
-                child: Text(
-                  body,
-                  style: TextStyle(
-                    fontFamily: 'monospace',
-                    color: block.isError ? colors.onErrorContainer : colors.onSurfaceVariant,
-                    fontSize: 12,
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    summary != null && summary.isNotEmpty ? summary : args,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: colors.onSurfaceVariant, fontSize: 12),
                   ),
                 ),
-              ),
-            if (hasResult && !_expanded && preview.isTruncated)
-              Text(
-                '… (${preview.hiddenLines} more lines)',
-                style: TextStyle(color: colors.outline, fontSize: 12),
-              ),
+              ],
+            ),
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: body,
+            ),
           ],
         ),
       ),
