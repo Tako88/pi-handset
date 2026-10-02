@@ -11,6 +11,8 @@
 /// how a block is painted.
 library;
 
+import 'tool_view.dart';
+
 /// The kinds of row a transcript renders, in order of appearance.
 enum TranscriptBlockKind { text, thinking, tool, notice }
 
@@ -37,6 +39,11 @@ class TranscriptBlock {
 
   /// The raw tool-result message when paired (M2); null while the call runs.
   final Object? toolResult;
+
+  /// The bridge's parsed render model for this tool call (M3); null when the
+  /// frame carried none (version skew) or an unknown `view.type`, in which case
+  /// the renderer falls back to the generic preview.
+  final ToolView? toolView;
   final bool isError;
 
   const TranscriptBlock({
@@ -48,6 +55,7 @@ class TranscriptBlock {
     this.toolName,
     this.toolArgs,
     this.toolResult,
+    this.toolView,
     this.isError = false,
   });
 }
@@ -61,9 +69,25 @@ List<TranscriptBlock> deriveBlocks(List<Object?> entries) {
   // call row showing the first result, not the second. The result may appear
   // before or after its call, so the index is built before pass 2 emits.
   final resultsById = <String, Map<Object?, Object?>>{};
+  // A second, SEPARATE index for the bridge's `kind:'tool'` annotation frames,
+  // with the OPPOSITE rule: last-wins, because a call emits `running` then
+  // `done` and the done view must replace the input-only running one. Keeping
+  // the two rules apart is deliberate — reusing `resultsById` would flip the
+  // fork semantics above.
+  final viewsById = <String, Object?>{};
   final callIds = <String>{};
   for (final entry in entries) {
     if (entry is! Map) continue;
+    if (entry['kind'] == 'tool') {
+      final callId = entry['toolCallId'];
+      // Last-wins applies to present views only: a done frame may carry no
+      // view, and clobbering the running frame's input-only view would drop
+      // the structured render for the generic fallback.
+      if (callId is String && entry['view'] != null) {
+        viewsById[callId] = entry['view'];
+      }
+      continue;
+    }
     final source = _unwrap(entry);
     if (source == null) continue;
     final role = source['role'];
@@ -110,6 +134,11 @@ List<TranscriptBlock> deriveBlocks(List<Object?> entries) {
       continue;
     }
 
+    // A relayed `kind:'tool'` frame is an annotation on a call or result row,
+    // never a row source of its own: pass 1 indexed its view, and it was
+    // attached in pass 2. Emitting it here would render a duplicate row.
+    if (entry['kind'] == 'tool') continue;
+
     final source = _unwrap(entry);
     if (source == null) {
       // The flattened fixture shape `{type: 'user'|'assistant', text}`.
@@ -138,13 +167,14 @@ List<TranscriptBlock> deriveBlocks(List<Object?> entries) {
         source['content'],
         idBase,
         resultsById,
+        viewsById,
         toolIdCounts,
       );
     } else if (role == 'toolResult') {
       final callId = source['toolCallId'];
       // Paired: already rendered at its call in the assistant message.
       if (callId is String && callIds.contains(callId)) continue;
-      _emitToolResult(blocks, source, idBase, toolIdCounts);
+      _emitToolResult(blocks, source, idBase, viewsById, toolIdCounts);
     }
     // `system`, `custom` and bookkeeping roles take no block.
   }
@@ -236,6 +266,7 @@ void _emitAssistantContent(
   Object? content,
   int idBase,
   Map<String, Map<Object?, Object?>> resultsById,
+  Map<String, Object?> viewsById,
   Map<String, int> toolIdCounts,
 ) {
   if (content is String) {
@@ -279,6 +310,7 @@ void _emitAssistantContent(
             toolArgs: part['arguments'],
             text: result == null ? '' : _resultText(result),
             toolResult: result,
+            toolView: parseToolView(viewsById[callId]),
             isError: result != null && result['isError'] == true,
           ),
         );
@@ -359,6 +391,7 @@ void _emitToolResult(
   List<TranscriptBlock> blocks,
   Map<Object?, Object?> source,
   int idBase,
+  Map<String, Object?> viewsById,
   Map<String, int> toolIdCounts,
 ) {
   final callId = source['toolCallId'];
@@ -369,6 +402,7 @@ void _emitToolResult(
       text: _resultText(source),
       toolName: source['toolName'] is String ? source['toolName'] as String : null,
       toolResult: source,
+      toolView: callId is String ? parseToolView(viewsById[callId]) : null,
       isError: source['isError'] == true,
     ),
   );

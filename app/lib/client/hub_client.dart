@@ -1332,8 +1332,17 @@ class HubClient {
             streamingThinking: isErrorStatus ? '' : transcript.streamingThinking,
           ),
         );
+      case 'tool':
+        // A bridge-normalized tool annotation: retained raw in `entries`, where
+        // the transcript model pairs its view to the call/result row. Appended
+        // in arrival order, like any other entry.
+        _putTranscript(
+          sessionId,
+          _withEntries(transcript, [...transcript.entries, payload]),
+        );
       default:
-        // `tool` is relayed raw so the renderer can decide.
+        // An unknown payload is retained rather than dropped, so a future
+        // renderer can consume it; nothing in this build does.
         _putTranscript(
           sessionId,
           _withEntries(transcript, [...transcript.entries, payload]),
