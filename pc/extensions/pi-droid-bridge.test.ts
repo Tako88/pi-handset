@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test } from 'node:test';
+import { test, beforeEach } from 'node:test';
 
 import {
   EVENT_PAYLOAD_KINDS,
@@ -56,6 +56,7 @@ import {
   normalizeMessageEnd,
   projectHistory,
   readEndpoint,
+  resetSessionLinkageForTests,
   settleText,
   toolCallPayloads,
   toolResultPayload,
@@ -347,6 +348,13 @@ interface Harness {
   timers: Array<{ fn: () => void; ms: number }>;
   startCtx: TestCtx;
   start(mode?: string, sessionId?: string, reason?: string): TestCtx;
+  /**
+   * Performs a real session replacement: pi re-runs the extension factory, so
+   * the successor is a NEW bridge instance sharing only the module-level
+   * linkage. Models that by calling `installBridge` a second time on the same
+   * stub, rather than re-firing `session_start` on the existing instance.
+   */
+  reinstall(): void;
   fireTimer(index?: number): void;
 }
 
@@ -391,9 +399,14 @@ function makeHarness(overrides: Partial<BridgeDeps> = {}): Harness {
       return startCtx;
     },
     start,
+    reinstall: () => installBridge(pi, deps),
     fireTimer: (index = 0) => timers[index]!.fn(),
   };
 }
+
+// The module-level predecessor survives across bridge instances by design, so a
+// unit test must not inherit a linkage recorded by an earlier one.
+beforeEach(() => resetSessionLinkageForTests());
 
 function parsed(socket: FakeSocket): Array<Record<string, unknown>> {
   return socket.sent.map((text) => JSON.parse(text) as Record<string, unknown>);
@@ -2434,15 +2447,48 @@ test('install registers the internal session command', () => {
 
 test('a replacement session_start registers the id it replaced', () => {
   for (const reason of ['new', 'fork', 'resume']) {
-    const harness = makeHarness();
-    harness.start('tui', 'sess-1', 'startup');
-    harness.sockets[0]!.open();
-    harness.start('tui', 'sess-2', reason);
-    const second = harness.sockets[1]!;
+    // Real replacement: pi re-runs the extension factory, so the successor's
+    // `session_start` lands on a NEW bridge instance that knows the predecessor
+    // only through the module-level value. Modelling that needs a second
+    // install, not a re-fire on the same instance.
+    const real = makeHarness();
+    real.start('tui', 'sess-1', 'startup');
+    real.sockets[0]!.open();
+    real.reinstall();
+    real.start('tui', 'sess-2', reason);
+    const realSecond = real.sockets[1]!;
+    realSecond.open();
+    const realRegister = parsed(realSecond).find((m) => m.type === 'register')!;
+    assert.equal(
+      realRegister.replaces,
+      'sess-1',
+      `${reason} did not carry replaces across a real replacement`,
+    );
+
+    // Same-instance re-fire, which still pins the module-state comparison.
+    const inPlace = makeHarness();
+    inPlace.start('tui', 'sess-1', 'startup');
+    inPlace.sockets[0]!.open();
+    inPlace.start('tui', 'sess-2', reason);
+    const second = inPlace.sockets[1]!;
     second.open();
     const register = parsed(second).find((m) => m.type === 'register')!;
     assert.equal(register.replaces, 'sess-1', `${reason} did not carry replaces`);
   }
+});
+
+test('resetSessionLinkageForTests clears the module-level predecessor', () => {
+  const harness = makeHarness();
+  harness.start('tui', 'sess-1', 'startup');
+  harness.sockets[0]!.open();
+  resetSessionLinkageForTests();
+  harness.start('tui', 'sess-2', 'new');
+  const second = harness.sockets[1]!;
+  second.open();
+  const register = parsed(second).find((m) => m.type === 'register')!;
+  // Without the clear, the module still names sess-1 and the successor would be
+  // linked to a session a previous test registered, not this one's.
+  assert.equal(register.replaces, undefined, 'the reset must clear the recorded predecessor');
 });
 
 test('a non-replacement session_start carries no replaces', () => {

@@ -799,6 +799,29 @@ export const COMMAND_ALLOWLIST = new Set([
  */
 export const SESSION_COMMAND_NAME = 'pi-droid-session';
 
+/**
+ * The hub session id the most recently installed bridge registered.
+ *
+ * Deliberately module scope, not instance scope: pi re-runs the extension
+ * factory for every session replacement (the new runtime reloads its resource
+ * loader), so the successor's bridge is a *different* instance and instance
+ * state cannot name the session it replaced. The module is imported once per
+ * pi process, so this value survives the reload and lets the successor carry
+ * `replaces`. A `startup` event is a fresh process and overwrites it like any
+ * other; a `new`/`fork`/`resume` that differs from it is a real replacement.
+ */
+let lastRegisteredSessionId: string | null = null;
+
+/**
+ * Test-only: clears the module-level predecessor so a unit test cannot inherit
+ * a linkage recorded by an earlier test. Production never calls this — a fresh
+ * process starts with `null` and every real session transition overwrites it
+ * via `onSessionStart`.
+ */
+export function resetSessionLinkageForTests(): void {
+  lastRegisteredSessionId = null;
+}
+
 /** The most `/tree` nodes a `listTree` result may carry. */
 export const TREE_MAX_NODES = 200;
 
@@ -1228,8 +1251,6 @@ class Bridge {
   private attempt = 0;
   private reconnectTimer: unknown = null;
   private closed = false;
-  /** The hub session id last reported by `session_start`. */
-  private registeredSessionId: string | null = null;
   /** The id the next register must name as replaced, consumed only on a send. */
   private replacesSessionId: string | null = null;
   /** Guards the one-time internal command registration. */
@@ -1404,12 +1425,12 @@ class Bridge {
     // can reload the same id, so "differs" is part of the condition.
     if (
       (reason === 'new' || reason === 'fork' || reason === 'resume') &&
-      this.registeredSessionId !== null &&
-      this.registeredSessionId !== sessionId
+      lastRegisteredSessionId !== null &&
+      lastRegisteredSessionId !== sessionId
     ) {
-      this.replacesSessionId = this.registeredSessionId;
+      this.replacesSessionId = lastRegisteredSessionId;
     }
-    this.registeredSessionId = sessionId;
+    lastRegisteredSessionId = sessionId;
     // Session replacement invalidates the previous context: drop the old
     // socket and every session-scoped value before binding the new context.
     this.closeSocket('session replaced');

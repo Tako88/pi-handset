@@ -475,6 +475,41 @@ async function waitForMessage(
   throw new Error('timed out waiting for a matching message');
 }
 
+/**
+ * Waits until a replacement is fully observable: the old session going away AND
+ * a `sessions` push whose successor names it as replaced. Both are recorded as
+ * messages arrive, in whatever order they land — waiting for them in sequence
+ * would discard whichever arrived first. The timeout names what was missing,
+ * rather than reporting only the second condition's absence.
+ */
+async function waitForReplacement(
+  viewer: Viewer,
+  oldSessionId: string,
+  timeoutMs: number,
+): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + timeoutMs;
+  let sawGone = false;
+  let successor: Record<string, unknown> | undefined;
+  while (Date.now() < deadline) {
+    const message = await viewer.tryNext(Math.min(1000, Math.max(1, deadline - Date.now())));
+    if (message === undefined) continue;
+    if (message.type === 'session-gone' && message.sessionId === oldSessionId) {
+      sawGone = true;
+    }
+    if (message.type === 'sessions' && Array.isArray(message.sessions)) {
+      const entry = (message.sessions as Array<Record<string, unknown>>).find(
+        (candidate) => candidate.replacesSessionId === oldSessionId,
+      );
+      if (entry !== undefined) successor = entry;
+    }
+    if (sawGone && successor !== undefined) return successor;
+  }
+  throw new Error(
+    `timed out waiting for ${oldSessionId} to be replaced ` +
+      `(saw session-gone: ${sawGone}, saw successor: ${successor !== undefined})`,
+  );
+}
+
 interface Collected {
   streams: Array<{ seq: number; text: string }>;
   /** Content-free phase frames, in arrival order. */
@@ -1043,6 +1078,19 @@ test("a real pi's command list reaches the viewer", async () => {
   for (const name of BUILTIN_COMMAND_NAMES) {
     assert.ok(!offered.has(name), `built-in ${name} must never be offered`);
   }
+
+  // O3/R2: the bridge registers an internal command to reach a command context.
+  // It must not be offered to the app — the bare name would invite a tap that
+  // re-enters the same path — and pi's `:N` duplicate form must be hidden too.
+  // A hypothetical `pi-droid-session-foo` is a different command and is
+  // deliberately still offered, so this pins the exact filter, not a prefix.
+  assert.ok(!offered.has('pi-droid-session'), 'the bridge must hide its own command');
+  for (const name of offered) {
+    assert.ok(
+      !name.startsWith('pi-droid-session:'),
+      `the bridge's duplicate form ${name} must be hidden`,
+    );
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -1083,6 +1131,176 @@ test('a real pi lists its models and switches between them', async () => {
   const model = usage.model as Record<string, unknown>;
   assert.equal(model.provider, 'faux', 'the usage frame must name the new model');
   assert.equal(model.id, 'faux-2', 'the usage frame must name the new model');
+});
+
+// ---------------------------------------------------------------------------
+// Step 3-4 — session replacement and in-place tree navigation, real pi
+// ---------------------------------------------------------------------------
+
+test('sessionNew replaces the session and the successor names the old one', async () => {
+  const { viewer, session } = await bootPi();
+  const old = session.sessionId;
+
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'command',
+    id: 'new-1',
+    sessionId: old,
+    name: 'sessionNew',
+  });
+
+  const ack = await collectCommandResult(viewer, 'new-1', STREAM_TIMEOUT_MS);
+  assert.equal(ack.ok, true, `sessionNew was refused: ${String(ack.error)}`);
+
+  // The replacement itself is the witness. pi tears the old runtime down and
+  // starts a new session under a new id; the unbound command-ctx fallback would
+  // answer `{cancelled:false}` and leave the id untouched, so the old session
+  // would never go away and this wait would time out. Both signals are recorded
+  // as they arrive because the hub does not guarantee their order.
+  const successor = await waitForReplacement(viewer, old, STREAM_TIMEOUT_MS);
+  assert.notEqual(successor.sessionId, old, 'a replacement must change the session id');
+
+  // The successor is a real, live session: the hub replays its history to a
+  // subscriber as a `snapshot` frame, like any other session.
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'subscribe',
+    sessionId: successor.sessionId,
+  });
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'history-request',
+    sessionId: successor.sessionId,
+  });
+  const history = await waitForMessage(
+    viewer,
+    (message) => message.type === 'snapshot' && message.sessionId === successor.sessionId,
+    STREAM_TIMEOUT_MS,
+  );
+  assert.ok(Array.isArray(history.entries), 'the successor must answer a history request');
+});
+
+test('waitForReplacement records both signals whichever arrives first', async () => {
+  // The inversion the old two-sequential-waits form could not survive: the
+  // successor's `sessions` push lands BEFORE `session-gone`. Waiting for
+  // `session-gone` first would discard this push and then time out.
+  const queued: Array<Record<string, unknown>> = [
+    { type: 'sessions', sessions: [{ sessionId: 'sess-2', replacesSessionId: 'sess-1' }] },
+    { type: 'session-gone', sessionId: 'sess-1' },
+  ];
+  const viewer = {
+    ws: undefined as unknown as WebSocket,
+    send: () => {},
+    tryNext: async () => queued.shift(),
+  } satisfies Viewer;
+  const successor = await waitForReplacement(viewer, 'sess-1', 1000);
+  assert.equal(successor.sessionId, 'sess-2');
+});
+
+test("sessionTree navigates in place, witnessed by the next turn's parentId", async () => {
+  const { viewer, session } = await bootPi();
+  const sessionId = session.sessionId;
+  const firstText = 'the first question';
+  const secondText = 'the second question';
+
+  // A first turn gives the tree a user message to navigate back to.
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'command',
+    id: 'tree-p1',
+    sessionId,
+    name: 'prompt',
+    args: { text: firstText },
+  });
+  const firstTurn = await collectPrompt(viewer, 'tree-p1', STREAM_TIMEOUT_MS);
+  assert.equal(
+    firstTurn.result?.ok,
+    true,
+    `the first prompt was refused: ${String(firstTurn.result?.error)}`,
+  );
+  assert.ok(firstTurn.settled, 'the first turn never settled');
+
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'command',
+    id: 'tree-list-1',
+    sessionId,
+    name: 'listTree',
+  });
+  const listed = await collectCommandResult(viewer, 'tree-list-1', STREAM_TIMEOUT_MS);
+  assert.equal(listed.ok, true, `listTree was refused: ${String(listed.error)}`);
+  const nodes = listed.tree as Array<Record<string, unknown>>;
+  const userNode = nodes.find((node) => node.role === 'user');
+  assert.ok(userNode, `the tree must contain a user node, got ${JSON.stringify(nodes)}`);
+
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'command',
+    id: 'tree-nav-1',
+    sessionId,
+    name: 'sessionTree',
+    args: { entryId: userNode.id },
+  });
+  const navigated = await collectCommandResult(viewer, 'tree-nav-1', STREAM_TIMEOUT_MS);
+  assert.equal(navigated.ok, true, `sessionTree was refused: ${String(navigated.error)}`);
+
+  // In place: the same session id still serves the session, so a second turn
+  // travels under it — a replacement would have retired this id instead.
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'command',
+    id: 'tree-p2',
+    sessionId,
+    name: 'prompt',
+    args: { text: secondText },
+  });
+  const secondTurn = await collectPrompt(viewer, 'tree-p2', STREAM_TIMEOUT_MS);
+  assert.equal(
+    secondTurn.result?.ok,
+    true,
+    `the second prompt was refused: ${String(secondTurn.result?.error)}`,
+  );
+  assert.ok(secondTurn.settled, 'the second turn never settled');
+
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'history-request',
+    sessionId,
+  });
+  const history = await waitForMessage(
+    viewer,
+    (message) => message.type === 'snapshot' && message.sessionId === sessionId,
+    STREAM_TIMEOUT_MS,
+  );
+  const entries = (history.entries ?? []) as Array<Record<string, unknown>>;
+  const userEntry = (text: string) =>
+    entries.find(
+      (entry) =>
+        entry.type === 'message' &&
+        (entry.message as Record<string, unknown> | undefined)?.role === 'user' &&
+        messageText({ message: entry.message }).includes(text),
+    );
+
+  const firstEntry = userEntry(firstText);
+  const secondEntry = userEntry(secondText);
+  assert.ok(firstEntry, 'the replayed history must contain the first user message');
+  assert.ok(secondEntry, 'the replayed history must contain the second user message');
+  // The snapshot is append-only and leaf-independent, so it is NOT itself the
+  // navigation witness — it only delivers the recorded `parentId`. The witness
+  // is that the second turn branches from the navigated user message's parent:
+  // `/tree` moved the leaf there, so the second turn was appended as its
+  // sibling. Without the move it would hang off the previous leaf (the first
+  // turn's assistant reply).
+  assert.equal(
+    secondEntry.parentId,
+    firstEntry.parentId,
+    'the second turn must branch from the same parent as the navigated user message',
+  );
+  assert.notEqual(
+    secondEntry.parentId,
+    firstEntry.id,
+    'the navigated user message must not be the second turn\'s parent',
+  );
 });
 
 // ---------------------------------------------------------------------------
