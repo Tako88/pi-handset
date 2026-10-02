@@ -8,17 +8,52 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../client/tool_view.dart';
 import '../client/transcript.dart';
 import 'tool_views.dart';
 
+/// The `Uri` a tapped markdown link should open, or null when the link is not
+/// one this app opens.
+///
+/// Only `http`/`https` are handed to the platform. An anchor (`#...`), a
+/// `mailto:`, a bare relative path, and an empty or null href all return null:
+/// the renderer may produce them, but the phone has no handler we want to
+/// invoke, and `url_launcher` would either fail or open an unrelated app.
+Uri? linkUriToOpen(String? href) {
+  if (href == null || href.isEmpty) return null;
+  final uri = Uri.tryParse(href);
+  if (uri == null) return null;
+  if (uri.scheme != 'http' && uri.scheme != 'https') return null;
+  return uri;
+}
+
+/// The real opener: hands [uri] to the platform's browser. A launch that fails
+/// — no handler, a platform error — is a silent no-op; there is nothing the
+/// viewer can do with an error about a link that would not open.
+Future<void> openExternalLink(Uri uri) async {
+  try {
+    await launchUrl(uri, mode: LaunchMode.externalApplication);
+  } catch (_) {
+    // Deliberately swallowed; see above.
+  }
+}
+
 /// A committed or in-flight text block. Plain `Text` until [TranscriptBlock.complete],
 /// then markdown; the user's own messages are aligned and tinted apart.
 class TextBlock extends StatelessWidget {
-  const TextBlock({super.key, required this.block});
+  const TextBlock({
+    super.key,
+    required this.block,
+    this.onOpenLink = openExternalLink,
+  });
 
   final TranscriptBlock block;
+
+  /// How a tapped link is opened. Injectable so a widget test can assert the
+  /// wiring without a platform channel; production uses [openExternalLink].
+  final Future<void> Function(Uri uri) onOpenLink;
 
   @override
   Widget build(BuildContext context) {
@@ -35,7 +70,13 @@ class TextBlock extends StatelessWidget {
           borderRadius: BorderRadius.circular(12),
         ),
         child: block.complete
-            ? MarkdownBody(data: block.text)
+            ? MarkdownBody(
+                data: block.text,
+                onTapLink: (text, href, title) {
+                  final uri = linkUriToOpen(href);
+                  if (uri != null) onOpenLink(uri);
+                },
+              )
             : Text(block.text),
       ),
     );
