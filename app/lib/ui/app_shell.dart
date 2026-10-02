@@ -15,11 +15,13 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 
 import '../client/endpoint_store.dart';
+import '../client/attachment.dart';
 import '../client/context_usage.dart';
 import '../client/hub_client.dart';
 import '../client/notification_presenter.dart';
 import '../client/settle_notification.dart';
 import '../client/token_store.dart';
+import '../platform/gallery_picker.dart';
 import '../protocol/protocol.dart';
 import 'command_suggestions.dart';
 import 'compose_bar.dart';
@@ -37,6 +39,7 @@ class PiDroidApp extends StatefulWidget {
     required this.tokenStore,
     required this.notifications,
     this.initialSessionId,
+    this.pickImage,
   });
 
   final HubClient client;
@@ -49,6 +52,10 @@ class PiDroidApp extends StatefulWidget {
   /// A session to open once authenticated, from a notification tap that cold
   /// started the app, or null for an ordinary launch.
   final String? initialSessionId;
+
+  /// Picks one gallery image. Defaults to [pickGalleryImage]; tests inject a
+  /// fake so no test opens a real picker.
+  final Future<PickedImage?> Function()? pickImage;
 
   @override
   State<PiDroidApp> createState() => _PiDroidAppState();
@@ -94,6 +101,11 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
   /// The composer field's focus, held here so a command pick can return focus
   /// to the field.
   final FocusNode _composerFocus = FocusNode();
+
+  /// The image picked for the next send, or null. Cleared on a session change
+  /// and after each send, so it cannot leak into the wrong session or a later
+  /// message.
+  PickedImage? _attachment;
 
   /// Whether the composer currently holds a command draft (a leading `/` with
   /// no whitespace). The shell refetches the command list on the transition
@@ -186,10 +198,17 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
 
   void _onState(HubClientState state) {
     if (!mounted) return;
+    final previous = _state.activeSessionId;
     final pending =
         state.status == HubConnectionStatus.connected ? _pendingEndpoint : null;
     setState(() {
       _state = state;
+      // Open/close/switch/replacement: a picked image belongs to the session it
+      // was picked in, and the pre-existing draft text is deliberately global.
+      if (state.activeSessionId != previous) _attachment = null;
+      // A hub that loses the capability must not resurrect a stale pick if the
+      // capability later returns.
+      if (!state.capabilities.contains(capabilityAttachments)) _attachment = null;
       if (state.status == HubConnectionStatus.connected) {
         // Sticky: once paired, a later drop shows the main UI with a banner
         // rather than throwing the user back to pairing.
@@ -265,6 +284,7 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
       _pendingEndpoint = null;
       _bootstrapError = null;
       _dismissedError = null;
+      _attachment = null;
       _state = widget.client.state;
     });
   }
@@ -524,6 +544,46 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
     if (active != null) widget.client.unsubscribe(active);
   }
 
+  /// Picks one gallery image and arms it for the next send. A cancel is silent;
+  /// a platform error and an over-cap image each get a visible reason. The
+  /// messenger is captured before the picker's await, because this context is
+  /// gone once it returns.
+  Future<void> _pickAttachment(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final PickedImage? picked;
+    try {
+      picked = await (widget.pickImage ?? pickGalleryImage)();
+    } catch (_) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Could not open the gallery')),
+      );
+      return;
+    }
+    if (!mounted) return;
+    if (picked == null) return;
+    if (!withinAttachmentCap(picked.bytes.length)) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('That image is too large to send')),
+      );
+      return;
+    }
+    setState(() => _attachment = picked);
+  }
+
+  /// The `prompt`/`followup` args for [text], carrying the picked image when
+  /// the hub advertises attachments. The image is consumed here, so a send
+  /// clears the chip whether or not the command is accepted.
+  Map<String, Object?> _composeArgs(String text) {
+    final image = _attachment;
+    final args = <String, Object?>{'text': text};
+    if (image != null && _state.capabilities.contains(capabilityAttachments)) {
+      args['images'] = [image.toArg()];
+    }
+    if (image != null) setState(() => _attachment = null);
+    return args;
+  }
+
   /// Writes a picked command into the draft and returns focus to the field.
   ///
   /// It inserts rather than sends: the user may still want to add arguments, and
@@ -613,6 +673,8 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
     // the compaction is about to invalidate, and an app bar that sits unchanged
     // for the length of a summarization call reads as a hang.
     final barLabel = transcript.compacting ? 'Compacting…' : usageLabel;
+    final attachmentsEnabled =
+        _state.capabilities.contains(capabilityAttachments);
     final view = Scaffold(
       appBar: AppBar(
         // The reading takes priority over the name: the name is a reminder of
@@ -740,16 +802,21 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
             controller: _composer,
             focusNode: _composerFocus,
             enabled: _state.status == HubConnectionStatus.connected,
+            attachment: attachmentsEnabled ? _attachment : null,
+            onAttach: attachmentsEnabled
+                ? () => _pickAttachment(context)
+                : null,
+            onRemoveAttachment: () => setState(() => _attachment = null),
             onSend: (text) => widget.client.sendCommand(
               activeId,
               'prompt',
-              args: {'text': text},
+              args: _composeArgs(text),
             ),
             onAbort: () => widget.client.sendCommand(activeId, 'abort'),
             onFollowUp: (text) => widget.client.sendCommand(
               activeId,
               'followup',
-              args: {'text': text},
+              args: _composeArgs(text),
             ),
           ),
         ],

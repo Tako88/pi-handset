@@ -2,12 +2,33 @@
 // abort. A refused, unconnected or timed-out send must reach the screen — the
 // prompt looks sent otherwise and is gone.
 
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pi_droid/client/attachment.dart';
 import 'package:pi_droid/client/hub_client.dart';
 import 'package:pi_droid/ui/compose_bar.dart';
 
 Widget wrap(ComposeBar bar) => MaterialApp(home: Scaffold(body: bar));
+
+/// The scaled variant applies the text scale *below* `MaterialApp`, so the
+/// `MediaQuery` cannot be replaced by the one `MaterialApp` derives from the
+/// view.
+Widget wrapScaled(ComposeBar bar) => MaterialApp(
+  home: Scaffold(
+    body: MediaQuery(
+      data: const MediaQueryData(textScaler: TextScaler.linear(2)),
+      child: bar,
+    ),
+  ),
+);
+
+/// A 1x1 PNG, enough for `Image.memory` to have real bytes to decode.
+final Uint8List onePixelPng = base64Decode(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+);
 
 Future<CommandResult> ok(String _) async => const CommandResult(ok: true);
 
@@ -344,5 +365,156 @@ void main() {
     await tester.pump();
 
     expect(aborted, isTrue);
+  });
+
+  testWidgets('no attach button without an onAttach handler', (tester) async {
+    final controller = TextEditingController();
+    final focusNode = FocusNode();
+    addTearDown(controller.dispose);
+    addTearDown(focusNode.dispose);
+    await tester.pumpWidget(
+      wrap(ComposeBar(
+        controller: controller,
+        focusNode: focusNode,
+        onSend: ok,
+        onAbort: () {},
+        onFollowUp: ok,
+      )),
+    );
+
+    // An old hub advertises no attachments capability, so the shell passes no
+    // handler. A button that did nothing would read as broken.
+    expect(find.byKey(const Key('compose-attach')), findsNothing);
+  });
+
+  testWidgets('the attach button sits inside the field when supplied',
+      (tester) async {
+    final controller = TextEditingController();
+    final focusNode = FocusNode();
+    addTearDown(controller.dispose);
+    addTearDown(focusNode.dispose);
+    await tester.pumpWidget(
+      wrap(ComposeBar(
+        controller: controller,
+        focusNode: focusNode,
+        onSend: ok,
+        onAbort: () {},
+        onFollowUp: ok,
+        onAttach: () {},
+      )),
+    );
+
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('compose-field')),
+        matching: find.byKey(const Key('compose-attach')),
+      ),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('tapping the attach button invokes onAttach', (tester) async {
+    final controller = TextEditingController();
+    final focusNode = FocusNode();
+    addTearDown(controller.dispose);
+    addTearDown(focusNode.dispose);
+    var attached = 0;
+    await tester.pumpWidget(
+      wrap(ComposeBar(
+        controller: controller,
+        focusNode: focusNode,
+        onSend: ok,
+        onAbort: () {},
+        onFollowUp: ok,
+        onAttach: () => attached++,
+      )),
+    );
+
+    await tester.tap(find.byKey(const Key('compose-attach')));
+    await tester.pump();
+
+    expect(attached, 1);
+  });
+
+  testWidgets('a picked attachment shows a removable thumbnail',
+      (tester) async {
+    final controller = TextEditingController();
+    final focusNode = FocusNode();
+    addTearDown(controller.dispose);
+    addTearDown(focusNode.dispose);
+    var removed = 0;
+    await tester.pumpWidget(
+      wrap(ComposeBar(
+        controller: controller,
+        focusNode: focusNode,
+        onSend: ok,
+        onAbort: () {},
+        onFollowUp: ok,
+        onAttach: () {},
+        attachment: PickedImage(onePixelPng, 'image/png'),
+        onRemoveAttachment: () => removed++,
+      )),
+    );
+
+    expect(find.byKey(const Key('compose-attachment')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('compose-attachment-remove')));
+    await tester.pump();
+    expect(removed, 1);
+  });
+
+  testWidgets('an attachment chip does not overflow at double text scale',
+      (tester) async {
+    final controller = TextEditingController();
+    final focusNode = FocusNode();
+    addTearDown(controller.dispose);
+    addTearDown(focusNode.dispose);
+    await tester.pumpWidget(
+      wrapScaled(ComposeBar(
+        controller: controller,
+        focusNode: focusNode,
+        onSend: ok,
+        onAbort: () {},
+        onFollowUp: ok,
+        onAttach: () {},
+        attachment: PickedImage(onePixelPng, 'image/png'),
+        onRemoveAttachment: () {},
+      )),
+    );
+    await tester.pump();
+
+    expect(tester.takeException(), isNull);
+    expect(find.byKey(const Key('compose-attachment')), findsOneWidget);
+  });
+
+  testWidgets('a send with an image but no caption says so', (tester) async {
+    final controller = TextEditingController();
+    final focusNode = FocusNode();
+    addTearDown(controller.dispose);
+    addTearDown(focusNode.dispose);
+    var calls = 0;
+    await tester.pumpWidget(
+      wrap(ComposeBar(
+        controller: controller,
+        focusNode: focusNode,
+        onSend: (text) async {
+          calls++;
+          return const CommandResult(ok: true);
+        },
+        onAbort: () {},
+        onFollowUp: ok,
+        onAttach: () {},
+        attachment: PickedImage(onePixelPng, 'image/png'),
+        onRemoveAttachment: () {},
+      )),
+    );
+
+    await tester.tap(find.byKey(const Key('compose-send')));
+    await tester.pump();
+    await tester.pump();
+
+    // A silent dead tap is the failure: the chip stays and nothing is sent, so
+    // the user cannot tell why.
+    expect(find.text('Add a caption to send the image'), findsOneWidget);
+    expect(calls, 0);
   });
 }
