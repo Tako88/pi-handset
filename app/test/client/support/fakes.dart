@@ -239,6 +239,7 @@ class FakeScheduler implements HubScheduler {
   List<FakeTimer> get commandTimers => _ofKind(HubTimerKind.command);
   List<FakeTimer> get notifyTimers => _ofKind(HubTimerKind.notify);
   List<FakeTimer> get connectTimers => _ofKind(HubTimerKind.connect);
+  List<FakeTimer> get replacementTimers => _ofKind(HubTimerKind.replacement);
 
   /// Fires every pending notification timer, in order. Coalescing timers are
   /// the only kind existing tests mean by "flush"; watchdogs and reconnects are
@@ -266,6 +267,14 @@ class FakeScheduler implements HubScheduler {
   /// Fires the connect deadline(s), simulating the bounded dial wait elapsing.
   void fireConnectDeadline() {
     for (final timer in List<FakeTimer>.of(connectTimers)) {
+      timer.fire();
+    }
+  }
+
+  /// Fires the replacement follow timer(s), simulating a successor that never
+  /// registered.
+  void fireReplacementTimeouts() {
+    for (final timer in List<FakeTimer>.of(replacementTimers)) {
       timer.fire();
     }
   }
