@@ -34,6 +34,7 @@ import { COMMAND_ALLOWLIST as HUB_COMMAND_ALLOWLIST } from '../src/hub/hub.ts';
 import {
   RATE_LIMITED_RECONNECT_MS,
   COMMAND_ALLOWLIST as BRIDGE_COMMAND_ALLOWLIST,
+  COMMAND_NOT_ALLOWED,
   SETTLED_TEXT_MAX_CODE_POINTS,
   computeBackoff,
   installBridge,
@@ -1481,6 +1482,37 @@ test('the bridge and hub command allowlists are identical', () => {
     [...BRIDGE_COMMAND_ALLOWLIST].sort(),
     [...HUB_COMMAND_ALLOWLIST].sort(),
   );
+});
+
+test('every allowlisted command is actually dispatched', async () => {
+  // The allowlist is a promise to the app, and nothing checked that the
+  // dispatcher keeps it: a name on the list with no case falls through to the
+  // `default` and the app is told `command not allowed` for a command the list
+  // says it may send. `fetchHistory` is handled in `dispatch`, *before*
+  // `dispatchCommand`, which is exactly how a reader of the switch alone
+  // concludes it is unimplemented — it is not.
+  for (const name of BRIDGE_COMMAND_ALLOWLIST) {
+    const harness = makeHarness();
+    harness.start();
+    const socket = harness.sockets[0]!;
+    socket.open();
+    // Deliberately empty args: every real case answers with its own specific
+    // complaint (`missing text`, `missing model`, …) and only a missing case
+    // answers with the generic refusal. A case's own error is proof it exists.
+    await sendCommand(harness.pi, socket, name);
+    const result = parsed(socket).find((m) => m.type === 'command-result') as
+      | { ok: boolean; error?: string }
+      | undefined;
+    // Presence first: `result?.error` is `undefined` when no reply arrived at
+    // all, which would satisfy the assertion below and turn this guard into a
+    // vacuous pass — the exact failure it exists to catch.
+    assert.ok(result, `${name} produced no command-result`);
+    assert.notEqual(
+      result.error,
+      COMMAND_NOT_ALLOWED,
+      `${name} is allowlisted but the dispatcher has no case for it`,
+    );
+  }
 });
 
 // ---------------------------------------------------------------------------

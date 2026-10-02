@@ -1,9 +1,11 @@
 /// The compose bar: send a `prompt` to the open session, or abort it.
 ///
 /// Presentational: the owner supplies the draft controller and focus node; the
-/// bar renders them and reports the two intents. Other allowlisted commands have
-/// no UI yet. A send that fails (not connected, timed out, hub-refused) surfaces
-/// through a snackbar rather than vanishing.
+/// bar renders them and reports the intents. A tap sends a `prompt`; a long
+/// press sends a `followup`, which runs after the current turn instead of
+/// joining it. Other allowlisted commands have no UI yet. A send that fails (not
+/// connected, timed out, hub-refused) surfaces through a snackbar rather than
+/// vanishing.
 library;
 
 import 'package:flutter/material.dart';
@@ -17,6 +19,7 @@ class ComposeBar extends StatefulWidget {
     required this.focusNode,
     required this.onSend,
     required this.onAbort,
+    required this.onFollowUp,
     this.enabled = true,
   });
 
@@ -29,6 +32,11 @@ class ComposeBar extends StatefulWidget {
   final FocusNode focusNode;
   final Future<CommandResult> Function(String text) onSend;
   final VoidCallback onAbort;
+
+  /// Send the draft so it runs *after* the current turn instead of joining it.
+  /// Required rather than optional: an omitted handler would leave the gesture
+  /// inert, which reads as a broken button rather than a degraded mode.
+  final Future<CommandResult> Function(String text) onFollowUp;
   final bool enabled;
 
   @override
@@ -36,15 +44,31 @@ class ComposeBar extends StatefulWidget {
 }
 
 class _ComposeBarState extends State<ComposeBar> {
-  Future<void> _send() async {
+  Future<void> _send() => _submit(widget.onSend, followUp: false);
+
+  Future<void> _followUp() => _submit(widget.onFollowUp, followUp: true);
+
+  Future<void> _submit(
+    Future<CommandResult> Function(String text) send, {
+    required bool followUp,
+  }) async {
     final text = widget.controller.text.trim();
     if (text.isEmpty) return;
     widget.controller.clear();
-    final result = await widget.onSend(text);
+    final result = await send(text);
     if (!mounted) return;
     if (!result.ok) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(result.error ?? 'the hub refused that command')),
+      );
+      return;
+    }
+    if (followUp) {
+      // The app knows it sent a `followup`; whether pi queues it or runs it now
+      // is pi's call — an idle agent ignores the mode. Claim the send, not the
+      // timing.
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Sent as a follow-up')),
       );
       return;
     }
@@ -89,8 +113,9 @@ class _ComposeBarState extends State<ComposeBar> {
             IconButton(
               key: const Key('compose-send'),
               onPressed: widget.enabled ? _send : null,
+              onLongPress: widget.enabled ? _followUp : null,
               icon: const Icon(Icons.send),
-              tooltip: 'Send',
+              tooltip: 'Send (long-press to run after this turn)',
             ),
           ],
         ),

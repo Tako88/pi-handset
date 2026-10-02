@@ -614,6 +614,11 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
               args: {'text': text},
             ),
             onAbort: () => widget.client.sendCommand(activeId, 'abort'),
+            onFollowUp: (text) => widget.client.sendCommand(
+              activeId,
+              'followup',
+              args: {'text': text},
+            ),
           ),
         ],
       ),
