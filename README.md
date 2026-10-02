@@ -17,14 +17,14 @@ and so is transcript parity with the pi TUI (M1–M3).
 
 | | `pc/` (Node + TypeScript) | `app/` (Flutter + Dart) |
 |---|---|---|
-| Suite | 428 tests passing | 367 tests passing |
+| Suite | 488 tests passing | 481 tests passing |
 | Static gate | `tsc --noEmit` clean | `flutter analyze` clean |
 | Product code | hub, protocol codec, pi bridge | protocol codec, client, UI |
 
 **Transcript parity is done.** The app renders the user's own messages and the
 assistant's thinking from one ordered block model fed identically by the live relay
 and the snapshot history, shows a live `Working…`/`Thinking…`/`Responding…` status
-above the composer, renders tool calls as collapsed blocks that pair each result to
+above the composer, renders tool calls as blocks that pair each result to
 its call, and follows the newest message until you scroll away — where a jump-to-latest
 button appears. The app bar carries the session name and how full the model's context
 is (`23k / 128k · 18%`, or `? / 128k` while pi cannot say), read at turn boundaries
@@ -105,6 +105,22 @@ and a failure to compact (including an automatic one) reaches the transcript as 
 notice. A *typed* `/compact` is still not a command over this path — see the built-ins
 trap above. The same trap applies to a *typed* `/model`: it asks the model rather than
 switching anything, so the menu is the way.
+
+**Tool rendering.** Tool calls render by kind, not as a generic text blob: the bridge
+normalizes each call and result into a typed `tool` payload, and the app paints it by
+`view.type` — a diff for `edit`/`write`, a file range for `read`, a command and merged
+output for `bash`, grouped matches for `grep`/`find`, and a table for `ls`, with a
+structured generic fallback for anything else. At most one row is expanded at a time:
+the in-flight call opens itself and collapses when the next call starts or the turn
+settles; settled history is always collapsed (a snapshot taken mid-turn still opens the
+in-flight row). The view is **optional** — a frame without one (or with a `view.type`
+the app does not know) still decodes and renders through the fallback, so an app and
+bridge that are out of step never drop a tool block. Tool payloads are bounded to a
+quarter of the relay budget; under a severe backlog such a frame can still be dropped
+whole, which the hub's resync path recovers from the unbudgeted history snapshot
+(collapsed). The deviations this rests on — bash's merged streams, write's addition-only
+"diff", `ls` as the only table source, the history byte-doubling — are recorded in
+[known limits](docs/known-limits.md).
 
 **What is left** is not milestone work — actionable items are tracked as issues, and
 deliberate limits are recorded separately.
