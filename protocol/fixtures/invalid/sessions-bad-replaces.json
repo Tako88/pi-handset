@@ -1,0 +1,12 @@
+{
+  "protocolVersion": 1,
+  "type": "sessions",
+  "sessions": [
+    {
+      "sessionId": "sess-2",
+      "label": "new session",
+      "agentState": "idle",
+      "replacesSessionId": 42
+    }
+  ]
+}

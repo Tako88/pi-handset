@@ -20,7 +20,7 @@
     "list-dirs",
     "dir-listing"
   ],
-  "hubCapabilities": ["list-dirs", "project-session"],
+  "hubCapabilities": ["list-dirs", "project-session", "session-control"],
   "eventPayloadKinds": ["stream", "message", "agent", "tool", "status", "usage", "settled"],
   "streamPhases": ["thinking"],
   "sessionOrigins": ["app", "pc"],

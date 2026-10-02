@@ -63,10 +63,10 @@ export const HISTORY_MAX_BYTES = 768 * 1024;
  *
  * agent -> hub (loopback listener):
  * - `hello`  { ticket XOR token }
- * - `register` { sessionId, sessionFile?, cwd?, name?, model?, thinkingLevel?, mode?, pid? }
+ * - `register` { sessionId, sessionFile?, cwd?, name?, model?, thinkingLevel?, mode?, pid?, replaces? }
  * - `event`  { payload: stream | message | agent | tool | status }
  * - `history` { sessionId, entries: unknown[], truncated: boolean }
- * - `command-result` { id, ok, error?, commands?, models? }
+ * - `command-result` { id, ok, error?, commands?, models?, queued?, tree?, treeTruncated? }
  *
  * viewer -> hub (LAN listener):
  * - `hello`  { ticket XOR token }
@@ -91,7 +91,7 @@ export const HISTORY_MAX_BYTES = 768 * 1024;
  * - `snapshot` { sessionId, lastSeq, agentState, entries: unknown[], truncated }
  *   — `lastSeq`/`agentState` are hub-tracked; `entries` are agent-supplied and
  *   may be truncated.
- * - `command-result` { id, ok, error?, commands?, models? }
+ * - `command-result` { id, ok, error?, commands?, models?, queued?, tree?, treeTruncated? }
  * - `resync-required` { sessionId, reason }
  * - `session-gone` { sessionId }
  *
@@ -311,6 +311,8 @@ export interface RegisterMessage {
   thinkingLevel?: string;
   mode?: string;
   pid?: number;
+  /** The hub session id this register replaces, after a `/new`/`/fork`. */
+  replaces?: string;
 }
 
 export interface HistoryMessage {
@@ -328,6 +330,15 @@ export interface ModelSummary {
   name: string;
 }
 
+/** One node of the `/tree` picker, flattened from pi's session tree. */
+export interface TreeNodeSummary {
+  id: string;
+  parentId: string | null;
+  role: 'user' | 'assistant';
+  label?: string;
+  text: string;
+}
+
 export interface SlashCommand {
   name: string;
   description?: string;
@@ -343,6 +354,10 @@ export interface CommandResultMessage {
   commands?: SlashCommand[];
   /** Present only on a `listModels` result; validated if present. */
   models?: ModelSummary[];
+  /** Present only on a `listTree` result; validated if present. */
+  tree?: TreeNodeSummary[];
+  /** True when `tree` dropped older nodes; validated if present. */
+  treeTruncated?: boolean;
   /**
    * Tri-state: absent = the bridge did not queue this (unknown / not-queued);
    * `true` = accepted and dispatched as a mid-turn `steer`; `false` = never sent.
@@ -469,6 +484,8 @@ export interface SessionSummary {
   agentState: AgentState;
   /** Validated if present; an absent field means `'pc'` (mixed-version skew). */
   origin?: SessionOrigin;
+  /** The hub session id this one replaces, set only on `/new`/`/fork` successors. */
+  replacesSessionId?: string;
 }
 
 export interface SessionsMessage {
@@ -507,7 +524,7 @@ export interface ResyncRequiredMessage {
 
 /** The hub capabilities this protocol version advertises on the `sessions`
  * frame. Canonical; a viewer gates folder browsing on their presence. */
-export const HUB_CAPABILITIES = ['list-dirs', 'project-session'] as const;
+export const HUB_CAPABILITIES = ['list-dirs', 'project-session', 'session-control'] as const;
 export type HubCapability = (typeof HUB_CAPABILITIES)[number];
 
 /**
@@ -670,6 +687,15 @@ function isModelSummary(value: unknown): boolean {
     asString(model.id) !== null && asString(model.name) !== null;
 }
 
+/** True when `value` is a `{id, parentId, role, label?, text}` tree node. */
+function isTreeNodeSummary(value: unknown): boolean {
+  const node = asObject(value);
+  return node !== null && asString(node.id) !== null &&
+    (node.parentId === null || asString(node.parentId) !== null) &&
+    (node.role === 'user' || node.role === 'assistant') &&
+    isOptionalString(node.label) && typeof node.text === 'string';
+}
+
 /** Machine-readable failure reasons, stable enough for M5 to map and M7 to port. */
 export type DecodeErrorCode =
   | 'malformed-json'
@@ -805,7 +831,15 @@ export function decode(text: string): DecodeResult {
       if (asString(message.sessionId) === null) {
         return fail('bad-field', 'register sessionId must be a non-empty string');
       }
-      for (const field of ['sessionFile', 'cwd', 'name', 'model', 'thinkingLevel', 'mode']) {
+      for (const field of [
+        'sessionFile',
+        'cwd',
+        'name',
+        'model',
+        'thinkingLevel',
+        'mode',
+        'replaces',
+      ]) {
         if (!isOptionalString(message[field])) {
           return fail('bad-field', `register ${field} must be a string`);
         }
@@ -866,6 +900,22 @@ export function decode(text: string): DecodeResult {
       }
       if (message.queued !== undefined && typeof message.queued !== 'boolean') {
         return fail('bad-field', 'command-result queued must be a boolean');
+      }
+      if (message.tree !== undefined) {
+        if (!Array.isArray(message.tree)) {
+          return fail('bad-field', 'command-result tree must be an array');
+        }
+        for (const entry of message.tree) {
+          if (!isTreeNodeSummary(entry)) {
+            return fail(
+              'bad-field',
+              'command-result tree nodes must carry id, parentId, role and text',
+            );
+          }
+        }
+      }
+      if (message.treeTruncated !== undefined && typeof message.treeTruncated !== 'boolean') {
+        return fail('bad-field', 'command-result treeTruncated must be a boolean');
       }
       return { ok: true, value: parsed as CommandResultMessage };
     }
@@ -984,6 +1034,9 @@ export function decode(text: string): DecodeResult {
           !(SESSION_ORIGINS as readonly unknown[]).includes(summary.origin)
         ) {
           return fail('bad-field', 'sessions origin must be app or pc');
+        }
+        if (!isOptionalString(summary.replacesSessionId)) {
+          return fail('bad-field', 'sessions replacesSessionId must be a string');
         }
       }
       if (
