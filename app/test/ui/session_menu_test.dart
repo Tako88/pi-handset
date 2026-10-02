@@ -8,9 +8,13 @@ import 'package:pi_droid/client/hub_client.dart';
 import 'package:pi_droid/ui/session_menu.dart';
 
 /// A host whose app bar carries the menu. Callbacks record what fired.
+///
+/// `onNewSession`/`onFork` are null by default, which stands in for a hub
+/// without the `session-control` capability.
 Widget menuHost({
   String? thinkingLevel,
   String? model,
+  bool sessionControl = false,
   List<String>? fired,
 }) => MaterialApp(
   home: Scaffold(
@@ -23,6 +27,8 @@ Widget menuHost({
           onRename: () => fired?.add('rename'),
           onThinkingLevel: () => fired?.add('thinking'),
           onModel: () => fired?.add('model'),
+          onNewSession: sessionControl ? () => fired?.add('new') : null,
+          onFork: sessionControl ? () => fired?.add('fork') : null,
         ),
       ],
     ),
@@ -155,6 +161,73 @@ void main() {
     await tester.tap(find.text('Model'));
     await tester.pumpAndSettle();
     expect(fired, ['model']);
+  });
+
+  testWidgets('the menu hides new and fork without the session-control capability', (
+    tester,
+  ) async {
+    await tester.pumpWidget(menuHost());
+    await tester.tap(find.byKey(const Key('session-menu')));
+    await tester.pumpAndSettle();
+
+    // Prove the menu is genuinely open before asserting the new items are
+    // absent: two `findsNothing`s also pass if the menu never opened at all.
+    expect(find.byKey(const Key('session-menu-compact')), findsOneWidget);
+    expect(find.byKey(const Key('session-menu-new')), findsNothing);
+    expect(find.byKey(const Key('session-menu-fork')), findsNothing);
+  });
+
+  testWidgets('the menu shows new and fork with the session-control capability', (
+    tester,
+  ) async {
+    await tester.pumpWidget(menuHost(sessionControl: true));
+    await tester.tap(find.byKey(const Key('session-menu')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('session-menu-new')), findsOneWidget);
+    expect(find.byKey(const Key('session-menu-fork')), findsOneWidget);
+  });
+
+  testWidgets('the menu routes the new and fork actions', (tester) async {
+    final fired = <String>[];
+    await tester.pumpWidget(menuHost(sessionControl: true, fired: fired));
+
+    await tester.tap(find.byKey(const Key('session-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('session-menu-new')));
+    await tester.pumpAndSettle();
+    expect(fired, ['new']);
+
+    await tester.tap(find.byKey(const Key('session-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('session-menu-fork')));
+    await tester.pumpAndSettle();
+    expect(fired, ['new', 'fork']);
+  });
+
+  testWidgets('the menu does not overflow at a large text scale with new and fork', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(360 * 3, 640 * 3);
+    tester.view.devicePixelRatio = 3;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      MediaQuery(
+        data: const MediaQueryData(textScaler: TextScaler.linear(2)),
+        child: menuHost(
+          sessionControl: true,
+          model: 'Claude Sonnet 4.5 with an extremely long model name indeed',
+        ),
+      ),
+    );
+    await tester.tap(find.byKey(const Key('session-menu')));
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(find.byKey(const Key('session-menu-new')), findsOneWidget);
+    expect(find.byKey(const Key('session-menu-fork')), findsOneWidget);
   });
 
   testWidgets('the menu does not overflow at a large text scale with a long name', (
@@ -557,6 +630,208 @@ void main() {
       tester.getTopLeft(find.byKey(const Key('model-search'))).dy,
       greaterThanOrEqualTo(40),
     );
+  });
+
+  group('pickTreeNode', () {
+    const treeNodes = [
+      TreeNodeSummary(
+        id: 'e1',
+        parentId: null,
+        role: 'user',
+        text: 'first question',
+      ),
+      TreeNodeSummary(
+        id: 'e2',
+        parentId: 'e1',
+        role: 'assistant',
+        text: 'an answer',
+      ),
+      TreeNodeSummary(
+        id: 'e3',
+        parentId: 'e1',
+        role: 'user',
+        text: 'a follow-up',
+      ),
+    ];
+
+    testWidgets('returns the tapped node', (tester) async {
+      TreeNodeSummary? picked;
+      await tester.pumpWidget(
+        triggerHost((context) async {
+          picked = await pickTreeNode(context, treeNodes, userOnly: true);
+        }),
+      );
+      await tester.tap(find.byKey(const Key('trigger')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('tree-picker')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('tree-node-e3')));
+      await tester.pumpAndSettle();
+      expect(picked!.id, 'e3');
+    });
+
+    testWidgets('returns null when dismissed', (tester) async {
+      TreeNodeSummary? picked;
+      var completed = false;
+      await tester.pumpWidget(
+        triggerHost((context) async {
+          picked = await pickTreeNode(context, treeNodes, userOnly: true);
+          completed = true;
+        }),
+      );
+      await tester.tap(find.byKey(const Key('trigger')));
+      await tester.pumpAndSettle();
+
+      await tester.tapAt(const Offset(5, 5));
+      await tester.pumpAndSettle();
+
+      expect(completed, isTrue);
+      expect(picked, isNull);
+    });
+
+    testWidgets('keeps only user nodes under userOnly', (tester) async {
+      await tester.pumpWidget(
+        triggerHost((context) async {
+          await pickTreeNode(context, treeNodes, userOnly: true);
+        }),
+      );
+      await tester.tap(find.byKey(const Key('trigger')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('tree-node-e1')), findsOneWidget);
+      expect(find.byKey(const Key('tree-node-e3')), findsOneWidget);
+      expect(find.byKey(const Key('tree-node-e2')), findsNothing);
+    });
+
+    testWidgets('keeps every node without userOnly', (tester) async {
+      await tester.pumpWidget(
+        triggerHost((context) async {
+          await pickTreeNode(context, treeNodes, userOnly: false);
+        }),
+      );
+      await tester.tap(find.byKey(const Key('trigger')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('tree-node-e1')), findsOneWidget);
+      expect(find.byKey(const Key('tree-node-e2')), findsOneWidget);
+      expect(find.byKey(const Key('tree-node-e3')), findsOneWidget);
+    });
+
+    testWidgets('shows the empty state when nothing qualifies', (tester) async {
+      await tester.pumpWidget(
+        triggerHost((context) async {
+          await pickTreeNode(
+            context,
+            const [
+              TreeNodeSummary(
+                id: 'e1',
+                parentId: null,
+                role: 'assistant',
+                text: 'an answer',
+              ),
+            ],
+            userOnly: true,
+          );
+        }),
+      );
+      await tester.tap(find.byKey(const Key('trigger')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('tree-picker-empty')), findsOneWidget);
+      expect(find.byKey(const Key('tree-node-e1')), findsNothing);
+    });
+
+    testWidgets('shows the truncated note when told', (tester) async {
+      await tester.pumpWidget(
+        triggerHost((context) async {
+          await pickTreeNode(
+            context,
+            treeNodes,
+            userOnly: true,
+            truncated: true,
+          );
+        }),
+      );
+      await tester.tap(find.byKey(const Key('trigger')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('tree-picker-truncated')), findsOneWidget);
+    });
+
+    testWidgets('does not overflow at a large text scale and scrolls', (
+      tester,
+    ) async {
+      tester.view.physicalSize = const Size(360 * 3, 640 * 3);
+      tester.view.devicePixelRatio = 3;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final many = [
+        for (var i = 0; i < 20; i++)
+          TreeNodeSummary(
+            id: 'e$i',
+            parentId: i == 0 ? null : 'e${i - 1}',
+            role: 'user',
+            text: 'message number $i',
+          ),
+      ];
+      await tester.pumpWidget(
+        MaterialApp(
+          builder: (context, child) => MediaQuery(
+            data: MediaQuery.of(
+              context,
+            ).copyWith(textScaler: const TextScaler.linear(2)),
+            child: child!,
+          ),
+          home: Scaffold(
+            body: Builder(
+              builder: (context) => TextButton(
+                key: const Key('trigger'),
+                onPressed: () async {
+                  await pickTreeNode(context, many, userOnly: true);
+                },
+                child: const Text('open'),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.byKey(const Key('trigger')));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+
+      // The last row is not built until it is scrolled into view, which proves
+      // the list scrolls inside the sheet rather than overflowing it.
+      expect(find.byKey(const Key('tree-node-e19')), findsNothing);
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('tree-node-e19')),
+        100,
+        scrollable: find.descendant(
+          of: find.byKey(const Key('tree-picker')),
+          matching: find.byType(Scrollable),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('tree-node-e19')), findsOneWidget);
+    });
+
+    testWidgets('hides the truncated note when nothing was dropped', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        triggerHost((context) async {
+          await pickTreeNode(context, treeNodes, userOnly: true);
+        }),
+      );
+      await tester.tap(find.byKey(const Key('trigger')));
+      await tester.pumpAndSettle();
+
+      // Prove the picker rendered before asserting the note is absent: only a
+      // never-opened picker also satisfies a lone `findsNothing`.
+      expect(find.byKey(const Key('tree-node-e1')), findsOneWidget);
+      expect(find.byKey(const Key('tree-picker-truncated')), findsNothing);
+    });
   });
 
   group('modelsMatching', () {

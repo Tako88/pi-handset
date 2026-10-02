@@ -1,10 +1,12 @@
-/// The transcript app bar's overflow menu: compact, rename, thinking level and
-/// model.
+/// The transcript app bar's overflow menu: new, fork, compact, rename,
+/// thinking level and model.
 ///
-/// The menu is the reachable path to four commands the bridge already
-/// implements and both allowlists already permit; the pieces of state it
-/// displays from the hub are the active thinking level and the current model,
-/// both of which ride the existing `usage` event payload.
+/// The menu is the reachable path to commands the bridge already implements and
+/// both allowlists already permit; the pieces of state it displays from the hub
+/// are the active thinking level and the current model, both of which ride the
+/// existing `usage` event payload. New and fork replace the session, which only
+/// a hub advertising the `session-control` capability can do, so the shell
+/// passes their callbacks as null without it and the items are omitted.
 library;
 
 import 'package:flutter/material.dart';
@@ -40,6 +42,8 @@ class SessionMenuButton extends StatelessWidget {
     required this.onRename,
     required this.onThinkingLevel,
     required this.onModel,
+    this.onNewSession,
+    this.onFork,
   });
 
   /// The level pi currently reports, or null when no `usage` event has arrived
@@ -55,6 +59,13 @@ class SessionMenuButton extends StatelessWidget {
   final VoidCallback onThinkingLevel;
   final VoidCallback onModel;
 
+  /// Replaces the session with a fresh one. Null (no `session-control`
+  /// capability) hides the item.
+  final VoidCallback? onNewSession;
+
+  /// Replaces the session with a fork of it. Null hides the item.
+  final VoidCallback? onFork;
+
   @override
   Widget build(BuildContext context) {
     return PopupMenuButton<String>(
@@ -63,6 +74,10 @@ class SessionMenuButton extends StatelessWidget {
       tooltip: 'Session menu',
       onSelected: (value) {
         switch (value) {
+          case 'new':
+            onNewSession?.call();
+          case 'fork':
+            onFork?.call();
           case 'compact':
             onCompact();
           case 'rename':
@@ -74,6 +89,18 @@ class SessionMenuButton extends StatelessWidget {
         }
       },
       itemBuilder: (context) => [
+        if (onNewSession != null)
+          const PopupMenuItem<String>(
+            key: Key('session-menu-new'),
+            value: 'new',
+            child: Text('New session'),
+          ),
+        if (onFork != null)
+          const PopupMenuItem<String>(
+            key: Key('session-menu-fork'),
+            value: 'fork',
+            child: Text('Fork'),
+          ),
         const PopupMenuItem<String>(
           key: Key('session-menu-compact'),
           value: 'compact',
@@ -152,6 +179,35 @@ Future<bool> confirmCompact(BuildContext context) async {
           key: const Key('compact-confirm-yes'),
           onPressed: () => Navigator.pop(dialogContext, true),
           child: const Text('Compact'),
+        ),
+      ],
+    ),
+  );
+  return decision ?? false;
+}
+
+/// Asks before replacing the session with a fresh one. Returns false on cancel
+/// or dismissal.
+Future<bool> confirmNewSession(BuildContext context) async {
+  final decision = await showDialog<bool>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      key: const Key('new-session-confirm'),
+      title: const Text('Start a new session?'),
+      content: const Text(
+        'pi will replace this session with a fresh one. The current '
+        'conversation stays on disk but the transcript on screen is replaced.',
+      ),
+      actions: [
+        TextButton(
+          key: const Key('new-session-confirm-no'),
+          onPressed: () => Navigator.pop(dialogContext, false),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          key: const Key('new-session-confirm-yes'),
+          onPressed: () => Navigator.pop(dialogContext, true),
+          child: const Text('New session'),
         ),
       ],
     ),
@@ -245,6 +301,89 @@ Future<String?> pickThinkingLevel(BuildContext context, String? current) {
               trailing: level == current ? const Icon(Icons.check) : null,
               onTap: () => Navigator.pop(sheetContext, level),
             ),
+        ],
+      ),
+    ),
+  );
+}
+
+/// The label shown for a tree node: its own label when pi set one, otherwise
+/// the message text, with a placeholder so an empty message is still tappable
+/// and distinguishable.
+String _treeLabel(TreeNodeSummary node) {
+  final label = node.label ?? node.text;
+  return label.isEmpty ? '(empty message)' : label;
+}
+
+/// Depth of [node] inside [visible], following `parentId` chains. A parent that
+/// is not in [visible] — filtered out, or a root — ends the walk, so an orphaned
+/// parent reads as depth 0. The seen-guard bounds a malformed cycle rather than
+/// looping forever; pi's tree cannot cycle.
+int _treeDepth(TreeNodeSummary node, Map<String, TreeNodeSummary> visible) {
+  var depth = 0;
+  final seen = <String>{node.id};
+  var parentId = node.parentId;
+  while (parentId != null && seen.add(parentId)) {
+    final parent = visible[parentId];
+    if (parent == null) break;
+    depth++;
+    parentId = parent.parentId;
+  }
+  return depth;
+}
+
+/// Shows the session-tree picker, keeping only user nodes when [userOnly] is
+/// set. Returns the tapped node, or null if dismissed.
+///
+/// [truncated] adds a note when older entries were dropped, so a capped list
+/// never looks like the whole tree. The list scrolls under the sheet's height
+/// (the thinking picker's pattern), so a long tree stays usable at a large text
+/// scale.
+Future<TreeNodeSummary?> pickTreeNode(
+  BuildContext context,
+  List<TreeNodeSummary> nodes, {
+  required bool userOnly,
+  bool truncated = false,
+}) {
+  final visible = userOnly
+      ? [
+          for (final node in nodes)
+            if (node.role == 'user') node,
+        ]
+      : List<TreeNodeSummary>.of(nodes);
+  final byId = {for (final node in visible) node.id: node};
+  return showModalBottomSheet<TreeNodeSummary>(
+    context: context,
+    builder: (sheetContext) => SafeArea(
+      child: ListView(
+        key: const Key('tree-picker'),
+        shrinkWrap: true,
+        children: [
+          if (truncated)
+            const ListTile(
+              key: Key('tree-picker-truncated'),
+              title: Text('Older entries are hidden'),
+            ),
+          if (visible.isEmpty)
+            const ListTile(
+              key: Key('tree-picker-empty'),
+              title: Text('No messages to fork from'),
+            )
+          else
+            for (final node in visible)
+              ListTile(
+                key: Key('tree-node-${node.id}'),
+                contentPadding: EdgeInsets.only(
+                  left: 16 + 16.0 * _treeDepth(node, byId),
+                  right: 16,
+                ),
+                title: Text(
+                  _treeLabel(node),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                onTap: () => Navigator.pop(sheetContext, node),
+              ),
         ],
       ),
     ),
