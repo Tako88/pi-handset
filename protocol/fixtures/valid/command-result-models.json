@@ -1,0 +1,10 @@
+{
+  "protocolVersion": 1,
+  "type": "command-result",
+  "id": "cmd-1",
+  "ok": true,
+  "models": [
+    { "provider": "anthropic", "id": "claude-sonnet-4", "name": "Claude Sonnet 4" },
+    { "provider": "openai", "id": "gpt-5", "name": "GPT-5" }
+  ]
+}

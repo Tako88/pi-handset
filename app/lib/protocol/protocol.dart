@@ -142,6 +142,14 @@ String? _nonEmptyString(Object? value) =>
 bool _isOptionalString(Map<String, Object?> message, String key) =>
     !message.containsKey(key) || message[key] is String;
 
+bool _isModelSummary(Object? value) {
+  if (value is! Map) return false;
+  final model = value.cast<String, Object?>();
+  return _nonEmptyString(model['provider']) != null &&
+      _nonEmptyString(model['id']) != null &&
+      _nonEmptyString(model['name']) != null;
+}
+
 /// Decodes one JSON object, reporting malformed input as a result, never a throw.
 DecodeResult decode(String text) {
   Object? parsed;
@@ -243,6 +251,12 @@ DecodeResult decode(String text) {
         if (!_isOptionalString(body, 'thinkingLevel')) {
           return const DecodeResult.fail('bad-field', 'usage thinkingLevel must be a string');
         }
+        if (body.containsKey('model') && !_isModelSummary(body['model'])) {
+          return const DecodeResult.fail(
+            'bad-field',
+            'usage model must carry provider, id and name strings',
+          );
+        }
         return DecodeResult.ok(message);
       }
       return DecodeResult.fail(
@@ -325,6 +339,23 @@ DecodeResult decode(String text) {
             return const DecodeResult.fail(
               'bad-field',
               'command-result command description must be a string',
+            );
+          }
+        }
+      }
+      if (message.containsKey('models')) {
+        final models = message['models'];
+        if (models is! List) {
+          return const DecodeResult.fail(
+            'bad-field',
+            'command-result models must be an array',
+          );
+        }
+        for (final entry in models) {
+          if (!_isModelSummary(entry)) {
+            return const DecodeResult.fail(
+              'bad-field',
+              'command-result model must carry provider, id and name strings',
             );
           }
         }
