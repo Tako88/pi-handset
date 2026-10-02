@@ -10,6 +10,16 @@ import 'package:flutter/material.dart';
 
 import '../client/hub_client.dart';
 
+/// Matches the whitespace that ends a command draft. Compiled once: the shell
+/// evaluates [isCommandDraft] on every keystroke.
+final _whitespace = RegExp(r'\s');
+
+/// Whether [draft] is a command being typed: a leading `/` and no whitespace.
+/// [suggestionsFor]'s trigger minus the cache check, so the shell can refetch
+/// when the overlay would open even if nothing is cached.
+bool isCommandDraft(String draft) =>
+    draft.startsWith('/') && !_whitespace.hasMatch(draft);
+
 /// The commands matching [draft]: those whose [SlashCommand.name] starts with the
 /// text after a leading `/`, case-insensitively.
 ///
@@ -19,8 +29,7 @@ import '../client/hub_client.dart';
 /// command, in pi's order — this function never re-sorts.
 List<SlashCommand> suggestionsFor(List<SlashCommand> commands, String draft) {
   if (commands.isEmpty) return const [];
-  if (!draft.startsWith('/')) return const [];
-  if (RegExp(r'\s').hasMatch(draft)) return const [];
+  if (!isCommandDraft(draft)) return const [];
   final prefix = draft.substring(1).toLowerCase();
   if (prefix.isEmpty) return List.of(commands);
   return commands

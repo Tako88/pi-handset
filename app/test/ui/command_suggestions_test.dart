@@ -87,6 +87,19 @@ void main() {
     });
   });
 
+  group('isCommandDraft', () {
+    test('a leading slash with no whitespace is a command draft', () {
+      expect(isCommandDraft('/'), isTrue);
+      expect(isCommandDraft('/re'), isTrue);
+    });
+
+    test('empty, plain text and a spaced command are not', () {
+      expect(isCommandDraft(''), isFalse);
+      expect(isCommandDraft('hello'), isFalse);
+      expect(isCommandDraft('/review '), isFalse);
+    });
+  });
+
   group('CommandSuggestionPanel', () {
     testWidgets('renders a keyed tile per command with its slash name', (
       tester,

@@ -95,6 +95,11 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
   /// to the field.
   final FocusNode _composerFocus = FocusNode();
 
+  /// Whether the composer currently holds a command draft (a leading `/` with
+  /// no whitespace). The shell refetches the command list on the transition
+  /// into this state, so the `/` overlay is fresh at the point of use.
+  bool _commandDraftOpen = false;
+
   @override
   void initState() {
     super.initState();
@@ -102,6 +107,7 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
     _subscription = widget.client.changes.listen(_onState);
     _openRequests = widget.notifications.openSessionRequests.listen(_queueOpen);
     _settlesSub = widget.client.settles.listen(_onSettle);
+    _composer.addListener(_onComposerChanged);
     WidgetsBinding.instance.addObserver(this);
     unawaited(widget.notifications.requestPermission());
     _bootstrap();
@@ -113,6 +119,7 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
     _subscription?.cancel();
     _openRequests?.cancel();
     _settlesSub?.cancel();
+    _composer.removeListener(_onComposerChanged);
     _composer.dispose();
     _composerFocus.dispose();
     super.dispose();
@@ -219,6 +226,16 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
         await widget.client.start(endpoint.host, port: endpoint.port);
       } on StateError {
         // A remembered address with no stored token: pairing is still required.
+      } catch (error) {
+        // The keystore could not hand the token back (a platform failure, not
+        // a missing token). Surface it and return to pairing rather than
+        // leaving the spinner spinning forever.
+        if (!mounted) return;
+        setState(() {
+          _bootstrapError = 'could not read the saved token: $error';
+          _loading = false;
+        });
+        return;
       }
     }
     if (!mounted) return;
@@ -250,6 +267,26 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
       _dismissedError = null;
       _state = widget.client.state;
     });
+  }
+
+  /// Refetches the active session's command list when the `/` overlay opens.
+  ///
+  /// Only the transition into a command draft triggers a request — not every
+  /// keystroke — so toggling `/` off and on again costs two requests. The
+  /// cached list stays visible until a successful reply overwrites it; a
+  /// refusal (an old hub) leaves it untouched.
+  ///
+  /// Switching sessions mid-draft fires no transition, so the new session
+  /// relies solely on its subscribe-time fetch; if that fetch was refused (an
+  /// old hub) the already-open overlay stays empty until the user clears and
+  /// retypes `/`.
+  void _onComposerChanged() {
+    final open = isCommandDraft(_composer.text);
+    if (open && !_commandDraftOpen) {
+      final activeId = _state.activeSessionId;
+      if (activeId != null) unawaited(widget.client.loadCommands(activeId));
+    }
+    _commandDraftOpen = open;
   }
 
   void _open(SessionSummary session) => _queueOpen(session.sessionId);

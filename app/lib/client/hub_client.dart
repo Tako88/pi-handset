@@ -651,7 +651,7 @@ class HubClient {
     requestHistory(sessionId);
     // Fire-and-forget: the overlay shows nothing until the list arrives, and a
     // refusal (an old hub's `unknown command`) is deliberately surfaced nowhere.
-    unawaited(_loadCommands(sessionId));
+    unawaited(loadCommands(sessionId));
     _scheduleNotify();
   }
 
@@ -705,7 +705,7 @@ class HubClient {
   /// Asks the hub for [sessionId]'s real pi commands and completes with them.
   ///
   /// Routed through [_request] so the result correlates like any other command
-  /// and `session-gone` can fail it; the cache write is [_loadCommands]'s.
+  /// and `session-gone` can fail it; the cache write is [loadCommands]'s.
   Future<CommandResult> listCommands(String sessionId, {String? id}) {
     return _request(sessionId, id, (commandId) => <String, Object?>{
       'protocolVersion': protocolVersion,
@@ -733,13 +733,19 @@ class HubClient {
   /// Fetches [sessionId]'s commands and caches them under the id that asked —
   /// never the currently active one.
   ///
+  /// Also called by the shell when the `/` overlay opens, so the list is fresh
+  /// at the point of use (a PC-side `/reload` or a new extension is otherwise
+  /// invisible to the app's open socket). The cached list is left untouched
+  /// until a successful reply overwrites it; a refusal leaves the previous
+  /// cache in place. Each call arms the usual 30s `command` timer.
+  ///
   /// The live-session check is defence in depth, not a reachable branch: every
   /// path that drops a transcript (`session-gone` past the cap, `disconnect`,
   /// `stop`, a lost socket) fails that session's pending commands first, and a
   /// successful result can only come from `_onCommandResult`, so the transcript
   /// is still present when this continuation runs. It stays because that
   /// ordering is a cross-function invariant, not a local one.
-  Future<void> _loadCommands(String sessionId) async {
+  Future<void> loadCommands(String sessionId) async {
     final result = await listCommands(sessionId);
     if (!result.ok || result.commands == null) return;
     if (!_state.transcripts.containsKey(sessionId)) return;

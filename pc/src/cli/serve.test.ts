@@ -3,9 +3,15 @@ import { test } from 'node:test';
 
 // Deliberately written before `./serve.ts` exists: red must be an unresolved import.
 import { pairingAnnouncement, pairingCodeNotice, parseArgs } from './serve.ts';
+import { DEFAULT_MAX_SESSIONS } from '../hub/spawner.ts';
 
 test('parseArgs defaults to port 8787, LAN on, no take-over', () => {
-  assert.deepEqual(parseArgs([]), { port: 8787, lan: true, takeOver: false });
+  assert.deepEqual(parseArgs([]), {
+    port: 8787,
+    lan: true,
+    takeOver: false,
+    maxSessions: DEFAULT_MAX_SESSIONS,
+  });
 });
 
 test('parseArgs reads --port', () => {
@@ -37,6 +43,24 @@ test('parseArgs rejects a --port with no value', () => {
   assert.throws(() => parseArgs(['--port']), /port/i);
 });
 
+test('parseArgs reads --max-sessions', () => {
+  assert.equal(parseArgs(['--max-sessions', '2']).maxSessions, 2);
+});
+
+test('parseArgs rejects a non-integer --max-sessions', () => {
+  for (const bad of ['abc', '0', '-1', '2.5', '']) {
+    assert.throws(() => parseArgs(['--max-sessions', bad]), /max-sessions/i, `--max-sessions ${bad}`);
+  }
+});
+
+test('parseArgs rejects a --max-sessions with no value', () => {
+  assert.throws(() => parseArgs(['--max-sessions']), /max-sessions/i);
+});
+
+test('parseArgs rejects --max-sessions=2 rather than silently ignoring it', () => {
+  assert.throws(() => parseArgs(['--max-sessions=2']), /--max-sessions=2/);
+});
+
 test('parseArgs reads --no-lan', () => {
   assert.equal(parseArgs(['--no-lan']).lan, false);
 });
@@ -50,11 +74,15 @@ test('parseArgs rejects an unknown flag instead of ignoring it', () => {
 });
 
 test('parseArgs combines flags', () => {
-  assert.deepEqual(parseArgs(['--port', '9123', '--no-lan', '--take-over']), {
-    port: 9123,
-    lan: false,
-    takeOver: true,
-  });
+  assert.deepEqual(
+    parseArgs(['--port', '9123', '--no-lan', '--take-over', '--max-sessions', '2']),
+    {
+      port: 9123,
+      lan: false,
+      takeOver: true,
+      maxSessions: 2,
+    },
+  );
 });
 
 test('a post-shutdown SIGUSR1 mints no pairing code', () => {
