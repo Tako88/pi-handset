@@ -133,6 +133,11 @@ class SessionTranscript {
   /// menu displays it; it is never a transcript row.
   final String? thinkingLevel;
 
+  /// The model pi reports as active for this session, or null while the bridge
+  /// has not reported one (an older bridge omits the field). The menu displays
+  /// its name; it is never a transcript row.
+  final ModelSummary? currentModel;
+
   /// True while pi is compacting this session's context. Ambient state, like
   /// [contextUsage]: the app bar shows it in place of the context reading,
   /// which is exactly what compaction is about to change.
@@ -151,6 +156,7 @@ class SessionTranscript {
     this.truncated = false,
     this.contextUsage,
     this.thinkingLevel,
+    this.currentModel,
     this.compacting = false,
   });
 
@@ -167,6 +173,7 @@ class SessionTranscript {
     bool? truncated,
     ContextUsage? contextUsage,
     String? thinkingLevel,
+    ModelSummary? currentModel,
     bool? compacting,
   }) => SessionTranscript(
     entries: entries ?? this.entries,
@@ -181,6 +188,7 @@ class SessionTranscript {
     truncated: truncated ?? this.truncated,
     contextUsage: contextUsage ?? this.contextUsage,
     thinkingLevel: thinkingLevel ?? this.thinkingLevel,
+    currentModel: currentModel ?? this.currentModel,
     compacting: compacting ?? this.compacting,
   );
 }
@@ -247,6 +255,9 @@ class CommandResult {
   /// Present only on a `listCommands` result.
   final List<SlashCommand>? commands;
 
+  /// Present only on a `listModels` result.
+  final List<ModelSummary>? models;
+
   /// Tri-state: absent (`null`) = the bridge did not queue this (unknown /
   /// not-queued); `true` = accepted and dispatched as a mid-turn `steer`;
   /// `false` = never sent. The bridge only ever emits `true` or omits the key.
@@ -256,6 +267,7 @@ class CommandResult {
     required this.ok,
     this.error,
     this.commands,
+    this.models,
     this.queued,
   });
 }
@@ -272,6 +284,26 @@ class SlashCommand {
   factory SlashCommand.fromJson(Map<String, Object?> json) => SlashCommand(
     name: json['name']! as String,
     description: json['description'] as String?,
+  );
+}
+
+/// One of pi's auth-configured models, projected to the three fields the app
+/// needs. The bridge deliberately drops `headers`, `baseUrl` and the rest.
+class ModelSummary {
+  final String provider;
+  final String id;
+  final String name;
+
+  const ModelSummary({
+    required this.provider,
+    required this.id,
+    required this.name,
+  });
+
+  factory ModelSummary.fromJson(Map<String, Object?> json) => ModelSummary(
+    provider: json['provider']! as String,
+    id: json['id']! as String,
+    name: json['name']! as String,
   );
 }
 
@@ -681,6 +713,20 @@ class HubClient {
       'id': commandId,
       'sessionId': sessionId,
       'name': 'listCommands',
+    });
+  }
+
+  /// Asks the hub for pi's auth-configured models and completes with them.
+  ///
+  /// The picker is a one-shot, not a per-keystroke list, so nothing is cached
+  /// here — unlike [listCommands].
+  Future<CommandResult> listModels(String sessionId, {String? id}) {
+    return _request(sessionId, id, (commandId) => <String, Object?>{
+      'protocolVersion': protocolVersion,
+      'type': 'command',
+      'id': commandId,
+      'sessionId': sessionId,
+      'name': 'listModels',
     });
   }
 
@@ -1203,18 +1249,28 @@ class HubClient {
         // renderer.
         final window = payload['contextWindow'];
         final tokens = payload['tokens'];
-        if (window is num && window > 0) {
-          _putTranscript(
-            sessionId,
-            transcript.copyWith(
-              contextUsage: ContextUsage(
-                tokens: tokens is num ? tokens.toInt() : null,
-                contextWindow: window.toInt(),
-              ),
-              thinkingLevel: payload['thinkingLevel'] as String?,
-            ),
-          );
-        }
+        final rawModel = payload['model'];
+        final usableWindow = window is num && window > 0;
+        _putTranscript(
+          sessionId,
+          transcript.copyWith(
+            contextUsage: usableWindow
+                ? ContextUsage(
+                    tokens: tokens is num ? tokens.toInt() : null,
+                    contextWindow: window.toInt(),
+                  )
+                : transcript.contextUsage,
+            thinkingLevel: usableWindow
+                ? payload['thinkingLevel'] as String?
+                : transcript.thinkingLevel,
+            // Read OUTSIDE the window guard: the menu label must not depend on
+            // the token estimate, and a usage frame can carry the model while
+            // the window is absent or zero.
+            currentModel: rawModel is Map
+                ? ModelSummary.fromJson(rawModel.cast<String, Object?>())
+                : transcript.currentModel,
+          ),
+        );
       case 'agent':
         final agentState = payload['state']! as String;
         // Terminal state is `settled`, never a message-level end. Clearing the
@@ -1304,9 +1360,11 @@ class HubClient {
         // A snapshot re-baselines the transcript, so the usage reading has to be
         // carried across explicitly — and from THIS session's transcript, never
         // from whatever is currently active. The thinking level is the same. So
-        // is the compaction indicator, which the snapshot says nothing about.
+        // are the current model and the compaction indicator, which the snapshot
+        // says nothing about.
         contextUsage: _state.transcripts[sessionId]?.contextUsage,
         thinkingLevel: _state.transcripts[sessionId]?.thinkingLevel,
+        currentModel: _state.transcripts[sessionId]?.currentModel,
         compacting: _state.transcripts[sessionId]?.compacting ?? false,
       ),
     );
@@ -1332,6 +1390,7 @@ class HubClient {
     if (pending == null || pending.completer.isCompleted) return;
     pending.timer?.cancel();
     final rawCommands = message['commands'];
+    final rawModels = message['models'];
     pending.completer.complete(
       CommandResult(
         ok: message['ok']! as bool,
@@ -1340,6 +1399,15 @@ class HubClient {
             ? rawCommands
                   .map(
                     (entry) => SlashCommand.fromJson(
+                      (entry as Map).cast<String, Object?>(),
+                    ),
+                  )
+                  .toList()
+            : null,
+        models: rawModels is List
+            ? rawModels
+                  .map(
+                    (entry) => ModelSummary.fromJson(
                       (entry as Map).cast<String, Object?>(),
                     ),
                   )

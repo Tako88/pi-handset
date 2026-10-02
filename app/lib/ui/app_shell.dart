@@ -398,6 +398,42 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
     );
   }
 
+  /// Lists pi's models and sends the picked one. No optimistic update: the
+  /// shown name comes from the next `usage` event, so it cannot disagree with
+  /// what pi actually applied.
+  Future<void> _setModel(String activeId, BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final listed = await widget.client.listModels(activeId);
+    // `context.mounted`, not the State's `mounted`: the picker below needs this
+    // descendant context alive, and that is the check the analyzer requires.
+    if (!context.mounted) return;
+    if (!listed.ok) {
+      messenger.showSnackBar(
+        SnackBar(content: Text(listed.error ?? 'could not list models')),
+      );
+      return;
+    }
+    final models = listed.models ?? const <ModelSummary>[];
+    if (models.isEmpty) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('No models available')),
+      );
+      return;
+    }
+    final transcript = _state.transcripts[activeId] ?? const SessionTranscript();
+    final picked = await pickModel(context, models, transcript.currentModel);
+    if (!mounted || picked == null) return;
+    final result = await widget.client.sendCommand(
+      activeId,
+      'setModel',
+      args: {'provider': picked.provider, 'id': picked.id},
+    );
+    if (!mounted || result.ok) return;
+    messenger.showSnackBar(
+      SnackBar(content: Text(result.error ?? 'could not switch the model')),
+    );
+  }
+
   void _close() {
     final active = _state.activeSessionId;
     if (active != null) widget.client.unsubscribe(active);
@@ -547,9 +583,11 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
         actions: [
           SessionMenuButton(
             thinkingLevel: transcript.thinkingLevel,
+            model: transcript.currentModel?.name,
             onCompact: () => _compact(context),
             onRename: () => _rename(activeId, context),
             onThinkingLevel: () => _setThinkingLevel(activeId, context),
+            onModel: () => _setModel(activeId, context),
           ),
         ],
       ),
