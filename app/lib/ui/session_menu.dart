@@ -251,12 +251,30 @@ Future<String?> pickThinkingLevel(BuildContext context, String? current) {
   );
 }
 
-/// Shows the model picker, marking [current]. Returns the tapped model, or null
-/// if dismissed.
+/// The models matching [query]: a case-insensitive substring match against the
+/// [ModelSummary.name], [ModelSummary.provider] or [ModelSummary.id]. A blank
+/// query returns every model, in order, as a copy (never the caller's list).
+List<ModelSummary> modelsMatching(List<ModelSummary> models, String query) {
+  final needle = query.trim().toLowerCase();
+  if (needle.isEmpty) return List.of(models);
+  return models
+      .where(
+        (m) =>
+            m.name.toLowerCase().contains(needle) ||
+            m.provider.toLowerCase().contains(needle) ||
+            m.id.toLowerCase().contains(needle),
+      )
+      .toList();
+}
+
+/// Shows the model picker with a live search field, marking [current]. Returns
+/// the tapped model, or null if dismissed.
 ///
-/// The list scrolls: `shrinkWrap` sizes it to its content but the sheet's own
-/// maximum height clamps it, which keeps a long model list usable at a large
-/// text scale instead of overflowing the sheet.
+/// The field filters the list as you type; the list scrolls under the sheet's
+/// height, so a long model list stays usable at a large text scale. The
+/// keyboard is avoided by explicit `viewInsets` padding (the framework does not
+/// inset sheet content), and the field is deliberately not autofocused so
+/// opening the sheet does not summon the keyboard.
 Future<ModelSummary?> pickModel(
   BuildContext context,
   List<ModelSummary> models,
@@ -264,24 +282,95 @@ Future<ModelSummary?> pickModel(
 ) {
   return showModalBottomSheet<ModelSummary>(
     context: context,
-    builder: (sheetContext) => SafeArea(
-      child: ListView(
-        key: const Key('model-picker'),
-        shrinkWrap: true,
-        children: [
-          for (final model in models)
-            ListTile(
-              key: Key('model-${model.provider}-${model.id}'),
-              title: Text(model.name),
-              subtitle: Text('${model.provider}/${model.id}'),
-              trailing:
-                  (model.provider == current?.provider && model.id == current?.id)
-                  ? const Icon(Icons.check)
-                  : null,
-              onTap: () => Navigator.pop(sheetContext, model),
-            ),
-        ],
-      ),
-    ),
+    // Keep the sheet clear of the status bar and any notch. Without this the
+    // route strips the top padding from the sheet's MediaQuery, so a sheet tall
+    // enough to reach the top (a long model list) puts the field at y=0.
+    useSafeArea: true,
+    // Full height, so the sheet can grow. NOTE: `isScrollControlled` gives
+    // height, NOT keyboard avoidance — the framework does not add viewInsets
+    // padding to sheet content (see bottom_sheet.dart). `_ModelPicker` adds
+    // that padding explicitly.
+    isScrollControlled: true,
+    builder: (sheetContext) => _ModelPicker(models: models, current: current),
   );
+}
+
+class _ModelPicker extends StatefulWidget {
+  const _ModelPicker({required this.models, required this.current});
+  final List<ModelSummary> models;
+  final ModelSummary? current;
+  @override
+  State<_ModelPicker> createState() => _ModelPickerState();
+}
+
+class _ModelPickerState extends State<_ModelPicker> {
+  final TextEditingController _query = TextEditingController();
+
+  @override
+  void dispose() {
+    _query.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final matches = modelsMatching(widget.models, _query.text);
+    return SafeArea(
+      // Explicit keyboard avoidance: the framework does not inset sheet
+      // content, so reserve the keyboard height ourselves or the field and the
+      // filtered rows sit under the keyboard. Inert when viewInsets is zero.
+      child: Padding(
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.viewInsetsOf(context).bottom,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(8),
+              child: TextField(
+                key: const Key('model-search'),
+                controller: _query,
+                onChanged: (_) => setState(() {}),
+                decoration: const InputDecoration(
+                  prefixIcon: Icon(Icons.search),
+                  hintText: 'Search models',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ),
+            // Flexible + shrinkWrap: bounded by the sheet, so the list scrolls
+            // when the matches are tall and the sheet stays short when they are
+            // not. Expanded would force the sheet to full height for one row.
+            Flexible(
+              child: ListView(
+                key: const Key('model-picker'),
+                shrinkWrap: true,
+                children: [
+                  if (matches.isEmpty)
+                    const ListTile(
+                      key: Key('model-picker-empty'),
+                      title: Text('No models match'),
+                    )
+                  else
+                    for (final model in matches)
+                      ListTile(
+                        key: Key('model-${model.provider}-${model.id}'),
+                        title: Text(model.name),
+                        subtitle: Text('${model.provider}/${model.id}'),
+                        trailing:
+                            (model.provider == widget.current?.provider &&
+                                    model.id == widget.current?.id)
+                                ? const Icon(Icons.check)
+                                : null,
+                        onTap: () => Navigator.pop(context, model),
+                      ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }

@@ -43,6 +43,21 @@ Widget triggerHost(Future<void> Function(BuildContext context) open) =>
       ),
     );
 
+const List<ModelSummary> catalog = [
+  ModelSummary(provider: 'anthropic', id: 'claude-sonnet-4', name: 'Claude Sonnet 4'),
+  ModelSummary(provider: 'openai', id: 'gpt-5', name: 'GPT-5'),
+  ModelSummary(provider: 'openrouter', id: 'deepseek-chat', name: 'DeepSeek Chat'),
+  ModelSummary(provider: 'openrouter', id: 'qwen3', name: 'Qwen3'),
+];
+List<String> catalogIds(List<ModelSummary> models) =>
+    [for (final m in models) '${m.provider}/${m.id}'];
+
+const List<ModelSummary> pickerModels = [
+  ModelSummary(provider: 'anthropic', id: 'claude-sonnet-4', name: 'Claude Sonnet 4'),
+  ModelSummary(provider: 'openai', id: 'gpt-5', name: 'GPT-5'),
+  ModelSummary(provider: 'openrouter', id: 'deepseek-chat', name: 'DeepSeek Chat'),
+];
+
 void main() {
   testWidgets('the menu offers compact, rename and thinking level', (
     tester,
@@ -381,5 +396,220 @@ void main() {
     await tester.tap(find.byKey(const Key('thinking-max')));
     await tester.pumpAndSettle();
     expect(picked, 'max');
+  });
+
+  testWidgets('the model picker filters to the matching row and keeps it marked', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      triggerHost((context) async {
+        await pickModel(context, pickerModels, const ModelSummary(
+          provider: 'anthropic',
+          id: 'claude-sonnet-4',
+          name: 'Claude Sonnet 4',
+        ));
+      }),
+    );
+    await tester.tap(find.byKey(const Key('trigger')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('model-search')), findsOneWidget);
+    await tester.enterText(find.byKey(const Key('model-search')), 'sonnet');
+    await tester.pump();
+
+    expect(
+      find.byKey(const Key('model-anthropic-claude-sonnet-4')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('model-openai-gpt-5')), findsNothing);
+    expect(find.byKey(const Key('model-openrouter-deepseek-chat')), findsNothing);
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('model-anthropic-claude-sonnet-4')),
+        matching: find.byIcon(Icons.check),
+      ),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('a query matching nothing shows a no-match line', (tester) async {
+    await tester.pumpWidget(
+      triggerHost((context) async {
+        await pickModel(context, pickerModels, null);
+      }),
+    );
+    await tester.tap(find.byKey(const Key('trigger')));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byKey(const Key('model-search')), 'zzz');
+    await tester.pump();
+
+    expect(find.byKey(const Key('model-picker-empty')), findsOneWidget);
+    expect(find.text('No models match'), findsOneWidget);
+    expect(find.byKey(const Key('model-anthropic-claude-sonnet-4')), findsNothing);
+    expect(find.byKey(const Key('model-openai-gpt-5')), findsNothing);
+    expect(find.byKey(const Key('model-openrouter-deepseek-chat')), findsNothing);
+  });
+
+  testWidgets('tapping a filtered row returns that model', (tester) async {
+    ModelSummary? picked;
+    await tester.pumpWidget(
+      triggerHost((context) async {
+        picked = await pickModel(context, pickerModels, null);
+      }),
+    );
+    await tester.tap(find.byKey(const Key('trigger')));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byKey(const Key('model-search')), 'gpt');
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('model-openai-gpt-5')));
+    await tester.pumpAndSettle();
+    expect(picked!.id, 'gpt-5');
+  });
+
+  testWidgets(
+    'the model picker does not overflow at a large text scale, with typed text, and scrolls',
+    (tester) async {
+      tester.view.physicalSize = const Size(360 * 3, 640 * 3);
+      tester.view.devicePixelRatio = 3;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final longModels = List<ModelSummary>.generate(
+        12,
+        (i) => ModelSummary(provider: 'p$i', id: 'm$i', name: 'Model $i'),
+      );
+      ModelSummary? picked;
+      await tester.pumpWidget(
+        MaterialApp(
+          builder: (context, child) => MediaQuery(
+            data: MediaQuery.of(context).copyWith(
+              textScaler: const TextScaler.linear(2),
+            ),
+            child: child!,
+          ),
+          home: Scaffold(
+            body: Builder(
+              builder: (context) => TextButton(
+                key: const Key('trigger'),
+                onPressed: () async {
+                  picked = await pickModel(context, longModels, null);
+                },
+                child: const Text('open'),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.byKey(const Key('trigger')));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const Key('model-search')), 'Model');
+      await tester.pump();
+
+      expect(tester.takeException(), isNull);
+      expect(find.byKey(const Key('model-p11-m11')), findsNothing);
+
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('model-p11-m11')),
+        100,
+        scrollable: find.descendant(
+          of: find.byKey(const Key('model-picker')),
+          matching: find.byType(Scrollable),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('model-p11-m11')));
+      await tester.pumpAndSettle();
+      expect(picked!.id, 'm11');
+    },
+  );
+
+  testWidgets('the model picker keeps its content below the top system inset', (
+    tester,
+  ) async {
+    // A long list makes the sheet reach full height, and a top system inset
+    // (status bar / notch) must not be overlapped. `showModalBottomSheet`
+    // removes the top padding from the sheet's MediaQuery unless `useSafeArea`
+    // is set, which would leave the search field at the very top of the screen.
+    tester.view.physicalSize = const Size(360 * 3, 640 * 3);
+    tester.view.devicePixelRatio = 3;
+    tester.view.padding = const FakeViewPadding(top: 120); // 40 logical px
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPadding);
+
+    final longModels = List<ModelSummary>.generate(
+      30,
+      (i) => ModelSummary(provider: 'p$i', id: 'm$i', name: 'Model $i'),
+    );
+    await tester.pumpWidget(
+      triggerHost((context) async {
+        await pickModel(context, longModels, null);
+      }),
+    );
+    await tester.tap(find.byKey(const Key('trigger')));
+    await tester.pumpAndSettle();
+
+    expect(
+      tester.getTopLeft(find.byKey(const Key('model-search'))).dy,
+      greaterThanOrEqualTo(40),
+    );
+  });
+
+  group('modelsMatching', () {
+    test('an empty query returns every model in order', () {
+      expect(catalogIds(modelsMatching(catalog, '')), [
+        'anthropic/claude-sonnet-4',
+        'openai/gpt-5',
+        'openrouter/deepseek-chat',
+        'openrouter/qwen3',
+      ]);
+    });
+
+    test('a whitespace-only query returns every model', () {
+      expect(catalogIds(modelsMatching(catalog, '   ')), catalogIds(catalog));
+    });
+
+    test('an empty query returns a copy, not the caller\'s list', () {
+      final src = [...catalog];
+      final out = modelsMatching(src, '');
+      src.clear();
+      expect(out, isNotEmpty);
+    });
+
+    test('a name substring matches case-insensitively', () {
+      expect(catalogIds(modelsMatching(catalog, 'sonnet')), [
+        'anthropic/claude-sonnet-4',
+      ]);
+      expect(catalogIds(modelsMatching(catalog, 'SONNET')), [
+        'anthropic/claude-sonnet-4',
+      ]);
+    });
+
+    test('a provider name matches', () {
+      expect(catalogIds(modelsMatching(catalog, 'openrouter')), [
+        'openrouter/deepseek-chat',
+        'openrouter/qwen3',
+      ]);
+    });
+
+    test('an id substring matches', () {
+      expect(catalogIds(modelsMatching(catalog, 'deepseek')), [
+        'openrouter/deepseek-chat',
+      ]);
+    });
+
+    test('a query matching nothing returns nothing', () {
+      expect(modelsMatching(catalog, 'zzz'), isEmpty);
+    });
+
+    test('no models means no matches, whatever the query', () {
+      for (final q in ['', '  ', 'gpt', 'zzz']) {
+        expect(modelsMatching(const [], q), isEmpty);
+      }
+    });
   });
 }
