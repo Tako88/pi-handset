@@ -54,6 +54,36 @@ rather than guess at it.
   notice in the transcript can describe an automatic compaction the user did not trigger.
   Deliberate: an auto-compaction failure is at least as consequential as a manual one, and
   it is otherwise invisible.
+- **The model picker offers only auth-configured models.** The list is pi's available
+  set, which omits any provider with no configured auth. Asking the bridge to switch to
+  one anyway cannot succeed: pi's own extension `setModel` refuses a provider with no
+  configured auth, which the bridge reports as `model not accepted` (an unknown provider
+  or id fails earlier as `model not found`). Reason: only listed models can actually be
+  selected, so offering the rest would present choices that cannot work.
+- **A scoped session still lists every available model.** A session launched with
+  `--models` / `enabledModels` gets the whole auth-configured set in the picker, and
+  switching to a model outside the scope succeeds silently. pi's available set is
+  auth-filtered only and consults no scope, and the bridge asks for the switch without
+  `persist` — the only branch that adds a model to the scope — so the switch leaves the
+  scope unchanged. This is a deliberate divergence from pi's own selector, which cycles
+  the scoped set when one is configured.
+- **A model switch is refused while pi is working** (streaming or compacting), with a
+  visible error. Reason: pi's own `AgentSession.setModel` has no such guard and would
+  mutate the model under the in-flight call and cascade a thinking-level change; the phone
+  cannot see streaming state, so a mixed-model turn is not worth the ambiguity. The guard
+  is best-effort — it is read at dispatch, and pi re-reads streaming state after its own
+  preflight.
+- **A PC-side model change is pushed to the app.** The bridge subscribes to pi's
+  `model_select` event and re-emits the usage payload — the same mechanism the thinking
+  level already uses — so a switch made on the PC updates the phone's model label without
+  a prompt.
+- **Deploy gate for model switching: the hub restarted and pi `/reload`ed or restarted,
+  plus a rebuilt APK.** `listModels` is a new name in the hub's command allowlist, read at
+  import, and the bridge that answers it is read from disk per load; the picker itself
+  ships in the app. An old hub answers `ok:false "unknown command"` to every `listModels`,
+  which the app turns into a SnackBar on each attempt — louder than `listCommands`'
+  silently empty panel; a stale bridge answers `ok:false "command not allowed"`. No 4002
+  close and no reconnect loop, because no new frame type is involved.
 - **Extension commands sent mid-turn execute immediately, so the queued notice is wrong
   for them.** pi runs `_tryExecuteExtensionCommand` *before* its compaction and streaming
   checks, so a registered command like `/review` runs now rather than queuing while the

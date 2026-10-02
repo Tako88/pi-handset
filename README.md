@@ -92,12 +92,19 @@ is capped to the space actually available, so it takes no `Column` slot and cann
 overflow. The built-ins are still unreachable — see issue #3.
 
 **Session menu.** The transcript's ⋮ menu is the supported way to compact a session,
-rename it and choose its thinking level. The menu shows the active level, which rides the
-existing `usage` event payload. Compacting asks for confirmation first, because it
-summarizes the session, drops older history and interrupts a running turn. While one runs
-the app bar reads `Compacting…` in place of the context reading, and a failure to compact
-(including an automatic one) reaches the transcript as an error notice. A *typed*
-`/compact` is still not a command over this path — see the built-ins trap above.
+rename it, choose its thinking level and switch its model. The menu shows the active
+level and the current model, both riding the existing `usage` event payload — the same
+payload that already carries the context reading. The list is pi's **auth-configured**
+model set, delivered on the existing `command-result` frame as an optional `models`
+field: no new frame type and no capability gate, so an old hub answers `unknown
+command` rather than closing the connection — though the picker then needs the hub
+restarted (see [known limits](docs/known-limits.md)). Compacting asks for confirmation
+first, because it summarizes the session, drops older history and interrupts a running
+turn. While one runs the app bar reads `Compacting…` in place of the context reading,
+and a failure to compact (including an automatic one) reaches the transcript as an error
+notice. A *typed* `/compact` is still not a command over this path — see the built-ins
+trap above. The same trap applies to a *typed* `/model`: it asks the model rather than
+switching anything, so the menu is the way.
 
 **What is left** is not milestone work — actionable items are tracked as issues, and
 deliberate limits are recorded separately.
