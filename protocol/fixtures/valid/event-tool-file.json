@@ -1,0 +1,17 @@
+{
+  "protocolVersion": 1,
+  "type": "event",
+  "payload": {
+    "kind": "tool",
+    "toolCallId": "call-file",
+    "name": "read",
+    "status": "done",
+    "view": {
+      "type": "file",
+      "path": "app/foo.dart",
+      "content": "line one\nline two\n",
+      "startLine": 1,
+      "endLine": 2
+    }
+  }
+}

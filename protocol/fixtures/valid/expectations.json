@@ -1,5 +1,5 @@
 {
-  "_comment": "Hand-authored decoded fields each valid fixture must produce. The fixtures stay pure wire data; this file is the oracle that stops a decoder echoing its input from passing. Keys beginning with '_' are comments, not fixtures. event-tool.json is envelope-only and forward-looking: the M6 bridge ignores every toolcall_*, so no producer emits kind:'tool' yet.",
+  "_comment": "Hand-authored decoded fields each valid fixture must produce. The fixtures stay pure wire data; this file is the oracle that stops a decoder echoing its input from passing. Keys beginning with '_' are comments, not fixtures. event-tool.json pins the contract shape of a relayed kind:'tool' payload; the bridge emits it from M2 on, and both codecs validate its identity fields.",
 
   "command.json": {
     "type": "command",
@@ -102,9 +102,114 @@
     "type": "event",
     "payload": {
       "kind": "tool",
+      "toolCallId": "call-1",
       "name": "read",
-      "status": "running",
-      "args": { "path": "/etc/hostname" }
+      "status": "running"
+    }
+  },
+  "event-tool-diff.json": {
+    "type": "event",
+    "payload": {
+      "kind": "tool",
+      "toolCallId": "call-diff",
+      "name": "edit",
+      "status": "done",
+      "view": {
+        "type": "diff",
+        "path": "app/foo.dart",
+        "lines": [
+          { "kind": "ctx", "text": "void main() {" },
+          { "kind": "del", "text": "  print('old');" },
+          { "kind": "add", "text": "  print('new');" },
+          { "kind": "ctx", "text": "}" }
+        ]
+      }
+    }
+  },
+  "event-tool-file.json": {
+    "type": "event",
+    "payload": {
+      "kind": "tool",
+      "toolCallId": "call-file",
+      "name": "read",
+      "status": "done",
+      "view": {
+        "type": "file",
+        "path": "app/foo.dart",
+        "content": "line one\nline two\n",
+        "startLine": 1,
+        "endLine": 2
+      }
+    }
+  },
+  "event-tool-command.json": {
+    "type": "event",
+    "payload": {
+      "kind": "tool",
+      "toolCallId": "call-command",
+      "name": "bash",
+      "status": "done",
+      "view": {
+        "type": "command",
+        "command": "ls -1",
+        "output": "README.md\npackage.json\n",
+        "exitCode": 0
+      }
+    }
+  },
+  "event-tool-matches.json": {
+    "type": "event",
+    "payload": {
+      "kind": "tool",
+      "toolCallId": "call-matches",
+      "name": "grep",
+      "status": "done",
+      "view": {
+        "type": "matches",
+        "matches": [
+          { "file": "app/foo.dart", "line": 3, "text": "print('new');" }
+        ]
+      }
+    }
+  },
+  "event-tool-table.json": {
+    "type": "event",
+    "payload": {
+      "kind": "tool",
+      "toolCallId": "call-table",
+      "name": "ls",
+      "status": "done",
+      "view": {
+        "type": "table",
+        "columns": ["name", "type"],
+        "rows": [
+          ["app", "directory"],
+          ["README.md", "file"]
+        ]
+      }
+    }
+  },
+  "event-tool-generic.json": {
+    "type": "event",
+    "payload": {
+      "kind": "tool",
+      "toolCallId": "call-generic",
+      "name": "custom-tool",
+      "status": "error",
+      "view": { "type": "generic", "target": "app/foo.dart" }
+    }
+  },
+  "event-tool-unknown-view.json": {
+    "type": "event",
+    "payload": {
+      "kind": "tool",
+      "toolCallId": "call-unknown-view",
+      "name": "future-tool",
+      "status": "done",
+      "view": {
+        "type": "future-thing",
+        "detail": "a view type this app does not know"
+      }
     }
   },
   "hello-ticket.json": {

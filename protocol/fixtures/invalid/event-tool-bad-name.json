@@ -4,7 +4,7 @@
   "payload": {
     "kind": "tool",
     "toolCallId": "call-1",
-    "name": "read",
+    "name": "",
     "status": "running"
   }
 }

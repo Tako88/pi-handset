@@ -10,9 +10,13 @@
 // supplies the independently-authored decoded field values each fixture must
 // produce, and the assertions below are the anti-drift mechanism M7 exists for.
 //
-// `event-tool.json` is envelope-only and forward-looking: the M6 bridge ignores
-// every `toolcall_*` event, so no producer emits `kind:"tool"` yet. It pins the
-// relay envelope until a producer exists.
+// `event-tool.json` pins the contract shape a relayed `kind:"tool"` payload
+// must have. The hub relays it untouched, but both codecs now validate it, so
+// the fixture is a decoder pin, not just an envelope.
+//
+// The bridge does not emit `kind:"tool"` yet (that is the next milestone);
+// until then this fixture, the seven per-view fixtures and the three invalid
+// cases are what the shared contract asserts against.
 
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
@@ -27,6 +31,7 @@ import {
   HUB_TO_VIEWER_MESSAGE_TYPES,
   SESSION_ORIGINS,
   STREAM_PHASES,
+  TOOL_STATUSES,
   VIEWER_MESSAGE_TYPES,
   decode,
   encode,
@@ -264,6 +269,7 @@ test('the canonical message-type and payload-kind lists match the shared fixture
     hubToViewerMessageTypes: string[];
     sessionOrigins: string[];
     hubCapabilities: string[];
+    toolStatuses: string[];
   };
   assert.deepEqual(new Set(ALL_MESSAGE_TYPES), new Set(shared.messageTypes));
   assert.deepEqual(new Set(EVENT_PAYLOAD_KINDS), new Set(shared.eventPayloadKinds));
@@ -273,6 +279,7 @@ test('the canonical message-type and payload-kind lists match the shared fixture
   assert.deepEqual(new Set(HUB_TO_VIEWER_MESSAGE_TYPES), new Set(shared.hubToViewerMessageTypes));
   assert.deepEqual(new Set(SESSION_ORIGINS), new Set(shared.sessionOrigins));
   assert.deepEqual(new Set(HUB_CAPABILITIES), new Set(shared.hubCapabilities));
+  assert.deepEqual(new Set(TOOL_STATUSES), new Set(shared.toolStatuses));
 });
 
 test('every invalid fixture is rejected for the right reason', () => {

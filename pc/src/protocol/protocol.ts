@@ -20,6 +20,18 @@ export const PROTOCOL_VERSION = 1;
 export const MAX_RELAY_BYTES = 256 * 1024;
 
 /**
+ * The byte cap for one normalized tool view payload. This exists because a
+ * relayed frame is dropped **whole** whenever any byte is outstanding on the
+ * viewer (`backpressure.ts` `admit` rejects on `queued + bytes > cap`, and the
+ * hub's cap defaults to `MAX_RELAY_BYTES`). A payload bounded at the budget
+ * itself is therefore dropped under any backlog; a quarter of it only under a
+ * severe backlog, and the unbudgeted `resync-required` → `snapshot` path
+ * recovers a dropped one (collapsed). Deliberately a fraction of
+ * `MAX_RELAY_BYTES`, never equal to it.
+ */
+export const TOOL_VIEW_MAX_BYTES = 64 * 1024;
+
+/**
  * The bridge's history window. A `snapshot` answering a `history-request` is a
  * control *response* the viewer asked for, delivered unbudgeted, so its only
  * hard ceiling is the hub's 1 MiB frame cap. Deliberately larger than
@@ -174,13 +186,102 @@ export interface SettledPayload {
 }
 
 /**
- * The remaining normalized kinds (`message`, `tool`, `status`) are opaque to
- * the hub: M6's bridge owns their shape, and the hub only relays them. The
- * index signature keeps a caller's extra fields type-checked as unknowns
- * rather than silently dropped.
+ * The normalized `tool` payload the bridge emits and the app renders by
+ * `view.type`. `view` is optional and carried through unvalidated: a frame
+ * lacking it (or carrying a `view.type` the app does not know) must still
+ * decode and render via the app's generic fallback, so the decoder validates
+ * only the identity/status fields. The pre-#6 shape (no `toolCallId`) is
+ * rejected `bad-field` — no live producer ever emitted it.
+ */
+export const TOOL_STATUSES = ['running', 'done', 'error'] as const;
+export type ToolStatus = (typeof TOOL_STATUSES)[number];
+
+/** One line of a [DiffView]; `add`/`del` are additions/removals, `ctx` neither. */
+export interface DiffLine {
+  kind: 'add' | 'del' | 'ctx';
+  text: string;
+}
+
+/** A unified diff, used by `edit` (real diff) and `write` (all additions). */
+export interface DiffView {
+  type: 'diff';
+  path: string;
+  lines: DiffLine[];
+  truncated?: boolean;
+}
+
+/** A file's text content, optionally a line range (`read`). */
+export interface FileView {
+  type: 'file';
+  path: string;
+  content: string;
+  startLine?: number;
+  endLine?: number;
+  truncated?: boolean;
+}
+
+/** A shell command and its merged output (`bash`); `exitCode` is best-effort. */
+export interface CommandView {
+  type: 'command';
+  command: string;
+  output: string;
+  exitCode?: number;
+  truncated?: boolean;
+}
+
+/** One search hit, flattened so the app can group by `file`. */
+export interface Match {
+  file: string;
+  line: number;
+  text: string;
+}
+
+/** Search hits (`grep`); an empty array is a real "no matches" value. */
+export interface MatchesView {
+  type: 'matches';
+  matches: Match[];
+  truncated?: boolean;
+}
+
+/** A tabular result (`ls`); an empty `rows` is a real "empty directory" value. */
+export interface TableView {
+  type: 'table';
+  columns: string[];
+  rows: string[][];
+  truncated?: boolean;
+}
+
+/** The fallback shape for any tool without a structured view. */
+export interface GenericView {
+  type: 'generic';
+  target?: string;
+  truncated?: boolean;
+}
+
+export type ToolView =
+  | DiffView
+  | FileView
+  | CommandView
+  | MatchesView
+  | TableView
+  | GenericView;
+
+export interface ToolPayload {
+  kind: 'tool';
+  toolCallId: string;
+  name: string;
+  status: ToolStatus;
+  view?: ToolView;
+}
+
+/**
+ * The remaining normalized kinds (`message`, `status`) are opaque to the hub:
+ * M6's bridge owns their shape, and the hub only relays them. The index
+ * signature keeps a caller's extra fields type-checked as unknowns rather than
+ * silently dropped.
  */
 export interface PassthroughPayload {
-  kind: 'message' | 'tool' | 'status';
+  kind: 'message' | 'status';
   [key: string]: unknown;
 }
 
@@ -189,6 +290,7 @@ export type EventPayload =
   | AgentPayload
   | ContextUsagePayload
   | SettledPayload
+  | ToolPayload
   | PassthroughPayload;
 
 /** The single agent↔hub event, carrying a normalized payload. */
@@ -666,14 +768,26 @@ export function decode(text: string): DecodeResult {
         }
         return { ok: true, value: parsed as EventMessage };
       }
-      // `message`/`tool`/`status` are M6-owned shapes the hub only relays, so
-      // their fields are accepted as-is once `kind` is recognized. `usage` is
-      // the same deal except for its `thinkingLevel`: the numbers stay opaque,
-      // but the level is validated because the app reads it directly. Note this
-      // is contract-pinning, not runtime defence — the hub never calls `decode`
-      // on an event (it validates `hello` only), so the app and the shared
-      // fixtures are the consumers this branch keeps honest.
-      if (kind === 'message' || kind === 'tool' || kind === 'status') {
+      // `message`/`status` are M6-owned shapes the hub only relays, so their
+      // fields are accepted as-is once `kind` is recognized. `tool` is
+      // validated on its identity fields only (`toolCallId`/`name`/`status`);
+      // its optional `view` is carried through unvalidated so a `view`-absent
+      // or unknown-`view.type` frame still decodes and falls back in the app.
+      // `usage` is the same deal except for its `thinkingLevel`: the numbers
+      // stay opaque, but the level is validated because the app reads it
+      // directly. Note this is contract-pinning, not runtime defence — the hub
+      // never calls `decode` on an event (it validates `hello` only), so the
+      // app and the shared fixtures are the consumers this branch keeps honest.
+      if (kind === 'tool') {
+        if (asString(body.toolCallId) === null || asString(body.name) === null) {
+          return fail('bad-field', 'tool requires toolCallId and name strings');
+        }
+        if (!(TOOL_STATUSES as readonly unknown[]).includes(body.status)) {
+          return fail('bad-field', `tool status must be one of ${TOOL_STATUSES.join(', ')}`);
+        }
+        return { ok: true, value: parsed as EventMessage };
+      }
+      if (kind === 'message' || kind === 'status') {
         return { ok: true, value: parsed as EventMessage };
       }
       if (kind === 'usage') {

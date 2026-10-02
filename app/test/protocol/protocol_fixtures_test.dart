@@ -7,8 +7,8 @@
 // Decoding is necessary but far from sufficient: both codecs echo their parsed
 // input, so `ok:true` alone is satisfied by a stub. `valid/expectations.json`
 // supplies the independently-authored decoded field values each fixture must
-// produce. `event-tool.json` is envelope-only and forward-looking: the M6 bridge
-// ignores every `toolcall_*` event, so no producer emits `kind:"tool"` yet.
+// produce. `event-tool.json` pins the contract shape a relayed `kind:"tool"`
+// payload must have; the bridge emits it from M2 on.
 
 import 'dart:convert';
 import 'dart:io';
@@ -268,6 +268,7 @@ void main() {
     );
     expect(sessionOrigins.toSet(), (shared['sessionOrigins'] as List).toSet());
     expect(hubCapabilities.toSet(), (shared['hubCapabilities'] as List).toSet());
+    expect(toolStatuses.toSet(), (shared['toolStatuses'] as List).toSet());
   });
 
   test('every invalid fixture is rejected for the right reason', () {

@@ -1,0 +1,16 @@
+{
+  "protocolVersion": 1,
+  "type": "event",
+  "payload": {
+    "kind": "tool",
+    "toolCallId": "call-command",
+    "name": "bash",
+    "status": "done",
+    "view": {
+      "type": "command",
+      "command": "ls -1",
+      "output": "README.md\npackage.json\n",
+      "exitCode": 0
+    }
+  }
+}
