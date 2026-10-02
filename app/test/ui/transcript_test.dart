@@ -297,6 +297,68 @@ void main() {
     expect(find.byType(ImageBlock), findsOneWidget);
   });
 
+  testWidgets('an image derived from a tool result renders an Image', (
+    tester,
+  ) async {
+    // The derivation-to-render path, not just a hand-built image block: a raw
+    // tool result goes through `deriveBlocks` and the result must paint.
+    final blocks = deriveBlocks([
+      {
+        'role': 'assistant',
+        'content': [
+          {
+            'type': 'toolCall',
+            'id': 'call-1',
+            'name': 'read',
+            'arguments': {'path': '/tmp/pic.png'},
+          },
+        ],
+      },
+      {
+        'role': 'toolResult',
+        'toolCallId': 'call-1',
+        'toolName': 'read',
+        'content': [
+          {'type': 'text', 'text': 'the picture:'},
+          {
+            'type': 'image',
+            'data':
+                'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
+            'mimeType': 'image/png',
+          },
+        ],
+      },
+    ]);
+
+    await tester.pumpWidget(wrap(SessionTranscript(blocks: blocks)));
+
+    expect(find.byType(ToolBlock), findsOneWidget);
+    expect(find.byType(ImageBlock), findsOneWidget);
+    expect(find.byType(Image), findsOneWidget);
+  });
+
+  testWidgets('an image row after a result-less tool row is not expanded', (
+    tester,
+  ) async {
+    // The single-expanded-row derivation keys on the block KIND, not merely a
+    // null result: an image row carries no tool result either, and treating it
+    // as the in-flight call would collapse the real one.
+    await tester.pumpWidget(
+      wrap(
+        SessionTranscript(
+          agentState: 'running',
+          blocks: [
+            viewTool('t1', 'a'),
+            imageBlock('tool:t1:img0', pngBytes),
+          ],
+        ),
+      ),
+    );
+
+    expect(find.text('a11'), findsOneWidget, reason: 'the tool row expands');
+    expect(find.byType(ImageBlock), findsOneWidget);
+  });
+
   testWidgets('a delta does not re-read the whole transcript', (
     tester,
   ) async {

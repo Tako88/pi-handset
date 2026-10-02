@@ -339,10 +339,13 @@ void _emitAssistantContent(
       } else if (type == 'toolCall') {
         final callId = part['id'] is String ? part['id'] as String : '$idBase:$sub';
         final result = resultsById[callId];
+        // Capture the tool block's own id (which a fork may disambiguate) so
+        // its image rows derive from it and stay unique too.
+        final toolId = _toolBlockId(callId, toolIdCounts);
         blocks.add(
           TranscriptBlock(
             kind: TranscriptBlockKind.tool,
-            id: _toolBlockId(callId, toolIdCounts),
+            id: toolId,
             toolName: part['name'] is String ? part['name'] as String : null,
             toolArgs: part['arguments'],
             text: result == null ? '' : _resultText(result),
@@ -351,6 +354,7 @@ void _emitAssistantContent(
             isError: result != null && result['isError'] == true,
           ),
         );
+        if (result != null) _emitResultImages(blocks, result, toolId);
       } else if (type == 'image') {
         final bytes = _decodeImageBytes(part);
         if (bytes != null) {
@@ -443,10 +447,13 @@ void _emitToolResult(
   Map<String, int> toolIdCounts,
 ) {
   final callId = source['toolCallId'];
+  final toolId = callId is String
+      ? _toolBlockId(callId, toolIdCounts)
+      : '$idBase:0';
   blocks.add(
     TranscriptBlock(
       kind: TranscriptBlockKind.tool,
-      id: callId is String ? _toolBlockId(callId, toolIdCounts) : '$idBase:0',
+      id: toolId,
       text: _resultText(source),
       toolName: source['toolName'] is String ? source['toolName'] as String : null,
       toolResult: source,
@@ -454,11 +461,44 @@ void _emitToolResult(
       isError: source['isError'] == true,
     ),
   );
+  _emitResultImages(blocks, source, toolId);
 }
 
-/// The result's display text: text parts joined, images as an `[image]`
-/// placeholder. Image bytes are never fetched (and a placeholder is not a
-/// renderer).
+/// Emits one [TranscriptBlockKind.image] block per decodable image part in a
+/// tool result, immediately after the tool block it belongs to. Ids are derived
+/// from [toolId] so a fork's duplicate call (whose tool id carries a `#n`
+/// suffix) still yields unique row keys. Undecodable parts — malformed bytes,
+/// or the bridge's part-trimmed `{truncated:true}` marker — are skipped here and
+/// left for [_resultText] to render as its `[image]` placeholder.
+void _emitResultImages(
+  List<TranscriptBlock> blocks,
+  Map<Object?, Object?> source,
+  String toolId,
+) {
+  final content = source['content'];
+  if (content is! List) return;
+  var index = 0;
+  for (final part in content) {
+    if (part is! Map || part['type'] != 'image') continue;
+    final bytes = _decodeImageBytes(part);
+    if (bytes != null) {
+      blocks.add(
+        TranscriptBlock(
+          kind: TranscriptBlockKind.image,
+          id: '$toolId:img$index',
+          imageBytes: bytes,
+        ),
+      );
+    }
+    index++;
+  }
+}
+
+/// The result's display text: the text parts joined on a newline, with an
+/// `[image]` placeholder for an image part that did NOT render as a picture —
+/// malformed/absent/non-string bytes, or the bridge's part-trimmed
+/// `{truncated:true,bytes}` marker. A decodable image becomes its own image
+/// block beside this row, so it is deliberately not repeated here as a label.
 String _resultText(Map<Object?, Object?> source) {
   final content = source['content'];
   if (content is String) return content;
@@ -469,7 +509,7 @@ String _resultText(Map<Object?, Object?> source) {
     final type = part['type'];
     if (type == 'text' && part['text'] is String) {
       parts.add(part['text'] as String);
-    } else if (type == 'image') {
+    } else if (type == 'image' && _decodeImageBytes(part) == null) {
       parts.add('[image]');
     }
   }
