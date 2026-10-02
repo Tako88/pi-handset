@@ -87,6 +87,39 @@ Map<String, Object?> usageFrame(int? tokens, int contextWindow) => {
   'payload': {'kind': 'usage', 'tokens': tokens, 'contextWindow': contextWindow},
 };
 
+/// A usage frame carrying the current model, as the bridge sends it.
+Map<String, Object?> usageFrameWithModel(
+  int? tokens,
+  int contextWindow,
+  String provider,
+  String id,
+  String name,
+) => {
+  'protocolVersion': 1,
+  'type': 'event',
+  'payload': {
+    'kind': 'usage',
+    'tokens': tokens,
+    'contextWindow': contextWindow,
+    'model': {'provider': provider, 'id': id, 'name': name},
+  },
+};
+
+/// A `command-result` carrying a `listModels` listing.
+Map<String, Object?> modelsReply(
+  String id,
+  List<Map<String, Object?>> models, {
+  bool ok = true,
+  String? error,
+}) => {
+  'protocolVersion': 1,
+  'type': 'command-result',
+  'id': id,
+  'ok': ok,
+  'models': models,
+  'error': ?error,
+};
+
 /// A usage frame carrying the active thinking level, as the bridge sends it.
 Map<String, Object?> usageFrameWithLevel(
   int? tokens,
@@ -196,6 +229,28 @@ class ThrowingTokenStore extends InMemoryTokenStore {
   @override
   Future<HubEndpoint?> readEndpoint() async =>
       throw StateError('storage unavailable');
+}
+
+/// Boots a harness and opens the first session, the state every menu test needs.
+Future<Harness> openFirstSession(WidgetTester tester) async {
+  final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+  await tester.pumpWidget(h.app());
+  await pumpBootstrap(tester);
+  h.factory.last.receive(sessionsFrame([sessionS1]));
+  await settle(tester, h.scheduler);
+  await tester.tap(find.text('api refactor'));
+  await settle(tester, h.scheduler);
+  return h;
+}
+
+/// Opens the session menu and taps its Model item, returning the `listModels`
+/// command frame `_setModel` issues before showing its sheet.
+Future<Map<String, Object?>> tapModelItem(WidgetTester tester, Harness h) async {
+  await tester.tap(find.byKey(const Key('session-menu')));
+  await tester.pumpAndSettle();
+  await tester.tap(find.byKey(const Key('session-menu-model')));
+  await tester.pumpAndSettle();
+  return h.factory.last.sentFrames.lastWhere((f) => f['name'] == 'listModels');
 }
 
 void main() {
@@ -510,6 +565,200 @@ void main() {
 
     h.factory.last.receive(usageFrameWithLevel(23400, 128000, 'high'));
     await settle(tester, h.scheduler);
+    h.factory.last.receive(usageFrameWithLevel(23400, 128000, 'low'));
+    await settle(tester, h.scheduler);
+
+    await tester.tap(find.byKey(const Key('session-menu')));
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<Text>(find.byKey(const Key('session-menu-thinking-level')))
+          .data,
+      'low',
+    );
+  });
+
+  testWidgets('choosing a model lists the models and sends the reference', (
+    tester,
+  ) async {
+    final h = await openFirstSession(tester);
+
+    final listFrame = await tapModelItem(tester, h);
+    expect(listFrame['sessionId'], 's1');
+
+    h.factory.last.receive(
+      modelsReply(listFrame['id']! as String, [
+        {
+          'provider': 'anthropic',
+          'id': 'claude-sonnet-4',
+          'name': 'Claude Sonnet 4',
+        },
+        {'provider': 'openai', 'id': 'gpt-5', 'name': 'GPT-5'},
+      ]),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('model-picker')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('model-openai-gpt-5')));
+    await settle(tester, h.scheduler);
+
+    final frame = h.factory.last.sentFrames.last;
+    expect(frame['name'], 'setModel');
+    // The reference, not the display name: the bridge resolves it through the
+    // registry.
+    expect(frame['args'], {'provider': 'openai', 'id': 'gpt-5'});
+  });
+
+  testWidgets('a refused model switch shows the error, not silence', (
+    tester,
+  ) async {
+    final h = await openFirstSession(tester);
+
+    final listFrame = await tapModelItem(tester, h);
+    h.factory.last.receive(
+      modelsReply(listFrame['id']! as String, [
+        {'provider': 'openai', 'id': 'gpt-5', 'name': 'GPT-5'},
+      ]),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('model-openai-gpt-5')));
+    await tester.pumpAndSettle();
+
+    final setFrame = h.factory.last.sentFrames.lastWhere(
+      (f) => f['name'] == 'setModel',
+    );
+    h.factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'command-result',
+      'id': setFrame['id'],
+      'ok': false,
+      'error': 'model not accepted',
+    });
+    await settle(tester, h.scheduler);
+    await tester.pump();
+
+    expect(find.text('model not accepted'), findsOneWidget);
+  });
+
+  testWidgets('no models shows a message, not an empty sheet', (tester) async {
+    final h = await openFirstSession(tester);
+
+    final listFrame = await tapModelItem(tester, h);
+    h.factory.last.receive(modelsReply(listFrame['id']! as String, []));
+    await settle(tester, h.scheduler);
+    await tester.pump();
+
+    expect(find.byKey(const Key('model-picker')), findsNothing);
+    expect(find.text('No models available'), findsOneWidget);
+  });
+
+  testWidgets('a failed model list shows the error, not an empty sheet', (
+    tester,
+  ) async {
+    final h = await openFirstSession(tester);
+
+    final listFrame = await tapModelItem(tester, h);
+    h.factory.last.receive(
+      modelsReply(
+        listFrame['id']! as String,
+        [],
+        ok: false,
+        error: 'hub down',
+      ),
+    );
+    await settle(tester, h.scheduler);
+    await tester.pump();
+
+    // The list failed: the cause must reach the screen, and no picker may open
+    // on the stale/empty listing.
+    expect(find.byKey(const Key('model-picker')), findsNothing);
+    expect(find.text('hub down'), findsOneWidget);
+  });
+
+  testWidgets('dismissing the model picker sends nothing and stays silent', (
+    tester,
+  ) async {
+    final h = await openFirstSession(tester);
+
+    final listFrame = await tapModelItem(tester, h);
+    h.factory.last.receive(
+      modelsReply(listFrame['id']! as String, [
+        {'provider': 'openai', 'id': 'gpt-5', 'name': 'GPT-5'},
+      ]),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('model-picker')), findsOneWidget);
+
+    // The barrier outside the sheet: dismissing returns null, which must be a
+    // silent no-op rather than a refusal or a phantom setModel. `pumpAndSettle`
+    // (not `settle`) so the pop animation finishes and the sheet leaves the tree.
+    await tester.tapAt(const Offset(5, 5));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('model-picker')), findsNothing);
+    expect(
+      h.factory.last.sentFrames.where((f) => f['name'] == 'setModel'),
+      isEmpty,
+    );
+    expect(find.byType(SnackBar), findsNothing);
+  });
+
+  testWidgets('the menu shows the model from a usage frame', (tester) async {
+    final h = await openFirstSession(tester);
+
+    h.factory.last.receive(
+      usageFrameWithModel(23400, 128000, 'anthropic', 'claude-sonnet-4', 'Claude Sonnet 4'),
+    );
+    await settle(tester, h.scheduler);
+
+    await tester.tap(find.byKey(const Key('session-menu')));
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<Text>(find.byKey(const Key('session-menu-model-name')))
+          .data,
+      'Claude Sonnet 4',
+    );
+  });
+
+  testWidgets('the menu level follows the usage frame after a model switch', (
+    tester,
+  ) async {
+    final h = await openFirstSession(tester);
+
+    h.factory.last.receive(usageFrameWithLevel(23400, 128000, 'high'));
+    await settle(tester, h.scheduler);
+
+    final listFrame = await tapModelItem(tester, h);
+    h.factory.last.receive(
+      modelsReply(listFrame['id']! as String, [
+        {
+          'provider': 'anthropic',
+          'id': 'claude-sonnet-4',
+          'name': 'Claude Sonnet 4',
+        },
+        {'provider': 'openai', 'id': 'gpt-5', 'name': 'GPT-5'},
+      ]),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('model-openai-gpt-5')));
+    await tester.pumpAndSettle();
+    final setFrame = h.factory.last.sentFrames.lastWhere(
+      (f) => f['name'] == 'setModel',
+    );
+    h.factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'command-result',
+      'id': setFrame['id'],
+      'ok': true,
+    });
+    await settle(tester, h.scheduler);
+
+    // The switch cascades a clamping thinking-level change on pi's side, which
+    // arrives as a fresh `usage` frame. The menu absorbs it rather than sticking
+    // on the pre-switch level.
     h.factory.last.receive(usageFrameWithLevel(23400, 128000, 'low'));
     await settle(tester, h.scheduler);
 

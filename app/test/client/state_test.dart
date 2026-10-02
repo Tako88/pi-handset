@@ -281,6 +281,142 @@ void main() {
     expect(client.transcript('s2')!.thinkingLevel, isNull);
   });
 
+  test('a usage event records the session model', () async {
+    client.subscribe('s1');
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'event',
+      'payload': {
+        'kind': 'usage',
+        'tokens': 23400,
+        'contextWindow': 128000,
+        'model': {
+          'provider': 'anthropic',
+          'id': 'claude-sonnet-4',
+          'name': 'Claude Sonnet 4',
+        },
+      },
+    });
+    await pumpEventQueue();
+
+    final model = client.transcript('s1')!.currentModel!;
+    expect(model.provider, 'anthropic');
+    expect(model.id, 'claude-sonnet-4');
+    expect(model.name, 'Claude Sonnet 4');
+  });
+
+  test('a usage event without a model leaves the last one', () async {
+    client.subscribe('s1');
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'event',
+      'payload': {
+        'kind': 'usage',
+        'tokens': 23400,
+        'contextWindow': 128000,
+        'model': {
+          'provider': 'anthropic',
+          'id': 'claude-sonnet-4',
+          'name': 'Claude Sonnet 4',
+        },
+      },
+    });
+    await pumpEventQueue();
+
+    // An older bridge omits the field; the menu must keep the model it had.
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'event',
+      'payload': {'kind': 'usage', 'tokens': 23400, 'contextWindow': 128000},
+    });
+    await pumpEventQueue();
+    expect(client.transcript('s1')!.currentModel!.id, 'claude-sonnet-4');
+  });
+
+  test('a usage event with a missing or zero window still records the model', () async {
+    client.subscribe('s1');
+
+    // The menu label must not depend on the token estimate, so the model is read
+    // outside the window guard. Both a missing window and a zero one are real:
+    // the frame can carry the model while the window is absent or unusable.
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'event',
+      'payload': {
+        'kind': 'usage',
+        'model': {
+          'provider': 'anthropic',
+          'id': 'claude-sonnet-4',
+          'name': 'Claude Sonnet 4',
+        },
+      },
+    });
+    await pumpEventQueue();
+    expect(client.transcript('s1')!.contextUsage, isNull);
+    expect(client.transcript('s1')!.currentModel!.id, 'claude-sonnet-4');
+
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'event',
+      'payload': {
+        'kind': 'usage',
+        'tokens': 0,
+        'contextWindow': 0,
+        'model': {
+          'provider': 'openai',
+          'id': 'gpt-5',
+          'name': 'GPT-5',
+        },
+      },
+    });
+    await pumpEventQueue();
+    expect(client.transcript('s1')!.currentModel!.id, 'gpt-5');
+  });
+
+  test('a snapshot carries this session\'s model', () async {
+    client.subscribe('s1');
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'event',
+      'payload': {
+        'kind': 'usage',
+        'tokens': 23400,
+        'contextWindow': 128000,
+        'model': {
+          'provider': 'anthropic',
+          'id': 'claude-sonnet-4',
+          'name': 'Claude Sonnet 4',
+        },
+      },
+    });
+    await pumpEventQueue();
+
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'snapshot',
+      'sessionId': 's1',
+      'lastSeq': 0,
+      'agentState': 'idle',
+      'entries': <Object?>[],
+      'truncated': false,
+    });
+    await pumpEventQueue();
+    expect(client.transcript('s1')!.currentModel!.id, 'claude-sonnet-4');
+
+    // A different session's snapshot must not inherit s1's model.
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'snapshot',
+      'sessionId': 's2',
+      'lastSeq': 0,
+      'agentState': 'idle',
+      'entries': <Object?>[],
+      'truncated': false,
+    });
+    await pumpEventQueue();
+    expect(client.transcript('s2')!.currentModel, isNull);
+  });
+
   test('a compaction announcement is state, not a row', () async {
     client.subscribe('s1');
     factory.last.receive({

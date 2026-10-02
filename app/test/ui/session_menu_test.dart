@@ -4,11 +4,13 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pi_droid/client/hub_client.dart';
 import 'package:pi_droid/ui/session_menu.dart';
 
 /// A host whose app bar carries the menu. Callbacks record what fired.
 Widget menuHost({
   String? thinkingLevel,
+  String? model,
   List<String>? fired,
 }) => MaterialApp(
   home: Scaffold(
@@ -16,9 +18,11 @@ Widget menuHost({
       actions: [
         SessionMenuButton(
           thinkingLevel: thinkingLevel,
+          model: model,
           onCompact: () => fired?.add('compact'),
           onRename: () => fired?.add('rename'),
           onThinkingLevel: () => fired?.add('thinking'),
+          onModel: () => fired?.add('model'),
         ),
       ],
     ),
@@ -96,6 +100,133 @@ void main() {
     await tester.tap(find.text('Thinking level'));
     await tester.pumpAndSettle();
     expect(fired, ['compact', 'rename', 'thinking']);
+  });
+
+  testWidgets('the menu offers a model item', (tester) async {
+    await tester.pumpWidget(menuHost());
+    await tester.tap(find.byKey(const Key('session-menu')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Model'), findsOneWidget);
+  });
+
+  testWidgets('the menu shows the current model name', (tester) async {
+    await tester.pumpWidget(menuHost(model: 'Claude Sonnet 4'));
+    await tester.tap(find.byKey(const Key('session-menu')));
+    await tester.pumpAndSettle();
+
+    expect(
+      tester
+          .widget<Text>(find.byKey(const Key('session-menu-model-name')))
+          .data,
+      'Claude Sonnet 4',
+    );
+  });
+
+  testWidgets('the menu hides the model name when none is known', (tester) async {
+    await tester.pumpWidget(menuHost());
+    await tester.tap(find.byKey(const Key('session-menu')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('session-menu-model-name')), findsNothing);
+  });
+
+  testWidgets('the menu routes the model action', (tester) async {
+    final fired = <String>[];
+    await tester.pumpWidget(menuHost(fired: fired));
+
+    await tester.tap(find.byKey(const Key('session-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Model'));
+    await tester.pumpAndSettle();
+    expect(fired, ['model']);
+  });
+
+  testWidgets('the menu does not overflow at a large text scale with a long name', (
+    tester,
+  ) async {
+    // A phone-sized viewport: at 2× text scale a long model name wants more
+    // room than the popup item has, which must ellipsize rather than overflow.
+    tester.view.physicalSize = const Size(360 * 3, 640 * 3);
+    tester.view.devicePixelRatio = 3;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      MediaQuery(
+        data: const MediaQueryData(textScaler: TextScaler.linear(2)),
+        child: menuHost(
+          model: 'Claude Sonnet 4.5 with an extremely long model name indeed',
+        ),
+      ),
+    );
+    await tester.tap(find.byKey(const Key('session-menu')));
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(find.byKey(const Key('session-menu-model-name')), findsOneWidget);
+  });
+
+  testWidgets('the model picker marks the current model and returns the tapped one', (
+    tester,
+  ) async {
+    ModelSummary? picked;
+    await tester.pumpWidget(
+      triggerHost((context) async {
+        picked = await pickModel(context, const [
+          ModelSummary(
+            provider: 'anthropic',
+            id: 'claude-sonnet-4',
+            name: 'Claude Sonnet 4',
+          ),
+          ModelSummary(provider: 'openai', id: 'gpt-5', name: 'GPT-5'),
+        ], const ModelSummary(
+          provider: 'anthropic',
+          id: 'claude-sonnet-4',
+          name: 'Claude Sonnet 4',
+        ));
+      }),
+    );
+
+    await tester.tap(find.byKey(const Key('trigger')));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('model-anthropic-claude-sonnet-4')),
+        matching: find.byIcon(Icons.check),
+      ),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.byKey(const Key('model-openai-gpt-5')));
+    await tester.pumpAndSettle();
+    expect(picked!.id, 'gpt-5');
+  });
+
+  testWidgets('the model picker returns null when dismissed', (tester) async {
+    ModelSummary? picked;
+    var completed = false;
+    await tester.pumpWidget(
+      triggerHost((context) async {
+        picked = await pickModel(context, const [
+          ModelSummary(provider: 'openai', id: 'gpt-5', name: 'GPT-5'),
+        ], null);
+        completed = true;
+      }),
+    );
+
+    await tester.tap(find.byKey(const Key('trigger')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('model-picker')), findsOneWidget);
+
+    // The barrier outside the sheet dismisses it with null — the contract
+    // `_setModel` relies on to treat a cancelled pick as a no-op.
+    await tester.tapAt(const Offset(5, 5));
+    await tester.pumpAndSettle();
+
+    expect(completed, isTrue);
+    expect(picked, isNull);
   });
 
   testWidgets('compact asks before it acts', (tester) async {

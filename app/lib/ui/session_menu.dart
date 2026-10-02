@@ -1,12 +1,14 @@
-/// The transcript app bar's overflow menu: compact, rename, thinking level.
+/// The transcript app bar's overflow menu: compact, rename, thinking level and
+/// model.
 ///
-/// The menu is the reachable path to three commands the bridge already
-/// implements and both allowlists already permit; the single piece of state it
-/// displays from the hub is the active thinking level, which rides the existing
-/// `usage` event payload.
+/// The menu is the reachable path to four commands the bridge already
+/// implements and both allowlists already permit; the pieces of state it
+/// displays from the hub are the active thinking level and the current model,
+/// both of which ride the existing `usage` event payload.
 library;
 
 import 'package:flutter/material.dart';
+import 'package:pi_droid/client/hub_client.dart';
 
 /// pi's canonical thinking levels.
 ///
@@ -33,18 +35,25 @@ class SessionMenuButton extends StatelessWidget {
   const SessionMenuButton({
     super.key,
     required this.thinkingLevel,
+    required this.model,
     required this.onCompact,
     required this.onRename,
     required this.onThinkingLevel,
+    required this.onModel,
   });
 
   /// The level pi currently reports, or null when no `usage` event has arrived
   /// (or an older bridge omits the field).
   final String? thinkingLevel;
 
+  /// The name of the model pi currently reports, or null when no `usage` event
+  /// has arrived (or an older bridge omits the field).
+  final String? model;
+
   final VoidCallback onCompact;
   final VoidCallback onRename;
   final VoidCallback onThinkingLevel;
+  final VoidCallback onModel;
 
   @override
   Widget build(BuildContext context) {
@@ -60,6 +69,8 @@ class SessionMenuButton extends StatelessWidget {
             onRename();
           case 'thinking':
             onThinkingLevel();
+          case 'model':
+            onModel();
         }
       },
       itemBuilder: (context) => [
@@ -90,6 +101,28 @@ class SessionMenuButton extends StatelessWidget {
                   key: const Key('session-menu-thinking-level'),
                 ),
               ],
+            ],
+          ),
+        ),
+        PopupMenuItem<String>(
+          key: const Key('session-menu-model'),
+          value: 'model',
+          child: Row(
+            children: [
+              const Expanded(
+                child: Text('Model', overflow: TextOverflow.ellipsis),
+              ),
+              if (model != null)
+                // Flexible so the value ellipsizes rather than overflowing the
+                // popup — the same class of bug the thinking item hit.
+                Flexible(
+                  child: Text(
+                    model!,
+                    key: const Key('session-menu-model-name'),
+                    overflow: TextOverflow.ellipsis,
+                    maxLines: 1,
+                  ),
+                ),
             ],
           ),
         ),
@@ -211,6 +244,41 @@ Future<String?> pickThinkingLevel(BuildContext context, String? current) {
               title: Text(level),
               trailing: level == current ? const Icon(Icons.check) : null,
               onTap: () => Navigator.pop(sheetContext, level),
+            ),
+        ],
+      ),
+    ),
+  );
+}
+
+/// Shows the model picker, marking [current]. Returns the tapped model, or null
+/// if dismissed.
+///
+/// The list scrolls: `shrinkWrap` sizes it to its content but the sheet's own
+/// maximum height clamps it, which keeps a long model list usable at a large
+/// text scale instead of overflowing the sheet.
+Future<ModelSummary?> pickModel(
+  BuildContext context,
+  List<ModelSummary> models,
+  ModelSummary? current,
+) {
+  return showModalBottomSheet<ModelSummary>(
+    context: context,
+    builder: (sheetContext) => SafeArea(
+      child: ListView(
+        key: const Key('model-picker'),
+        shrinkWrap: true,
+        children: [
+          for (final model in models)
+            ListTile(
+              key: Key('model-${model.provider}-${model.id}'),
+              title: Text(model.name),
+              subtitle: Text('${model.provider}/${model.id}'),
+              trailing:
+                  (model.provider == current?.provider && model.id == current?.id)
+                  ? const Icon(Icons.check)
+                  : null,
+              onTap: () => Navigator.pop(sheetContext, model),
             ),
         ],
       ),
