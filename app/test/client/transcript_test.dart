@@ -592,7 +592,7 @@ void main() {
     expect(blocks.single.isError, isTrue);
   });
 
-  test('an image in a tool result becomes an [image] placeholder', () {
+  test('a malformed tool-result image becomes an [image] placeholder', () {
     final blocks = deriveBlocks([
       assistantWith([toolCallBlock(id: 'call-1')]),
       toolResultMessage(
@@ -605,6 +605,157 @@ void main() {
     ]);
 
     expect(blocks.single.text, contains('[image]'));
+  });
+
+  test('a paired tool-result image derives a tool block then an image block', () {
+    final blocks = deriveBlocks([
+      assistantWith([toolCallBlock(id: 'call-1')]),
+      toolResultMessage(
+        toolCallId: 'call-1',
+        content: [imagePart(pngBase64, mimeType: 'image/png')],
+      ),
+    ]);
+
+    expect(blocks.map((block) => block.kind), [
+      TranscriptBlockKind.tool,
+      TranscriptBlockKind.image,
+    ]);
+    // The image row's id is its own, derived from the tool block's id, so the
+    // view's ValueKey cannot collide with the tool row or another image.
+    expect(blocks.last.id, 'tool:call-1:img0');
+    expect(blocks.last.imageBytes, pngBytes);
+  });
+
+  test('a rendered tool-result image leaves no [image] in the tool row text', () {
+    final blocks = deriveBlocks([
+      assistantWith([toolCallBlock(id: 'call-1')]),
+      toolResultMessage(
+        toolCallId: 'call-1',
+        content: [
+          textBlock('before'),
+          imagePart(pngBase64),
+          textBlock('after'),
+        ],
+      ),
+    ]);
+
+    expect(blocks.first.kind, TranscriptBlockKind.tool);
+    expect(blocks.first.text, 'before\nafter', reason: 'text order is preserved');
+    expect(
+      blocks.any((block) => block.text.contains('[image]')),
+      isFalse,
+      reason: 'a rendered picture must not also leave a placeholder',
+    );
+  });
+
+  test('a non-string tool-result image data keeps the placeholder and adds no block', () {
+    final blocks = deriveBlocks([
+      assistantWith([toolCallBlock(id: 'call-1')]),
+      toolResultMessage(
+        toolCallId: 'call-1',
+        content: [
+          {'type': 'image', 'data': 123},
+        ],
+      ),
+    ]);
+
+    expect(blocks.map((block) => block.kind), [TranscriptBlockKind.tool]);
+    expect(blocks.single.text, '[image]');
+  });
+
+  test('a part-trimmed tool-result image keeps the placeholder and adds no block', () {
+    // #32's trim replaces an oversize image in place with
+    // `{type:'image', truncated:true, bytes:N}`. It is not decodable, so the
+    // row must keep its visible placeholder rather than showing a hole.
+    final blocks = deriveBlocks([
+      assistantWith([toolCallBlock(id: 'call-1')]),
+      toolResultMessage(
+        toolCallId: 'call-1',
+        content: [
+          textBlock('see:'),
+          {'type': 'image', 'truncated': true, 'bytes': 999},
+        ],
+      ),
+    ]);
+
+    expect(blocks.map((block) => block.kind), [TranscriptBlockKind.tool]);
+    expect(blocks.single.text, 'see:\n[image]');
+  });
+
+  test('a standalone tool result derives its image block too', () {
+    // The call was cut out by the history window, so the result renders on its
+    // own; the image extraction lives on both tool-result sites.
+    final blocks = deriveBlocks([
+      toolResultMessage(
+        toolCallId: 'orphan-1',
+        content: [imagePart(pngBase64)],
+      ),
+    ]);
+
+    expect(blocks.map((block) => block.kind), [
+      TranscriptBlockKind.tool,
+      TranscriptBlockKind.image,
+    ]);
+    expect(blocks.last.id, 'tool:orphan-1:img0');
+    expect(blocks.last.imageBytes, pngBytes);
+  });
+
+  test('two images in one tool result get distinct ids', () {
+    final blocks = deriveBlocks([
+      assistantWith([toolCallBlock(id: 'call-1')]),
+      toolResultMessage(
+        toolCallId: 'call-1',
+        content: [imagePart(pngBase64), imagePart(pngBase64)],
+      ),
+    ]);
+
+    expect(blocks.map((block) => block.kind), [
+      TranscriptBlockKind.tool,
+      TranscriptBlockKind.image,
+      TranscriptBlockKind.image,
+    ]);
+    expect(blocks.map((block) => block.id).toSet(), hasLength(3));
+    expect(blocks[1].id, 'tool:call-1:img0');
+    expect(blocks[2].id, 'tool:call-1:img1');
+  });
+
+  test('a mixed tool result renders one picture and one placeholder', () {
+    // One decodable part beside one the bridge trimmed: the picture renders
+    // once, and only the part that did NOT render keeps the `[image]`
+    // fallback — the placeholder is not an always-on label.
+    final blocks = deriveBlocks([
+      assistantWith([toolCallBlock(id: 'call-1')]),
+      toolResultMessage(
+        toolCallId: 'call-1',
+        content: [
+          textBlock('see:'),
+          imagePart(pngBase64),
+          {'type': 'image', 'truncated': true, 'bytes': 999},
+        ],
+      ),
+    ]);
+
+    expect(blocks.map((block) => block.kind), [
+      TranscriptBlockKind.tool,
+      TranscriptBlockKind.image,
+    ], reason: 'exactly one picture, not two and not zero');
+    expect(
+      blocks.first.text,
+      'see:\n[image]',
+      reason: 'the placeholder belongs to the undecodable part only',
+    );
+    expect(blocks.last.id, 'tool:call-1:img0');
+    expect(blocks.last.imageBytes, pngBytes);
+  });
+
+  test('a tool result with no image parts derives only the tool block', () {
+    final blocks = deriveBlocks([
+      assistantWith([toolCallBlock(id: 'call-1')]),
+      toolResultMessage(toolCallId: 'call-1', content: [textBlock('plain')]),
+    ]);
+
+    expect(blocks.map((block) => block.kind), [TranscriptBlockKind.tool]);
+    expect(blocks.single.text, 'plain');
   });
 
   test('two text parts in a tool result join on a newline', () {
