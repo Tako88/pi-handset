@@ -177,6 +177,8 @@ interface Session {
   pid?: number;
   /** Who started this session: `app` when the spawner owns its pid, else `pc`. */
   origin: SessionOrigin;
+  /** The hub session id this one replaced, when its register named one. */
+  replacesSessionId?: string;
   readonly subscribers: Set<Connection>;
   readonly pendingHistory: Set<Connection>;
   /** `id` -> viewers awaiting its result, in issue order. */
@@ -274,6 +276,11 @@ function sessionsMessage(state: State): SessionsMessage {
         label: session.label,
         agentState: session.agentState,
         origin: session.origin,
+        // Absent rather than `undefined`: an old app compares nothing here, but
+        // every existing test's exact deep-equal must not grow a phantom key.
+        ...(session.replacesSessionId === undefined
+          ? {}
+          : { replacesSessionId: session.replacesSessionId }),
       })),
     // Advertised so a viewer can gate folder browsing on it; a pre-capabilities
     // hub omits the field, and the app then never sends the new frames.
@@ -479,6 +486,9 @@ function handleRegister(
   const origin: SessionOrigin = owned ? 'app' : 'pc';
   if (owned && pid !== undefined) spawner!.confirm(pid);
   const label = registerLabel(message, sessionId, origin);
+  // The successor of a `/new` or `/fork` names the id it replaced; carried so
+  // the app can follow the replacement instead of dropping to the session list.
+  const replacesSessionId = asString(message.replaces);
   // Switch/fork: one connection owns at most one session; registering a new id
   // retires the old one and tells its subscribers it is gone.
   const previous = ownedSession(state, connection);
@@ -514,6 +524,7 @@ function handleRegister(
     agentState: 'idle',
     pid,
     origin,
+    ...(replacesSessionId === null ? {} : { replacesSessionId }),
     subscribers: new Set(),
     pendingHistory: new Set(),
     pendingCommands: new Map(),

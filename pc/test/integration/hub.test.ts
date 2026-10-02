@@ -590,6 +590,39 @@ test('listCommands is forwarded to the agent and its result returns to the viewe
   });
 });
 
+test('the new session commands are routed to the agent', async () => {
+  const hub = await startHub();
+  const agent = await connect(hub.agentPort);
+  const viewer = await connect(hub.viewerPort);
+  await helloTokened(agent);
+  await helloViewer(viewer);
+
+  agent.send({ protocolVersion: PROTOCOL_VERSION, type: 'register', sessionId: 's1' });
+  await barrier(agent);
+
+  // The four names M2 added to the bridge are also in the hub's copy of the
+  // allowlist; a name the hub does not know is refused here and never reaches
+  // pi, so this is the routing witness for the whole path.
+  const names = ['listTree', 'sessionNew', 'sessionTree', 'sessionFork'] as const;
+  for (const [index, name] of names.entries()) {
+    const id = `c${index + 1}`;
+    viewer.send({
+      protocolVersion: PROTOCOL_VERSION,
+      type: 'command',
+      id,
+      sessionId: 's1',
+      name,
+      args: { entryId: 'e1' },
+    });
+
+    const forwarded = await agent.next(2000);
+    assert.equal(forwarded.type, 'command', `${name} must be forwarded, not refused`);
+    assert.equal(forwarded.id, id);
+    assert.equal(forwarded.sessionId, 's1');
+    assert.equal(forwarded.name, name);
+  }
+});
+
 test('two viewers issuing the same command id each get their own result', async () => {
   const hub = await startHub();
   const agent = await connect(hub.agentPort);
@@ -1121,6 +1154,34 @@ test('a viewer that authenticates after a session registered is pushed it', asyn
   viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'hello', token: TOKEN });
   assert.deepEqual((await viewer.nextSessions(2000)).sessions, [
     { sessionId: 's1', label: 'late', agentState: 'idle', origin: 'pc' },
+  ]);
+});
+
+test('a register carrying replaces surfaces replacesSessionId in the sessions push', async () => {
+  const hub = await startHub();
+  const agent = await connect(hub.agentPort);
+  const viewer = await connect(hub.viewerPort);
+  await helloViewer(viewer);
+  await helloTokened(agent);
+
+  // The bridge names the session it just replaced on the successor's register;
+  // the hub republishes it so the app can follow the replacement.
+  agent.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'register',
+    sessionId: 's2',
+    name: 'successor',
+    replaces: 's1',
+  });
+
+  assert.deepEqual((await viewer.nextSessions(2000)).sessions, [
+    {
+      sessionId: 's2',
+      label: 'successor',
+      agentState: 'idle',
+      origin: 'pc',
+      replacesSessionId: 's1',
+    },
   ]);
 });
 
