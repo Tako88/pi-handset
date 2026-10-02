@@ -51,6 +51,7 @@ import type {
   BridgeCtx,
   BridgeDeps,
   BridgeHandler,
+  BridgeModel,
   BridgePi,
   BridgeSocket,
   MessageEndEvent,
@@ -110,6 +111,8 @@ class StubPi implements BridgePi {
   readonly thinkingLevels: string[] = [];
   readonly sessionNames: string[] = [];
   modelAccepted = true;
+  /** When set, `setModel` throws it — the inner pi throw the wrapper propagates. */
+  modelError?: Error;
   /** pi's command list, in the shape pi returns (extra fields included). The
    * bridge must forward only name/description. */
   commands: Array<{ name: string; description?: string; source?: string; sourceInfo?: unknown }> = [];
@@ -127,6 +130,7 @@ class StubPi implements BridgePi {
   }
 
   async setModel(model: unknown): Promise<boolean> {
+    if (this.modelError !== undefined) throw this.modelError;
     this.models.push(model);
     return this.modelAccepted;
   }
@@ -163,6 +167,10 @@ interface TestCtx extends BridgeCtx {
   setIdle(idle: boolean): void;
   /** Make `isIdle()` throw, as a stale runner would. */
   setIdleError(error: unknown): void;
+  /** Replace the registry's available list (credentials and extra fields included). */
+  setAvailable(models: unknown[]): void;
+  /** Delete the registry, modelling an older pi with no `ctx.modelRegistry`. */
+  removeRegistry(): void;
 }
 
 function makeCtx(mode = 'tui'): TestCtx {
@@ -171,6 +179,7 @@ function makeCtx(mode = 'tui'): TestCtx {
   let usageCalls = 0;
   let idle = true;
   let idleError: unknown;
+  let available: unknown[] = [{ provider: 'test-provider', id: 'test-model', name: 'Test Model' }];
   let usage: { tokens: number | null; contextWindow: number } | undefined = {
     tokens: 23400,
     contextWindow: 128000,
@@ -178,8 +187,17 @@ function makeCtx(mode = 'tui'): TestCtx {
   const ctx: TestCtx = {
     mode,
     cwd: '/work',
-    model: { id: 'test-model' },
+    model: { id: 'test-model', provider: 'test-provider', name: 'Test Model' },
     thinkingLevel: 'medium',
+    modelRegistry: {
+      getAvailable: () => available,
+      find: (provider, modelId) =>
+        available.find(
+          (entry) =>
+            (entry as { provider?: unknown }).provider === provider &&
+            (entry as { id?: unknown }).id === modelId,
+        ),
+    },
     sessionManager: {
       getSessionId: () => 'sess-1',
       getSessionFile: () => '/sessions/sess-1.jsonl',
@@ -210,6 +228,12 @@ function makeCtx(mode = 'tui'): TestCtx {
     },
     setIdleError: (err) => {
       idleError = err;
+    },
+    setAvailable: (next) => {
+      available = next;
+    },
+    removeRegistry: () => {
+      delete ctx.modelRegistry;
     },
   };
   return ctx;
@@ -632,6 +656,7 @@ test('agent_settled yields the terminal agent state', () => {
     tokens: 23400,
     contextWindow: 128000,
     thinkingLevel: 'medium',
+    model: { provider: 'test-provider', id: 'test-model', name: 'Test Model' },
   });
   assert.deepEqual(emitted[2]!.payload, { kind: 'settled', text: '', truncated: false });
 });
@@ -892,13 +917,21 @@ test('abort aborts the active operation and acknowledges dispatch', async () => 
   });
 });
 
-test('setModel dispatches and reports the accepted boolean', async () => {
+test('setModel resolves the reference through the registry before calling pi', async () => {
   const harness = makeHarness();
   harness.start();
   const socket = harness.sockets[0]!;
   socket.open();
-  await sendCommand(harness.pi, socket, 'setModel', { model: { id: 'm2' } });
-  assert.deepEqual(harness.pi.models, [{ id: 'm2' }]);
+  await sendCommand(harness.pi, socket, 'setModel', {
+    provider: 'test-provider',
+    id: 'test-model',
+  });
+  // The resolved registry OBJECT, not the `{provider, id}` reference: pi's
+  // setModel needs the full Model, and passing the reference would be a
+  // type-lie pi cannot use.
+  assert.deepEqual(harness.pi.models, [
+    { provider: 'test-provider', id: 'test-model', name: 'Test Model' },
+  ]);
   assert.equal((parsed(socket).at(-1) as { ok: boolean }).ok, true);
 });
 
@@ -908,8 +941,106 @@ test('setModel reports a rejected model as a failed command-result', async () =>
   harness.start();
   const socket = harness.sockets[0]!;
   socket.open();
-  await sendCommand(harness.pi, socket, 'setModel', { model: { id: 'm2' } });
-  assert.equal((parsed(socket).at(-1) as { ok: boolean }).ok, false);
+  await sendCommand(harness.pi, socket, 'setModel', {
+    provider: 'test-provider',
+    id: 'test-model',
+  });
+  const result = parsed(socket).at(-1) as { ok: boolean; error?: string };
+  assert.equal(result.ok, false);
+  // The wrapper's `false` path (a stale auth snapshot), distinct from the
+  // unknown-id `'model not found'` and the no-registry `'models unavailable'`.
+  assert.equal(result.error, 'model not accepted');
+});
+
+test('setModel refuses an unknown model without calling pi', async () => {
+  const harness = makeHarness();
+  harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'setModel', { provider: 'test-provider', id: 'nope' });
+  const result = parsed(socket).at(-1) as { ok: boolean; error?: string };
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'model not found');
+  assert.deepEqual(harness.pi.models, [], 'pi.setModel must not be called for an unknown model');
+});
+
+test('setModel without a provider or id is refused', async () => {
+  const harness = makeHarness();
+  harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'setModel', { id: 'test-model' });
+  const result = parsed(socket).at(-1) as { ok: boolean; error?: string };
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'missing model');
+  assert.deepEqual(harness.pi.models, []);
+});
+
+test('setModel without a registry is refused', async () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  ctx.removeRegistry();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'setModel', { provider: 'test-provider', id: 'test-model' });
+  const result = parsed(socket).at(-1) as { ok: boolean; error?: string };
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'models unavailable');
+  assert.deepEqual(harness.pi.models, []);
+});
+
+test('setModel is refused mid-turn, before calling pi', async () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  ctx.setIdle(false);
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'setModel', { provider: 'test-provider', id: 'test-model' });
+  const result = parsed(socket).at(-1) as { ok: boolean; error?: string };
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'cannot switch the model while pi is working');
+  // pi's own AgentSession.setModel has no streaming guard; the bridge refuses
+  // before the switch so the session cannot end up on a mixed-model turn.
+  assert.deepEqual(harness.pi.models, [], 'pi.setModel must not be called mid-turn');
+});
+
+test('a throwing pi.setModel surfaces the thrown message, not the accepted boolean', async () => {
+  const harness = makeHarness();
+  harness.pi.modelError = new Error('No API key for test-provider/test-model');
+  harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'setModel', {
+    provider: 'test-provider',
+    id: 'test-model',
+  });
+  const result = parsed(socket).at(-1) as { ok: boolean; error?: string };
+  assert.equal(result.ok, false);
+  // A stale auth snapshot makes pi's inner setModel THROW; the message must
+  // survive rather than be replaced by the wrapper's `'model not accepted'`.
+  assert.equal(result.error, 'No API key for test-provider/test-model');
+});
+
+test('an accepted same-model switch still re-reports usage exactly once', async () => {
+  const harness = makeHarness();
+  harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  const before = socket.sent.length;
+  await sendCommand(harness.pi, socket, 'setModel', {
+    provider: 'test-provider',
+    id: 'test-model',
+  });
+  // `_emitModelSelect` early-returns for an equal model, so the direct
+  // `sendUsageEvent` is the only frame and must not be dropped.
+  // The exact count pins StubPi's behaviour (its `setModel` never emits
+  // `model_select`), not a wire guarantee: real pi also emits the event, which
+  // the bridge documents as a harmless idempotent duplicate. If the stub grows
+  // faithful, relax the count to >= 1 — do not "fix" the bridge.
+  const usage = parsed(socket)
+    .slice(before)
+    .filter((message) => (message.payload as { kind?: string } | undefined)?.kind === 'usage');
+  assert.equal(usage.length, 1);
 });
 
 test('setThinkingLevel dispatches the level', async () => {
@@ -960,7 +1091,13 @@ test('a history-request replays history and then the context usage', () => {
   assert.deepEqual(after[1], {
     protocolVersion: PROTOCOL_VERSION,
     type: 'event',
-    payload: { kind: 'usage', tokens: 23400, contextWindow: 128000, thinkingLevel: 'medium' },
+    payload: {
+      kind: 'usage',
+      tokens: 23400,
+      contextWindow: 128000,
+      thinkingLevel: 'medium',
+      model: { provider: 'test-provider', id: 'test-model', name: 'Test Model' },
+    },
   });
 });
 
@@ -980,6 +1117,7 @@ test('an unknown token count travels as null', () => {
     tokens: null,
     contextWindow: 128000,
     thinkingLevel: 'medium',
+    model: { provider: 'test-provider', id: 'test-model', name: 'Test Model' },
   });
 });
 
@@ -1011,6 +1149,7 @@ test('a compaction reports unknown tokens', () => {
     tokens: null,
     contextWindow: 128000,
     thinkingLevel: 'medium',
+    model: { provider: 'test-provider', id: 'test-model', name: 'Test Model' },
   });
 });
 
@@ -1031,6 +1170,69 @@ test('a context without a thinking level omits the field', () => {
     kind: 'usage',
     tokens: 23400,
     contextWindow: 128000,
+    model: { provider: 'test-provider', id: 'test-model', name: 'Test Model' },
+  });
+});
+
+test('a context without a model omits the field', () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  delete ctx.model;
+  const socket = harness.sockets[0]!;
+  socket.open();
+  socket.message({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'history-request',
+    sessionId: 'sess-1',
+  });
+  // The key must be absent, not `null`: an older pi exposes no model and the
+  // field is optional.
+  assert.deepEqual((parsed(socket).at(-1) as { payload: unknown }).payload, {
+    kind: 'usage',
+    tokens: 23400,
+    contextWindow: 128000,
+    thinkingLevel: 'medium',
+  });
+});
+
+test('a malformed model is omitted, never sent half-formed', () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  // `name` missing: the projection must drop the whole entry rather than emit a
+  // `ModelSummary` the protocol validator would reject.
+  ctx.model = { id: 'test-model', provider: 'test-provider' } as unknown as BridgeModel;
+  const socket = harness.sockets[0]!;
+  socket.open();
+  socket.message({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'history-request',
+    sessionId: 'sess-1',
+  });
+  assert.deepEqual((parsed(socket).at(-1) as { payload: unknown }).payload, {
+    kind: 'usage',
+    tokens: 23400,
+    contextWindow: 128000,
+    thinkingLevel: 'medium',
+  });
+});
+
+test('a model_select re-reports usage', () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  const before = socket.sent.length;
+  ctx.model = { id: 'm2', provider: 'test-provider', name: 'Second Model' };
+  harness.pi.handlers.get('model_select')!(
+    { model: ctx.model, previousModel: undefined, source: 'select' },
+    ctx,
+  );
+  assert.deepEqual((parsed(socket).slice(before).at(-1) as { payload: unknown }).payload, {
+    kind: 'usage',
+    tokens: 23400,
+    contextWindow: 128000,
+    thinkingLevel: 'medium',
+    model: { provider: 'test-provider', id: 'm2', name: 'Second Model' },
   });
 });
 
@@ -1050,6 +1252,7 @@ test('a thinking level change re-reports usage', () => {
     tokens: 23400,
     contextWindow: 128000,
     thinkingLevel: 'low',
+    model: { provider: 'test-provider', id: 'test-model', name: 'Test Model' },
   });
 });
 
@@ -1069,6 +1272,7 @@ test('the reported thinking level is read live, not cached', () => {
     tokens: 23400,
     contextWindow: 128000,
     thinkingLevel: 'high',
+    model: { provider: 'test-provider', id: 'test-model', name: 'Test Model' },
   });
 });
 
@@ -1196,7 +1400,10 @@ test('an accepted model switch reports the new window', async () => {
   const socket = harness.sockets[0]!;
   socket.open();
   const before = socket.sent.length;
-  await sendCommand(harness.pi, socket, 'setModel', { model: { id: 'm2' } });
+  await sendCommand(harness.pi, socket, 'setModel', {
+    provider: 'test-provider',
+    id: 'test-model',
+  });
   assert.deepEqual(
     parsed(socket)
       .slice(before)
@@ -1214,7 +1421,10 @@ test('a refused model switch reports nothing about usage', async () => {
   const socket = harness.sockets[0]!;
   socket.open();
   const before = socket.sent.length;
-  await sendCommand(harness.pi, socket, 'setModel', { model: { id: 'm2' } });
+  await sendCommand(harness.pi, socket, 'setModel', {
+    provider: 'test-provider',
+    id: 'test-model',
+  });
   assert.deepEqual(
     parsed(socket)
       .slice(before)
@@ -1472,6 +1682,115 @@ test('listCommands preserves duplicate names in pi order', async () => {
     { name: 'other' },
     { name: 'review', description: 'second' },
   ]);
+});
+
+test('listModels returns the available models projected to provider, id and name', async () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  ctx.setAvailable([
+    { provider: 'anthropic', id: 'claude-sonnet-4', name: 'Claude Sonnet 4' },
+    { provider: 'openai', id: 'gpt-5', name: 'GPT-5' },
+  ]);
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'listModels');
+  const result = parsed(socket).at(-1) as { ok: boolean; models?: unknown };
+  assert.equal(result.ok, true, `listModels was refused: ${String((result as { error?: string }).error)}`);
+  assert.deepEqual(result.models, [
+    { provider: 'anthropic', id: 'claude-sonnet-4', name: 'Claude Sonnet 4' },
+    { provider: 'openai', id: 'gpt-5', name: 'GPT-5' },
+  ]);
+});
+
+test('listModels drops an entry missing provider, id or name', async () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  ctx.setAvailable([
+    { provider: 'anthropic', id: 'claude-sonnet-4', name: 'Claude Sonnet 4' },
+    { provider: 'anthropic', name: 'no id' },
+    { id: 'no-provider', name: 'N' },
+    { provider: 'p', id: 'm' },
+    null,
+    42,
+    'oops',
+  ]);
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'listModels');
+  const result = parsed(socket).at(-1) as { models?: unknown };
+  assert.deepEqual(result.models, [
+    { provider: 'anthropic', id: 'claude-sonnet-4', name: 'Claude Sonnet 4' },
+  ]);
+});
+
+test('listModels never lets a credential or extra model field reach the wire', async () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  ctx.setAvailable([
+    {
+      provider: 'p',
+      id: 'm',
+      name: 'M',
+      headers: { authorization: 'secret' },
+      baseUrl: 'http://x',
+      compat: { something: true },
+      cost: { input: 1 },
+    },
+  ]);
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'listModels');
+  const result = parsed(socket).at(-1) as { models?: unknown };
+  // Deep equality, not a field check: an extra key would fail this too.
+  assert.deepEqual(result.models, [{ provider: 'p', id: 'm', name: 'M' }]);
+});
+
+test('an older pi without a registry is refused, not reported as empty', async () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  ctx.removeRegistry();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'listModels');
+  const result = parsed(socket).at(-1) as { ok: boolean; error?: string; models?: unknown };
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'models unavailable');
+  // `[]` would be a lie: the app must not show an empty picker as a real answer.
+  assert.equal(result.models, undefined);
+});
+
+test('a registry whose getAvailable is not an array is refused', async () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  ctx.modelRegistry = {
+    getAvailable: () => 'nope' as unknown as unknown[],
+    find: () => undefined,
+  };
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'listModels');
+  const result = parsed(socket).at(-1) as { ok: boolean; error?: string };
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'models unavailable');
+});
+
+test('a registry whose getAvailable throws reports the thrown message', async () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  ctx.modelRegistry = {
+    getAvailable: () => {
+      throw new Error('registry exploded');
+    },
+    find: () => undefined,
+  };
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'listModels');
+  const result = parsed(socket).at(-1) as { ok: boolean; error?: string };
+  assert.equal(result.ok, false);
+  // The throw must reach `dispatch`'s catch and surface verbatim, not be
+  // swallowed into a generic refusal.
+  assert.equal(result.error, 'registry exploded');
 });
 
 test('the bridge and hub command allowlists are identical', () => {
