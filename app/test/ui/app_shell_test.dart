@@ -161,6 +161,33 @@ Map<String, Object?> capableSessionsFrame(
   'capabilities': const ['list-dirs', 'project-session'],
 };
 
+/// A `sessions` frame from a hub that can drive session-control commands.
+Map<String, Object?> controlSessionsFrame(
+  List<Map<String, Object?>> sessions,
+) => {
+  'protocolVersion': 1,
+  'type': 'sessions',
+  'sessions': sessions,
+  'capabilities': const ['session-control'],
+};
+
+/// A `command-result` carrying a `listTree` projection.
+Map<String, Object?> treeReply(
+  String id,
+  List<Map<String, Object?>> nodes, {
+  bool ok = true,
+  bool truncated = false,
+  String? error,
+}) => {
+  'protocolVersion': 1,
+  'type': 'command-result',
+  'id': id,
+  'ok': ok,
+  'tree': nodes,
+  'treeTruncated': truncated,
+  'error': ?error,
+};
+
 Map<String, Object?> settledFrame({
   String sessionId = 's1',
   String label = 'api refactor',
@@ -249,6 +276,19 @@ Future<Harness> openFirstSession(WidgetTester tester) async {
   await tester.pumpWidget(h.app());
   await pumpBootstrap(tester);
   h.factory.last.receive(sessionsFrame([sessionS1]));
+  await settle(tester, h.scheduler);
+  await tester.tap(find.text('api refactor'));
+  await settle(tester, h.scheduler);
+  return h;
+}
+
+/// Boots a harness whose hub advertises `session-control` and opens `s1`, the
+/// state the New/Fork tests need.
+Future<Harness> openSessionControlSession(WidgetTester tester) async {
+  final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+  await tester.pumpWidget(h.app());
+  await pumpBootstrap(tester);
+  h.factory.last.receive(controlSessionsFrame([sessionS1]));
   await settle(tester, h.scheduler);
   await tester.tap(find.text('api refactor'));
   await settle(tester, h.scheduler);
@@ -714,6 +754,199 @@ void main() {
       isEmpty,
     );
     expect(find.byType(SnackBar), findsNothing);
+  });
+
+  testWidgets('the menu hides new and fork on a hub without session-control', (
+    tester,
+  ) async {
+    await openFirstSession(tester);
+
+    await tester.tap(find.byKey(const Key('session-menu')));
+    await tester.pumpAndSettle();
+
+    // Prove the menu is genuinely open before asserting the new items are
+    // absent: two `findsNothing`s also pass if the menu never opened at all.
+    expect(find.byKey(const Key('session-menu-compact')), findsOneWidget);
+    expect(find.byKey(const Key('session-menu-new')), findsNothing);
+    expect(find.byKey(const Key('session-menu-fork')), findsNothing);
+  });
+
+  testWidgets('new session confirms before sending sessionNew', (tester) async {
+    final h = await openSessionControlSession(tester);
+
+    await tester.tap(find.byKey(const Key('session-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('session-menu-new')));
+    await tester.pumpAndSettle();
+
+    // The negative control: nothing is sent while the confirmation is up.
+    expect(find.text('Start a new session?'), findsOneWidget);
+    expect(
+      h.factory.last.sentFrames.where((f) => f['name'] == 'sessionNew'),
+      isEmpty,
+    );
+
+    await tester.tap(find.byKey(const Key('new-session-confirm-yes')));
+    await settle(tester, h.scheduler);
+    expect(
+      h.factory.last.sentFrames.where((f) => f['name'] == 'sessionNew'),
+      hasLength(1),
+    );
+  });
+
+  testWidgets('cancelling new session sends nothing', (tester) async {
+    final h = await openSessionControlSession(tester);
+
+    await tester.tap(find.byKey(const Key('session-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('session-menu-new')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('new-session-confirm-no')));
+    await settle(tester, h.scheduler);
+
+    expect(
+      h.factory.last.sentFrames.where((f) => f['name'] == 'sessionNew'),
+      isEmpty,
+    );
+  });
+
+  testWidgets('a refused new session shows the error, not a success', (
+    tester,
+  ) async {
+    final h = await openSessionControlSession(tester);
+
+    await tester.tap(find.byKey(const Key('session-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('session-menu-new')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('new-session-confirm-yes')));
+    await tester.pump();
+
+    final newFrame = h.factory.last.sentFrames.lastWhere(
+      (f) => f['name'] == 'sessionNew',
+    );
+    h.factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'command-result',
+      'id': newFrame['id'],
+      'ok': false,
+      'error': 'the session cannot be replaced',
+    });
+    await settle(tester, h.scheduler);
+    await tester.pump();
+
+    // A refusal must surface verbatim. A replacement's only success signal is
+    // the replacement itself, so the error must be the sole SnackBar — no
+    // success confirmation may accompany it.
+    expect(find.text('the session cannot be replaced'), findsOneWidget);
+    expect(find.text('could not start a new session'), findsNothing);
+    expect(find.byType(SnackBar), findsOneWidget);
+  });
+
+  testWidgets('fork lists the tree, shows only user nodes and sends sessionFork', (
+    tester,
+  ) async {
+    final h = await openSessionControlSession(tester);
+
+    await tester.tap(find.byKey(const Key('session-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('session-menu-fork')));
+    await tester.pumpAndSettle();
+
+    final listFrame = h.factory.last.sentFrames.lastWhere(
+      (f) => f['name'] == 'listTree',
+    );
+    expect(listFrame['sessionId'], 's1');
+
+    h.factory.last.receive(
+      treeReply(listFrame['id']! as String, [
+        {'id': 'e1', 'parentId': null, 'role': 'user', 'text': 'hello'},
+        {'id': 'e2', 'parentId': 'e1', 'role': 'assistant', 'text': 'hi'},
+        {'id': 'e3', 'parentId': 'e1', 'role': 'user', 'text': 'again'},
+      ]),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('tree-node-e1')), findsOneWidget);
+    expect(find.byKey(const Key('tree-node-e3')), findsOneWidget);
+    expect(find.byKey(const Key('tree-node-e2')), findsNothing);
+
+    await tester.tap(find.byKey(const Key('tree-node-e3')));
+    await settle(tester, h.scheduler);
+
+    final forkFrame = h.factory.last.sentFrames.lastWhere(
+      (f) => f['name'] == 'sessionFork',
+    );
+    expect((forkFrame['args']! as Map)['entryId'], 'e3');
+  });
+
+  testWidgets('a refused fork shows the error', (tester) async {
+    final h = await openSessionControlSession(tester);
+
+    await tester.tap(find.byKey(const Key('session-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('session-menu-fork')));
+    await tester.pumpAndSettle();
+
+    final listFrame = h.factory.last.sentFrames.lastWhere(
+      (f) => f['name'] == 'listTree',
+    );
+    h.factory.last.receive(
+      treeReply(listFrame['id']! as String, [
+        {'id': 'e1', 'parentId': null, 'role': 'user', 'text': 'hello'},
+      ]),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('tree-node-e1')));
+    await settle(tester, h.scheduler);
+
+    final forkFrame = h.factory.last.sentFrames.lastWhere(
+      (f) => f['name'] == 'sessionFork',
+    );
+    // The entry was invalidated between listing the tree and sending the fork
+    // (the plan's FM5): the bridge refuses it and the refusal must reach the
+    // screen, not vanish into the awaited replacement.
+    h.factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'command-result',
+      'id': forkFrame['id'],
+      'ok': false,
+      'error': 'unknown entry',
+    });
+    await settle(tester, h.scheduler);
+    await tester.pump();
+
+    expect(find.text('unknown entry'), findsOneWidget);
+    expect(find.text('could not fork the session'), findsNothing);
+  });
+
+  testWidgets('a refused tree list shows the error, not an empty sheet', (
+    tester,
+  ) async {
+    final h = await openSessionControlSession(tester);
+
+    await tester.tap(find.byKey(const Key('session-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('session-menu-fork')));
+    await tester.pumpAndSettle();
+
+    final listFrame = h.factory.last.sentFrames.lastWhere(
+      (f) => f['name'] == 'listTree',
+    );
+    h.factory.last.receive(
+      treeReply(
+        listFrame['id']! as String,
+        const [],
+        ok: false,
+        error: 'cannot read the tree',
+      ),
+    );
+    await settle(tester, h.scheduler);
+    await tester.pump();
+
+    expect(find.byKey(const Key('tree-picker')), findsNothing);
+    expect(find.text('cannot read the tree'), findsOneWidget);
   });
 
   testWidgets('the menu shows the model from a usage frame', (tester) async {

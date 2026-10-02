@@ -400,6 +400,54 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
     );
   }
 
+  /// Replaces the session with a fresh one after a confirmation. The messenger
+  /// and session id are captured before the dialog's await, because the dialog's
+  /// own context is gone once it closes.
+  ///
+  /// The returned future settles on the replacement, not the ack, so a refusal
+  /// is the only failure that reaches the SnackBar here.
+  Future<void> _newSession(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final activeId = _state.activeSessionId;
+    if (activeId == null) return;
+    final confirmed = await confirmNewSession(context);
+    if (!mounted || !confirmed) return;
+    final result = await widget.client.sessionNew(activeId);
+    if (!mounted || result.ok) return;
+    messenger.showSnackBar(
+      SnackBar(content: Text(result.error ?? 'could not start a new session')),
+    );
+  }
+
+  /// Lists the session tree, shows only user nodes, and forks at the picked one.
+  /// `context.mounted` after the list await, because the picker needs the
+  /// descendant context alive — the same check `_setModel` makes.
+  Future<void> _fork(String activeId, BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final listed = await widget.client.listTree(activeId);
+    if (!context.mounted) return;
+    if (!listed.ok) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(listed.error ?? 'could not read the session tree'),
+        ),
+      );
+      return;
+    }
+    final picked = await pickTreeNode(
+      context,
+      listed.tree ?? const <TreeNodeSummary>[],
+      userOnly: true,
+      truncated: listed.treeTruncated ?? false,
+    );
+    if (!mounted || picked == null) return;
+    final result = await widget.client.sessionFork(activeId, picked.id);
+    if (!mounted || result.ok) return;
+    messenger.showSnackBar(
+      SnackBar(content: Text(result.error ?? 'could not fork the session')),
+    );
+  }
+
   /// Renames the session. The display updates when pi reports the new label.
   Future<void> _rename(String activeId, BuildContext context) async {
     final messenger = ScaffoldMessenger.of(context);
@@ -625,6 +673,15 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
             onRename: () => _rename(activeId, context),
             onThinkingLevel: () => _setThinkingLevel(activeId, context),
             onModel: () => _setModel(activeId, context),
+            // New and fork replace the session: only a hub advertising the
+            // capability can, and without it the items are omitted rather than
+            // offered and refused.
+            onNewSession: _state.capabilities.contains(capabilitySessionControl)
+                ? () => _newSession(context)
+                : null,
+            onFork: _state.capabilities.contains(capabilitySessionControl)
+                ? () => _fork(activeId, context)
+                : null,
           ),
         ],
       ),
