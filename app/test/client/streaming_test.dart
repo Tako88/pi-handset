@@ -85,6 +85,24 @@ Map<String, Object?> truncatedFrame(int bytes) => {
   },
 };
 
+/// A committed message whose oversized image part was replaced in place: the
+/// message keeps its top-level `role` and text, so it must not be mistaken for
+/// the whole-message `{truncated, bytes}` marker.
+Map<String, Object?> partTrimmedFrame(String role) => {
+  'protocolVersion': 1,
+  'type': 'event',
+  'payload': {
+    'kind': 'message',
+    'message': {
+      'role': role,
+      'content': [
+        {'type': 'text', 'text': 'hi'},
+        {'type': 'image', 'truncated': true, 'bytes': 999},
+      ],
+    },
+  },
+};
+
 void main() {
   late FakeSocketFactory factory;
   late FakeScheduler scheduler;
@@ -279,6 +297,40 @@ void main() {
     final transcript = client.transcript('s1')!;
     expect(transcript.thinking, isFalse);
     expect(transcript.streaming, isFalse);
+  });
+
+  test('a part-trimmed user message does not clear the in-flight buffer', () async {
+    factory.last.receive(agent('running'));
+    factory.last.receive(stream(1, 'partial'));
+    await pumpEventQueue();
+    expect(client.transcript('s1')!.streamingText, 'partial');
+    expect(client.transcript('s1')!.streaming, isTrue);
+
+    // A mid-stream user steer whose image part was trimmed: no top-level
+    // `truncated`, so it appends without wiping the reply still arriving.
+    factory.last.receive(partTrimmedFrame('user'));
+    await pumpEventQueue();
+
+    final transcript = client.transcript('s1')!;
+    expect(transcript.streamingText, 'partial');
+    expect(transcript.streaming, isTrue);
+  });
+
+  test('a part-trimmed assistant message still commits the reply', () async {
+    factory.last.receive(agent('running'));
+    factory.last.receive(stream(1, 'partial'));
+    factory.last.receive(phase(2));
+    await pumpEventQueue();
+    expect(client.transcript('s1')!.thinking, isTrue);
+    expect(client.transcript('s1')!.streaming, isTrue);
+
+    factory.last.receive(partTrimmedFrame('assistant'));
+    await pumpEventQueue();
+
+    final transcript = client.transcript('s1')!;
+    expect(transcript.streamingText, isEmpty);
+    expect(transcript.streaming, isFalse);
+    expect(transcript.thinking, isFalse);
   });
 
   test('reasoning deltas accumulate in their own buffer, not the reply', () async {

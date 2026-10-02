@@ -14,6 +14,17 @@ import '../client/tool_view.dart';
 import '../client/transcript.dart';
 import 'tool_views.dart';
 
+/// The width cap handed to the decoder. Only the width: with *both* cache
+/// dimensions set, `ResizeImage` defaults to `ResizeImagePolicy.exact`
+/// (`BoxFit.fill`), which squashes every image into a square.
+const int imageDecodeMaxExtent = 1024;
+
+/// The tallest an image row may display. The decoder bounds the width; this
+/// bounds the row so a panoramic or very tall image cannot dominate the
+/// transcript. (`BoxConstraints.maxHeight` takes a `double`, so this is not an
+/// `int` even though the value is whole.)
+const double imageMaxDisplayHeight = 320;
+
 /// The `Uri` a tapped markdown link should open, or null when the link is not
 /// one this app opens.
 ///
@@ -78,6 +89,52 @@ class TextBlock extends StatelessWidget {
                 },
               )
             : Text(block.text),
+      ),
+    );
+  }
+}
+
+/// An image part, rendered from the bytes decoded at parse time. Reuses
+/// [TextBlock]'s alignment and tint so a user's image reads as their own
+/// message. Only the width is capped for decoding (see [imageDecodeMaxExtent]).
+class ImageBlock extends StatelessWidget {
+  const ImageBlock({super.key, required this.block});
+
+  final TranscriptBlock block;
+
+  @override
+  Widget build(BuildContext context) {
+    final bytes = block.imageBytes;
+    final colors = Theme.of(context).colorScheme;
+    // Unreachable in practice: TranscriptBlock asserts image blocks carry
+    // bytes. Rendering nothing beats a crash if that invariant ever breaks.
+    if (bytes == null) return const SizedBox.shrink();
+    return Align(
+      alignment: block.fromUser ? Alignment.centerRight : Alignment.centerLeft,
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: block.fromUser
+              ? colors.primaryContainer
+              : colors.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: imageMaxDisplayHeight),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: Image.memory(
+              bytes,
+              // ONLY cacheWidth. With cacheHeight also set, ResizeImage defaults
+              // to ResizeImagePolicy.exact, which is BoxFit.fill — it would
+              // squash the image into a square. One dimension keeps the ratio.
+              cacheWidth: imageDecodeMaxExtent,
+              fit: BoxFit.contain,
+              errorBuilder: (context, error, stack) => const Text('[image]'),
+            ),
+          ),
+        ),
       ),
     );
   }

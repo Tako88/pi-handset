@@ -7,11 +7,29 @@
 // unwrap and the ignore list are therefore load-bearing, each with its own
 // test.
 
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pi_droid/client/tool_view.dart';
 import 'package:pi_droid/client/transcript.dart';
 
+/// A genuine 1×1 PNG. The decoder in the tests below is the validator: if this
+/// literal is not a real image, `base64Decode` still succeeds and only the
+/// widget test's `Image` decode would notice.
+const String pngBase64 =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+
+final Uint8List pngBytes = base64Decode(pngBase64);
+
 Map<String, Object?> textBlock(String text) => {'type': 'text', 'text': text};
+
+Map<String, Object?> imagePart(String data, {String? mimeType}) => {
+  'type': 'image',
+  'data': data,
+  'mimeType': ?mimeType,
+};
+
 Map<String, Object?> thinkingBlock(String thinking, {bool redacted = false}) => {
   'type': 'thinking',
   'thinking': thinking,
@@ -235,18 +253,148 @@ void main() {
     expect(blocks.single.text, '[reasoning redacted]');
   });
 
-  test('an image content block becomes an [image] placeholder', () {
+  test('a valid image part decodes into an image block', () {
+    final blocks = deriveBlocks([
+      assistantWith([imagePart(pngBase64, mimeType: 'image/png')]),
+    ]);
+
+    expect(blocks, hasLength(1));
+    expect(blocks.single.kind, TranscriptBlockKind.image);
+    expect(blocks.single.imageBytes, pngBytes);
+    expect(
+      blocks.any((block) => block.text == '[image]'),
+      isFalse,
+      reason: 'a decoded image must not also render a placeholder',
+    );
+  });
+
+  test('a user image part decodes too and keeps the user styling flag', () {
+    final blocks = deriveBlocks([
+      {
+        'role': 'user',
+        'content': [imagePart(pngBase64)],
+      },
+    ]);
+
+    expect(blocks, hasLength(1));
+    expect(blocks.single.kind, TranscriptBlockKind.image);
+    expect(blocks.single.imageBytes, pngBytes);
+    expect(blocks.single.fromUser, isTrue);
+  });
+
+  test('an image inside a wrapped snapshot entry decodes', () {
+    final blocks = deriveBlocks([
+      {
+        'type': 'message',
+        'id': '9',
+        'parentId': '8',
+        'message': {
+          'role': 'user',
+          'content': [imagePart(pngBase64)],
+        },
+      },
+    ]);
+
+    expect(blocks, hasLength(1));
+    expect(blocks.single.kind, TranscriptBlockKind.image);
+    expect(blocks.single.imageBytes, pngBytes);
+  });
+
+  test('text and image parts render in order', () {
+    final blocks = deriveBlocks([
+      {
+        'role': 'user',
+        'content': [
+          textBlock('look:'),
+          imagePart(pngBase64),
+          textBlock('after'),
+        ],
+      },
+    ]);
+
+    expect(blocks.map((block) => block.kind), [
+      TranscriptBlockKind.text,
+      TranscriptBlockKind.image,
+      TranscriptBlockKind.text,
+    ]);
+    expect(blocks[0].text, 'look:');
+    expect(blocks[2].text, 'after');
+  });
+
+  test('an image part with no mimeType still decodes', () {
+    final blocks = deriveBlocks([
+      assistantWith([imagePart(pngBase64)]),
+    ]);
+
+    expect(blocks.single.kind, TranscriptBlockKind.image);
+    expect(blocks.single.imageBytes, pngBytes);
+  });
+
+  test('a malformed image payload falls back to the [image] placeholder', () {
+    // `_decodeImageBytes` catches the FormatException; a throw would escape
+    // `deriveBlocks` and blank the whole transcript.
     final blocks = deriveBlocks([
       {
         'role': 'assistant',
         'content': [
           textBlock('look:'),
-          {'type': 'image', 'data': 'BASE64', 'mimeType': 'image/png'},
+          imagePart('not base64!!', mimeType: 'image/png'),
         ],
       },
     ]);
 
     expect(blocks.map((block) => block.text), ['look:', '[image]']);
+  });
+
+  test('a non-string data payload falls back to the placeholder', () {
+    final blocks = deriveBlocks([
+      assistantWith([
+        {'type': 'image', 'data': 123},
+      ]),
+    ]);
+
+    expect(blocks, hasLength(1));
+    expect(blocks.single.kind, TranscriptBlockKind.text);
+    expect(blocks.single.text, '[image]');
+  });
+
+  test('a part-trimmed image marker falls back to the placeholder', () {
+    // The bridge's in-place image marker keeps the original `type` and carries
+    // no usable `data`.
+    final blocks = deriveBlocks([
+      assistantWith([
+        {'type': 'image', 'truncated': true, 'bytes': 999},
+      ]),
+    ]);
+
+    expect(blocks, hasLength(1));
+    expect(blocks.single.kind, TranscriptBlockKind.text);
+    expect(blocks.single.text, '[image]');
+  });
+
+  test('a part-trimmed image keeps its message text and is never a notice', () {
+    // #32: a message whose oversized *part* was replaced in place keeps its
+    // top-level role and text, so the top-level marker check must not fire.
+    final blocks = deriveBlocks([
+      {
+        'role': 'user',
+        'content': [
+          textBlock('look:'),
+          {'type': 'image', 'truncated': true, 'bytes': 999},
+        ],
+      },
+    ]);
+
+    expect(blocks.map((block) => block.kind), [
+      TranscriptBlockKind.text,
+      TranscriptBlockKind.text,
+    ]);
+    expect(blocks.map((block) => block.text), ['look:', '[image]']);
+    expect(
+      blocks.where((block) => block.kind == TranscriptBlockKind.notice),
+      isEmpty,
+      reason: 'a part-trimmed message is not a whole-message notice',
+    );
   });
 
   test('a truncated relay message becomes a notice naming the byte count', () {

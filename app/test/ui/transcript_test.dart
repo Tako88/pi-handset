@@ -5,6 +5,8 @@
 // markdown-parse) every row.
 
 import 'dart:collection';
+import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
@@ -55,6 +57,22 @@ TranscriptBlock textBlock(
   text: text,
   fromUser: fromUser,
   complete: complete,
+);
+
+/// A genuine 1×1 PNG; the widget tests' own `Image` decode is the validator.
+final Uint8List pngBytes = base64Decode(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
+);
+
+TranscriptBlock imageBlock(
+  String id,
+  Uint8List bytes, {
+  bool fromUser = false,
+}) => TranscriptBlock(
+  kind: TranscriptBlockKind.image,
+  id: id,
+  imageBytes: bytes,
+  fromUser: fromUser,
 );
 
 void main() {
@@ -233,6 +251,50 @@ void main() {
     // stub that renders the raw text would also satisfy `MarkdownBody exists`.
     expect(find.text('**bold**'), findsNothing);
     expect(find.textContaining('bold', findRichText: true), findsOneWidget);
+  });
+
+  testWidgets('an image block renders one Image with its bytes', (tester) async {
+    await tester.pumpWidget(
+      wrap(SessionTranscript(blocks: [imageBlock('i1', pngBytes)])),
+    );
+
+    expect(find.byType(Image), findsOneWidget);
+    // `cacheWidth` makes the provider a ResizeImage wrapping the MemoryImage,
+    // so the bytes live one level in.
+    final provider = tester.widget<Image>(find.byType(Image)).image;
+    expect(provider, isA<ResizeImage>());
+    expect(((provider as ResizeImage).imageProvider as MemoryImage).bytes, pngBytes);
+    expect(find.text('[image]'), findsNothing);
+  });
+
+  testWidgets('the decode request preserves the aspect ratio (only the width is capped)', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      wrap(SessionTranscript(blocks: [imageBlock('i1', pngBytes)])),
+    );
+
+    // With `cacheHeight` also set, ResizeImage defaults to
+    // ResizeImagePolicy.exact (BoxFit.fill) and squashes every image into a
+    // square. `height == null` is the regression pin for that defect.
+    final provider = tester.widget<Image>(find.byType(Image)).image;
+    expect(provider, isA<ResizeImage>());
+    final resize = provider as ResizeImage;
+    expect(resize.width, imageDecodeMaxExtent);
+    expect(resize.height, isNull);
+  });
+
+  testWidgets('a text block and an image block both render', (tester) async {
+    await tester.pumpWidget(
+      wrap(
+        SessionTranscript(
+          blocks: [textBlock('t1', 'hello'), imageBlock('i1', pngBytes)],
+        ),
+      ),
+    );
+
+    expect(find.byType(TextBlock), findsOneWidget);
+    expect(find.byType(ImageBlock), findsOneWidget);
   });
 
   testWidgets('a delta does not re-read the whole transcript', (
