@@ -246,14 +246,16 @@ rather than guess at it.
   start silently yields no row. The hermetic capstone proves the mechanism with an
   equivalent settings file.
 - **The old-hub compatibility gate is a capability array, not a version.** The first
-  post-auth `sessions` frame carries `capabilities: ["list-dirs","project-session"]`; a
-  hub that predates them omits the field. The app then refuses `list-dirs` and
+  post-auth `sessions` frame carries
+  `capabilities: ["list-dirs","project-session","session-control"]`; a hub that
+  predates them omits the field. The app then refuses `list-dirs` and
   `start-session{cwd}` **locally, without sending**, and the FAB falls back to the old
-  direct start. This is load-bearing in two directions: an unknown viewer frame is
-  closed `4003`, which the app treats as terminal (no reconnect), and an old hub
-  ignores the extra `cwd`/`trust` fields and answers `ok` while spawning in a temp dir
-  — a silent wrong-directory session. Neither can happen, because the new frames are
-  never handed to a hub that cannot honour them.
+  direct start; the New/Fork menu items are likewise omitted rather than sent. This is
+  load-bearing in two directions: an unknown viewer frame is closed `4003`, which the
+  app treats as terminal (no reconnect), and an old hub ignores the extra `cwd`/`trust`
+  fields and answers `ok` while spawning in a temp dir — a silent wrong-directory
+  session. Neither can happen, because the new frames are never handed to a hub that
+  cannot honour them.
 - **The trust write is atomic but unlocked.** `saveTrustDecision` writes a sibling
   temp file and renames it over the store, so an interrupted write leaves the previous
   store intact rather than torn or empty (pi itself truncates in place). What is not
@@ -310,3 +312,81 @@ rather than guess at it.
   `.pi/APPEND_SYSTEM.md`, or a non-user `.agents/skills` directory exists.
   `AGENTS.md` never triggers it: context files load whether the project is trusted or
   not.
+
+## Session control
+
+- **Sixteen of pi's built-in commands are unreachable from the app:** `settings`,
+  `scoped-models`, `export`, `import`, `share`, `bug`, `copy`, `session`, `changelog`,
+  `hotkeys`, `clone`, `trust`, `login`, `logout`, `reload`, `quit`. They are PC-console
+  or terminal concerns — a settings editor, an export/import pipeline, a login flow, a
+  quit key — with no meaning on a phone. pi excludes them from the command list it
+  exposes to extensions, so the bridge cannot offer them; typing one still reaches the
+  model as prose (the built-ins trap above). Not built.
+- **`/resume` is out of scope (issue [#28](https://github.com/Tako88/PI-Droid/issues/28)).**
+  A session list is not reachable from an extension: `SessionManager.list`/`listAll` are
+  statics, and the `ctx.sessionManager` the bridge holds is a `ReadonlySessionManager`
+  exposing only `getSessionDir()`. The bridge cannot import pi, so the list cannot be
+  read. Tracked as an issue rather than silently dropped.
+- **`/tree` is out of scope (issue [#29](https://github.com/Tako88/PI-Droid/issues/29)).**
+  Navigating the session tree changes only which leaf is current: pi's log is
+  append-only and its history projection is leaf-independent, so the transcript the app
+  re-requests after a navigation is **byte-identical**. There is no leaf signal — the
+  bridge does not forward pi's `session_tree` event, and `TreeNodeSummary` carries no
+  current-leaf marker — so a picker would look like a no-op button. The bridge's
+  `sessionTree` action exists and is tested, but it is **dormant, unexposed
+  infrastructure** for #29; the app has no menu item, client method or subscription for
+  it. (`/fork`'s picker reuses the same `listTree` projection.)
+- **A successful `sessionNew`/`sessionFork` ack is not the confirmation.** The ack means
+  *"the bridge accepted this and handed it to pi"* (`ok:true`), not that the session was
+  replaced. The confirmation is the **replacement itself** — the old session id goes away
+  and a successor registers naming it — which is what the app actually follows. An ack
+  alone is never treated as success.
+- **A cancelled replacement surfaces as an error notice, not a silent ack.**
+  `newSession`/`fork` resolve `{cancelled:true}` when a `session_before_switch` or
+  `session_before_fork` handler cancels, and the bridge emits a `status` error for it, so
+  the phone sees a message rather than an ack over a replacement that never happened.
+- **A PC-side `/tree` leaves the phone stale.** Navigating the tree changes the leaf,
+  not the append-only log, so no event is emitted that the app can see; the transcript
+  the phone shows stays as it was until the next event (a turn, a compaction, a
+  reconnect). The app cannot detect it.
+- **A fork target can go stale between the list and the tap, and there is no retry.** An
+  entry invalidated by a turn landing between `listTree` and the tap is refused at
+  dispatch as `unknown entry`, which the app shows as a SnackBar; the user re-opens the
+  picker for a fresh list. Deliberately no auto-retry — a silent retry against a moved
+  target is worse than a visible refusal.
+- **A replacement that never arrives gives up after 15 seconds.** If the bridge dies
+  between the old session's shutdown and the successor's register, the app stops waiting
+  after a 15 s replacement timer and falls back to the session list, with the visible
+  error `the session did not come back`. Bounded, not silent.
+- **The `ok` for a replacement is optimistic.** While the follow is armed, the app
+  completes a still-outstanding `sessionNew`/`sessionFork` as `ok:true` on the old
+  session's `session-gone` — the earliest witness, chosen so the two possible arrival
+  orders converge — even though the bridge could die inside the 15 s window before the
+  successor registers. The 15 s timeout still runs and returns the UI to the session
+  list, so the wrong state is bounded, not permanent.
+- **A `command-result` can be dropped under hub backpressure.** The hub relays command
+  replies through its budgeted viewer path, so a result can be dropped when the byte
+  budget is exhausted. The app's own 30 s command timeout is the backstop; for a
+  replacement the follow is keyed on the `sessions` push rather than the ack, so the
+  loss does not by itself strand the follow. Pre-existing hub behaviour, not specific to
+  session control.
+- **A future extension registering `pi-droid-session` would make the trigger fall
+  through to the model.** pi disambiguates a duplicate command name as `name:occurrence`,
+  while the bridge triggers the bare `/pi-droid-session …`; if another extension ever
+  registered that name the bare lookup would miss, the prompt would reach the model as
+  prose, and the bridge would already have acked `ok:true`. **Verified clear today** — no
+  extension in this deployment registers the name — and the internal command is filtered
+  out of the app's `/` overlay, so it is never offered back. A name collision would be a
+  silent wrong-state ack, which is why it is recorded rather than assumed away.
+- **The internal command is visible to a PC terminal user.** `pi-droid-session` appears
+  in pi's own command list inside a terminal, because pi concatenates every registered
+  extension command; the bridge filters it out of the **app's** `/` overlay only. Running
+  it from the PC is harmless (it is the same action the phone triggers), but a terminal
+  user will see a command the app does not offer.
+- **Deploy gate: an APK rebuild AND pi `/reload` AND a hub restart.** The four new names
+  (`listTree`, `sessionNew`, `sessionTree`, `sessionFork`) are in the hub's command
+  allowlist and `session-control` is a new capability, both read at import, so an old hub
+  refuses the new commands; the bridge is read from disk by pi, so a running pi needs
+  `/reload` (or a restart); and the menu items and follow logic ship in the app. An old
+  app ignores the new `replacesSessionId` field and the capability, so it is never
+  offered the items.
