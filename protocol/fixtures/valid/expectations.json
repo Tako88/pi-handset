@@ -331,5 +331,37 @@
       }
     ],
     "capabilities": ["list-dirs", "project-session"]
+  },
+  "register-replaces.json": {
+    "type": "register",
+    "sessionId": "sess-2",
+    "replaces": "sess-1"
+  },
+  "sessions-replaces.json": {
+    "type": "sessions",
+    "sessions": [
+      {
+        "sessionId": "sess-2",
+        "label": "new session",
+        "agentState": "idle",
+        "replacesSessionId": "sess-1"
+      }
+    ]
+  },
+  "command-result-tree.json": {
+    "type": "command-result",
+    "id": "cmd-1",
+    "ok": true,
+    "tree": [
+      { "id": "e1", "parentId": null, "role": "user", "text": "hello" },
+      {
+        "id": "e2",
+        "parentId": "e1",
+        "role": "assistant",
+        "label": "answer",
+        "text": "hi"
+      }
+    ],
+    "treeTruncated": false
   }
 }

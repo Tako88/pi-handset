@@ -1,0 +1,7 @@
+{
+  "protocolVersion": 1,
+  "type": "command-result",
+  "id": "cmd-1",
+  "ok": true,
+  "tree": [{ "id": "e1", "parentId": null, "text": "hi" }]
+}

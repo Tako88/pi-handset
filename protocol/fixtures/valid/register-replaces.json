@@ -1,0 +1,6 @@
+{
+  "protocolVersion": 1,
+  "type": "register",
+  "sessionId": "sess-2",
+  "replaces": "sess-1"
+}

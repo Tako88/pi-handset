@@ -51,11 +51,15 @@ const String capabilityListDirs = 'list-dirs';
 /// The hub capability that lets a viewer start a session in a chosen folder.
 const String capabilityProjectSession = 'project-session';
 
+/// The hub capability that lets a viewer drive session-control commands.
+const String capabilitySessionControl = 'session-control';
+
 /// The hub capabilities this protocol version advertises on the `sessions`
 /// frame. Canonical; a viewer gates folder browsing on their presence.
 const List<String> hubCapabilities = [
   capabilityListDirs,
   capabilityProjectSession,
+  capabilitySessionControl,
 ];
 
 /// What the loopback (agent) listener accepts besides `hello`.
@@ -152,6 +156,17 @@ bool _isModelSummary(Object? value) {
   return _nonEmptyString(model['provider']) != null &&
       _nonEmptyString(model['id']) != null &&
       _nonEmptyString(model['name']) != null;
+}
+
+bool _isTreeNodeSummary(Object? value) {
+  if (value is! Map) return false;
+  final node = value.cast<String, Object?>();
+  return _nonEmptyString(node['id']) != null &&
+      node.containsKey('parentId') &&
+      (node['parentId'] == null || _nonEmptyString(node['parentId']) != null) &&
+      (node['role'] == 'user' || node['role'] == 'assistant') &&
+      _isOptionalString(node, 'label') &&
+      node['text'] is String;
 }
 
 /// Decodes one JSON object, reporting malformed input as a result, never a throw.
@@ -300,6 +315,7 @@ DecodeResult decode(String text) {
         'model',
         'thinkingLevel',
         'mode',
+        'replaces',
       ]) {
         if (!_isOptionalString(message, field)) {
           return DecodeResult.fail('bad-field', 'register $field must be a string');
@@ -387,6 +403,30 @@ DecodeResult decode(String text) {
         return const DecodeResult.fail(
           'bad-field',
           'command-result queued must be a boolean',
+        );
+      }
+      if (message.containsKey('tree')) {
+        final tree = message['tree'];
+        if (tree is! List) {
+          return const DecodeResult.fail(
+            'bad-field',
+            'command-result tree must be an array',
+          );
+        }
+        for (final entry in tree) {
+          if (!_isTreeNodeSummary(entry)) {
+            return const DecodeResult.fail(
+              'bad-field',
+              'command-result tree nodes must carry id, parentId, role and text',
+            );
+          }
+        }
+      }
+      if (message.containsKey('treeTruncated') &&
+          message['treeTruncated'] is! bool) {
+        return const DecodeResult.fail(
+          'bad-field',
+          'command-result treeTruncated must be a boolean',
         );
       }
       return DecodeResult.ok(message);
@@ -558,6 +598,12 @@ DecodeResult decode(String text) {
           return const DecodeResult.fail(
             'bad-field',
             'sessions origin must be app or pc',
+          );
+        }
+        if (!_isOptionalString(summary, 'replacesSessionId')) {
+          return const DecodeResult.fail(
+            'bad-field',
+            'sessions replacesSessionId must be a string',
           );
         }
       }
