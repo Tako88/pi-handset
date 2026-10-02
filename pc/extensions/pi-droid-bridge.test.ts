@@ -73,6 +73,7 @@ import type {
   BridgePi,
   BridgeSocket,
   MessageEndEvent,
+  UserMessageContent,
 } from './pi-droid-bridge.ts';
 
 // ---------------------------------------------------------------------------
@@ -124,7 +125,7 @@ class FakeSocket implements BridgeSocket {
 
 class StubPi implements BridgePi {
   readonly handlers = new Map<string, BridgeHandler>();
-  readonly userMessages: Array<{ content: string; options?: { deliverAs?: string } }> = [];
+  readonly userMessages: Array<{ content: UserMessageContent; options?: { deliverAs?: string } }> = [];
   readonly models: unknown[] = [];
   readonly thinkingLevels: string[] = [];
   readonly sessionNames: string[] = [];
@@ -148,7 +149,7 @@ class StubPi implements BridgePi {
     return () => this.handlers.delete(event);
   }
 
-  sendUserMessage(content: string, options?: { deliverAs?: 'steer' | 'followUp' }): void {
+  sendUserMessage(content: UserMessageContent, options?: { deliverAs?: 'steer' | 'followUp' }): void {
     this.userMessages.push({ content, options });
   }
 
@@ -1134,6 +1135,114 @@ test('an explicit followup ignores the agent idle state', async () => {
     { content: 'f1', options: { expandPromptTemplates: true, deliverAs: 'followUp' } },
     { content: 'f2', options: { expandPromptTemplates: true, deliverAs: 'followUp' } },
   ]);
+});
+
+test('a prompt with images maps them to pi content parts after the text', async () => {
+  const harness = makeHarness();
+  harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'prompt', {
+    text: 'look',
+    images: [{ data: 'AA', mimeType: 'image/jpeg' }],
+  });
+  // pi's `sendUserMessage` splits a content array into text + images and hands
+  // them to `prompt`; the text part must come first so a caption is never lost.
+  assert.deepEqual(harness.pi.userMessages, [
+    {
+      content: [
+        { type: 'text', text: 'look' },
+        { type: 'image', data: 'AA', mimeType: 'image/jpeg' },
+      ],
+      options: { expandPromptTemplates: true },
+    },
+  ]);
+});
+
+test('a non-array images value is refused as malformed images', async () => {
+  const harness = makeHarness();
+  harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'prompt', { text: 'x', images: 'nope' });
+  // A malformed frame must fail loudly rather than send a text-only prompt the
+  // app believes carried a picture.
+  assert.deepEqual(parsed(socket).at(-1), {
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'command-result',
+    id: 'c-prompt',
+    ok: false,
+    error: 'malformed images',
+  });
+  assert.deepEqual(harness.pi.userMessages, []);
+});
+
+test('an image part with a missing mimeType is refused as malformed images', async () => {
+  const harness = makeHarness();
+  harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'prompt', { text: 'x', images: [{ data: 'AA' }] });
+  assert.deepEqual(parsed(socket).at(-1), {
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'command-result',
+    id: 'c-prompt',
+    ok: false,
+    error: 'malformed images',
+  });
+  assert.deepEqual(harness.pi.userMessages, []);
+});
+
+test('an image part with an empty mimeType is refused as malformed images', async () => {
+  const harness = makeHarness();
+  harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'prompt', {
+    text: 'x',
+    images: [{ data: 'AA', mimeType: '' }],
+  });
+  assert.deepEqual(parsed(socket).at(-1), {
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'command-result',
+    id: 'c-prompt',
+    ok: false,
+    error: 'malformed images',
+  });
+  assert.deepEqual(harness.pi.userMessages, []);
+});
+
+test('an empty images array is treated as absent', async () => {
+  const harness = makeHarness();
+  harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'prompt', { text: 'x', images: [] });
+  // The app may send an empty list; it must not make the content an array with
+  // an empty image tail.
+  assert.deepEqual(harness.pi.userMessages, [
+    { content: 'x', options: { expandPromptTemplates: true } },
+  ]);
+});
+
+test('images without text are refused as missing text before parsing images', async () => {
+  const harness = makeHarness();
+  harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'prompt', {
+    images: [{ data: 'AA', mimeType: 'image/jpeg' }],
+  });
+  // The text check comes first: an image cannot be sent alone, and the refusal
+  // names the missing caption rather than the images.
+  assert.deepEqual(parsed(socket).at(-1), {
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'command-result',
+    id: 'c-prompt',
+    ok: false,
+    error: 'missing text',
+  });
+  assert.deepEqual(harness.pi.userMessages, []);
 });
 
 test('an isIdle() that throws fails the command loudly instead of crashing', async () => {
