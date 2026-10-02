@@ -51,6 +51,12 @@ class SessionSummary {
   final String label;
   final String agentState;
 
+  /// The session id this session replaces, when pi started it with `/new` or
+  /// `/fork`. Absent for an ordinary registration and for a hub that predates
+  /// the field. The app keys its replacement follow on this, never on the
+  /// command ack.
+  final String? replacesSessionId;
+
   /// Who started the session: `'app'` (the hub spawned it) or `'pc'`. Defaults
   /// to `'pc'` so a hub that predates the field never strands a viewer.
   final String origin;
@@ -59,6 +65,7 @@ class SessionSummary {
     required this.sessionId,
     required this.label,
     required this.agentState,
+    this.replacesSessionId,
     this.origin = 'pc',
   });
 
@@ -66,6 +73,7 @@ class SessionSummary {
     sessionId: json['sessionId']! as String,
     label: json['label']! as String,
     agentState: json['agentState']! as String,
+    replacesSessionId: json['replacesSessionId'] as String?,
     origin: json['origin'] as String? ?? 'pc',
   );
 }
@@ -263,13 +271,49 @@ class CommandResult {
   /// `false` = never sent. The bridge only ever emits `true` or omits the key.
   final bool? queued;
 
+  /// Present only on a `listTree` result.
+  final List<TreeNodeSummary>? tree;
+
+  /// Present only on a `listTree` result: whether older nodes were dropped.
+  final bool? treeTruncated;
+
   const CommandResult({
     required this.ok,
     this.error,
     this.commands,
     this.models,
     this.queued,
+    this.tree,
+    this.treeTruncated,
   });
+}
+
+/// One session-tree node as it crosses the wire: a user or assistant message
+/// with the nearest *emitted* ancestor's id, so the app can indent without
+/// knowing pi's skipped entry variants.
+class TreeNodeSummary {
+  final String id;
+  final String? parentId;
+  final String role;
+  final String? label;
+  final String text;
+
+  const TreeNodeSummary({
+    required this.id,
+    required this.parentId,
+    required this.role,
+    required this.text,
+    this.label,
+  });
+
+  factory TreeNodeSummary.fromJson(Map<String, Object?> json) =>
+      TreeNodeSummary(
+        id: json['id']! as String,
+        parentId: json['parentId'] as String?,
+        role: json['role']! as String,
+        label: json['label'] as String?,
+        text: json['text']! as String,
+      );
 }
 
 /// One slash command pi offers for a session, as it crosses the wire: `name`
@@ -378,13 +422,27 @@ const Duration _connectTimeout = Duration(seconds: 10);
 /// Bounded wait for a `command-result` before the caller's future fails.
 const Duration _commandTimeout = Duration(seconds: 30);
 
+/// Bounded wait for a `/new` or `/fork` replacement to register. pi tears the
+/// old session down and registers the successor over two pushes; without this
+/// a bridge that dies in between would leave the client waiting forever.
+const Duration _replacementTimeout = Duration(seconds: 15);
+
 /// One in-flight `command`, with the session it belongs to (so `session-gone`
 /// can fail it) and its timeout handle.
 class _PendingCommand {
-  _PendingCommand(this.sessionId, this.completer);
+  _PendingCommand(
+    this.sessionId,
+    this.completer, {
+    this.followsReplacement = false,
+  });
 
   final String sessionId;
   final Completer<CommandResult> completer;
+
+  /// Set by `sessionNew`/`sessionFork` only: this command's success witness is
+  /// the session being replaced, so it is settled by that replacement rather
+  /// than by a `command-result`.
+  final bool followsReplacement;
   HubTimer? timer;
 }
 
@@ -475,6 +533,13 @@ class HubClient {
   /// reappears instead of leaving the client silently unsubscribed.
   String? _desiredSessionId;
 
+  /// The old session id a `/new` or `/fork` is waiting to be replaced, or null
+  /// when no replacement is in flight. While set, `_onSessions` adopts a
+  /// summary whose `replacesSessionId` matches it and never re-subscribes the
+  /// dead id.
+  String? _awaitingReplacementFrom;
+  HubTimer? _replacementTimer;
+
   /// The current snapshot.
   HubClientState get state => _state;
 
@@ -514,6 +579,9 @@ class HubClient {
     _cancelAuthWatchdog();
     _cancelConnectDeadline();
     _dialSeq++;
+    // A follow armed on a previous hub names a foreign session id; left set, it
+    // would suppress every restore on the new hub until its timer fired.
+    _clearReplacementFollow();
     await _dropConnection();
 
     _url = Uri(scheme: 'ws', host: host, port: port);
@@ -538,6 +606,7 @@ class HubClient {
     _cancelAuthWatchdog();
     _cancelConnectDeadline();
     _dialSeq++;
+    _clearReplacementFollow();
     // Every in-flight command fails rather than hanging the caller forever.
     _failPending('client stopped');
     await _dropConnection(reason: 'client stopped');
@@ -565,6 +634,7 @@ class HubClient {
     // widget-test clock.
     await _dropConnection(awaitSubscription: false, reason: 'disconnected');
     _credential = null;
+    _clearReplacementFollow();
     _resubscribed = false;
     _desiredSessionId = null;
     _attempt = 0;
@@ -609,6 +679,17 @@ class HubClient {
   /// Relayed `event` frames carry no `sessionId`, so the client can only
   /// attribute them to the session it is currently viewing.
   void subscribe(String sessionId) {
+    // Picking a session is an explicit navigation: a replacement follow for a
+    // different session must not later yank the user onto its successor. Clear
+    // it and fail the caller, whose witness can no longer arrive.
+    final awaited = _awaitingReplacementFrom;
+    if (awaited != null && awaited != sessionId) {
+      _clearReplacementFollow();
+      _abandonReplacementPendings(
+        (pending) => pending.sessionId == awaited,
+        'superseded',
+      );
+    }
     // A user picking a session is a fresh start: a gone streak from an earlier
     // automatic retry must not count against it.
     _sessionGoneCounts.remove(sessionId);
@@ -656,6 +737,14 @@ class HubClient {
   }
 
   void unsubscribe(String sessionId) {
+    // Unsubscribing the awaited id abandons the replacement it was waiting on.
+    if (_awaitingReplacementFrom == sessionId) {
+      _clearReplacementFollow();
+      _abandonReplacementPendings(
+        (pending) => pending.sessionId == sessionId,
+        'superseded',
+      );
+    }
     _trySend({
       'protocolVersion': protocolVersion,
       'type': 'unsubscribe',
@@ -728,6 +817,58 @@ class HubClient {
       'sessionId': sessionId,
       'name': 'listModels',
     });
+  }
+
+  /// Asks the hub for [sessionId]'s session tree as a flat, bounded node list.
+  ///
+  /// A `/fork` picks its fork point from this list; the tree carries only user
+  /// and assistant messages, already relinked to their nearest emitted
+  /// ancestor.
+  Future<CommandResult> listTree(String sessionId, {String? id}) {
+    return _request(sessionId, id, (commandId) => <String, Object?>{
+      'protocolVersion': protocolVersion,
+      'type': 'command',
+      'id': commandId,
+      'sessionId': sessionId,
+      'name': 'listTree',
+    });
+  }
+
+  /// Asks pi to replace [sessionId] with a fresh session, in place.
+  ///
+  /// The ack only means the bridge accepted the command; success is the
+  /// replacement itself, so the returned future is settled by the successor's
+  /// registration (or by the old session's `session-gone` while the follow is
+  /// armed), never by the ack. The follow fails after [_replacementTimeout].
+  Future<CommandResult> sessionNew(String sessionId, {String? id}) {
+    return _request(sessionId, id, (commandId) {
+      return <String, Object?>{
+        'protocolVersion': protocolVersion,
+        'type': 'command',
+        'id': commandId,
+        'sessionId': sessionId,
+        'name': 'sessionNew',
+      };
+    }, followsReplacement: true);
+  }
+
+  /// Asks pi to fork [sessionId] at [entryId], replacing it in place. Same
+  /// replacement-follow contract as [sessionNew].
+  Future<CommandResult> sessionFork(
+    String sessionId,
+    String entryId, {
+    String? id,
+  }) {
+    return _request(sessionId, id, (commandId) {
+      return <String, Object?>{
+        'protocolVersion': protocolVersion,
+        'type': 'command',
+        'id': commandId,
+        'sessionId': sessionId,
+        'name': 'sessionFork',
+        'args': {'entryId': entryId},
+      };
+    }, followsReplacement: true);
   }
 
   /// Fetches [sessionId]'s commands and caches them under the id that asked —
@@ -850,8 +991,9 @@ class HubClient {
   Future<CommandResult> _request(
     String pendingSessionId,
     String? id,
-    Map<String, Object?> Function(String commandId) build,
-  ) {
+    Map<String, Object?> Function(String commandId) build, {
+    bool followsReplacement = false,
+  }) {
     if (_socket == null) {
       // Dropping the request silently would leave the UI spinning forever.
       return Future.value(
@@ -860,7 +1002,11 @@ class HubClient {
     }
     final commandId = id ?? 'cmd-${++_commandCounter}';
     final completer = Completer<CommandResult>();
-    final pending = _PendingCommand(pendingSessionId, completer);
+    final pending = _PendingCommand(
+      pendingSessionId,
+      completer,
+      followsReplacement: followsReplacement,
+    );
     _pendingCommands[commandId] = pending;
     pending.timer = _scheduler.schedule(_commandTimeout, () {
       final removed = _pendingCommands.remove(commandId);
@@ -869,15 +1015,89 @@ class HubClient {
         const CommandResult(ok: false, error: 'timed out'),
       );
     }, kind: HubTimerKind.command);
+    // Arm the follow immediately before the frame goes out, so the successor's
+    // `sessions` push can never race ahead of a set flag. `_onSessions` keys
+    // off the old id, not `activeSessionId`, so a `session-gone` arriving first
+    // does not lose it.
+    if (followsReplacement) _beginReplacementFollow(pendingSessionId);
     final error = _trySend(build(commandId));
     if (error != null) {
       // A closing socket must not leave the caller with a thrown exception and
       // an entry that only the 30s timeout would clear.
       _pendingCommands.remove(commandId);
       pending.timer?.cancel();
+      if (followsReplacement) _clearReplacementFollow();
       completer.complete(CommandResult(ok: false, error: '$error'));
     }
     return completer.future;
+  }
+
+  /// Starts waiting for [oldId] to be replaced. Cancels any prior follow timer:
+  /// only one replacement can be in flight at a time.
+  void _beginReplacementFollow(String oldId) {
+    // A second replacement targeting a different session supersedes the first:
+    // its pending can never match the new witness, so fail it now rather than
+    // letting its 30 s command timeout be the only settle path. A same-id retry
+    // shares the witness, so it is left alone.
+    _abandonReplacementPendings(
+      (pending) => pending.sessionId != oldId,
+      'superseded',
+    );
+    _replacementTimer?.cancel();
+    _awaitingReplacementFrom = oldId;
+    _replacementTimer = _scheduler.schedule(_replacementTimeout, () {
+      final old = _awaitingReplacementFrom;
+      if (old == null) return;
+      _clearReplacementFollow();
+      // Re-enable the normal restore path *without* moving `_desiredSessionId`:
+      // the next `sessions` push re-subscribes the old id, the hub answers
+      // `session-gone`, and the existing cap machinery takes it from there.
+      _resubscribed = false;
+      _failPending('the session did not come back', sessionId: old);
+    }, kind: HubTimerKind.replacement);
+  }
+
+  /// Clears the replacement follow: no successor was adopted (or none is still
+  /// awaited), so a later restore must not depend on it.
+  void _clearReplacementFollow() {
+    _replacementTimer?.cancel();
+    _replacementTimer = null;
+    _awaitingReplacementFrom = null;
+  }
+
+  /// Completes every still-outstanding `followsReplacement` pending for
+  /// [oldId] as `ok`. Called at both replacement witnesses — adoption in
+  /// `_onSessions` and `_onSessionGone` while the follow is armed — so the two
+  /// arrival orders converge on the same outcome.
+  void _settleReplacementPendings(String oldId) {
+    for (final entry in [..._pendingCommands.entries]) {
+      final pending = entry.value;
+      if (!pending.followsReplacement || pending.sessionId != oldId) continue;
+      _pendingCommands.remove(entry.key);
+      pending.timer?.cancel();
+      if (!pending.completer.isCompleted) {
+        pending.completer.complete(const CommandResult(ok: true));
+      }
+    }
+  }
+
+  /// Fails and removes every outstanding `followsReplacement` pending matching
+  /// [matches], cancelling its command timer and completing it `ok:false` with
+  /// [error]. Used when a replacement is abandoned before its witness can
+  /// arrive: a second replacement supersedes it, or the user navigates away.
+  void _abandonReplacementPendings(
+    bool Function(_PendingCommand pending) matches,
+    String error,
+  ) {
+    for (final entry in [..._pendingCommands.entries]) {
+      final pending = entry.value;
+      if (!pending.followsReplacement || !matches(pending)) continue;
+      _pendingCommands.remove(entry.key);
+      pending.timer?.cancel();
+      if (!pending.completer.isCompleted) {
+        pending.completer.complete(CommandResult(ok: false, error: error));
+      }
+    }
   }
 
   /// Restores the subscription the previous connection held, once this
@@ -1003,8 +1223,12 @@ class HubClient {
     _subscription = null;
     unawaited(subscription?.cancel() ?? Future<void>.value());
     if (_stopped) return;
-    // A lost socket can never deliver a result; fail rather than hang.
-    _failPending('connection lost');
+    // A lost socket can never deliver a result; fail rather than hang. A
+    // `followsReplacement` pending is exempt: the replacement proceeds on the
+    // server regardless of this viewer's reconnect, so failing it here would
+    // report an error while the successor still arrives minutes later. It is
+    // bounded by the 15 s replacement timer instead.
+    _failPending('connection lost', skipReplacement: true);
     if (close.code == closeCapability) {
       _setStatus(HubConnectionStatus.disconnected);
       return;
@@ -1192,7 +1416,27 @@ class HubClient {
     // The hub pushes `sessions` on authentication; its arrival is how a
     // token-authenticated connection is confirmed (there is no `paired`).
     _markConnected();
-    _restoreSubscription();
+    final awaited = _awaitingReplacementFrom;
+    if (awaited != null) {
+      // A replacement is in flight: adopt its successor and *never* fall back
+      // to `_restoreSubscription`, which would re-subscribe the dead id and
+      // walk the give-up counter against a session that is deliberately gone.
+      SessionSummary? successor;
+      for (final summary in summaries) {
+        if (summary.replacesSessionId == awaited) {
+          successor = summary;
+          break;
+        }
+      }
+      if (successor != null) {
+        _settleReplacementPendings(awaited);
+        _clearReplacementFollow();
+        _resubscribed = true;
+        _subscribe(successor.sessionId, restoring: true);
+      }
+    } else {
+      _restoreSubscription();
+    }
     // Explicitly, and not left to `_markConnected`: `_setStatus` early-returns
     // when the status is unchanged, so it notifies only on the first push of a
     // connection. Without this line every later registry change (a session
@@ -1401,11 +1645,38 @@ class HubClient {
       );
       return;
     }
-    final pending = _pendingCommands.remove(id);
+    final pending = _pendingCommands[id];
     if (pending == null || pending.completer.isCompleted) return;
+    if (pending.followsReplacement) {
+      // A successful ack is not the witness — the successor's registration is.
+      // Leave the pending and the follow armed so adoption settles it.
+      if (message['ok']! as bool) return;
+      // A refused replacement will never produce a successor: fail the caller
+      // and disarm the follow. Left armed with no pending to settle, it would
+      // suppress every legitimate restore for 15 s, and a `session-gone` for
+      // the id would skip the re-arm.
+      _pendingCommands.remove(id);
+      pending.timer?.cancel();
+      if (!pending.completer.isCompleted) {
+        pending.completer.complete(
+          CommandResult(ok: false, error: message['error'] as String?),
+        );
+      }
+      if (_awaitingReplacementFrom == pending.sessionId &&
+          !_pendingCommands.values.any(
+            (other) =>
+                other.followsReplacement &&
+                other.sessionId == pending.sessionId,
+          )) {
+        _clearReplacementFollow();
+      }
+      return;
+    }
+    _pendingCommands.remove(id);
     pending.timer?.cancel();
     final rawCommands = message['commands'];
     final rawModels = message['models'];
+    final rawTree = message['tree'];
     pending.completer.complete(
       CommandResult(
         ok: message['ok']! as bool,
@@ -1430,6 +1701,16 @@ class HubClient {
             : null,
         // Absent maps to null ("unknown"), never false.
         queued: message['queued'] as bool?,
+        tree: rawTree is List
+            ? rawTree
+                  .map(
+                    (entry) => TreeNodeSummary.fromJson(
+                      (entry as Map).cast<String, Object?>(),
+                    ),
+                  )
+                  .toList()
+            : null,
+        treeTruncated: message['treeTruncated'] as bool?,
       ),
     );
   }
@@ -1473,6 +1754,13 @@ class HubClient {
     final count = (_sessionGoneCounts[sessionId] ?? 0) + 1;
     _sessionGoneCounts[sessionId] = count;
     final gaveUp = count > _maxConsecutiveSessionGone;
+    // The awaited session vanishing is the replacement's first witness: the
+    // session is meant to be gone, so its pending is settled rather than
+    // failed, and the follow stays armed until the successor names it (or the
+    // follow times out). `_resubscribed` is deliberately left alone — the
+    // successor's push must not lose to a restore of the dead id.
+    final awaiting = _awaitingReplacementFrom == sessionId;
+    if (awaiting) _settleReplacementPendings(sessionId);
     // A `session-gone` answering an automatic restore is the re-subscribe
     // racing the agent's re-registration; only once the cap is past — or when
     // the user subscribed directly and the session is simply gone — is the
@@ -1484,7 +1772,7 @@ class HubClient {
       // session and say so rather than looping silently.
       _restoredSessions.remove(sessionId);
       if (_desiredSessionId == sessionId) _desiredSessionId = null;
-    } else if (_desiredSessionId == sessionId) {
+    } else if (!awaiting && _desiredSessionId == sessionId) {
       // A gone session may come back (an agent restart, or a re-subscribe that
       // raced the agent's re-registration): drop the one-shot guard so the next
       // `sessions` push re-attaches to the session the user was viewing.
@@ -1519,7 +1807,11 @@ class HubClient {
     }
   }
 
-  void _failPending(String error, {String? sessionId}) {
+  void _failPending(
+    String error, {
+    String? sessionId,
+    bool skipReplacement = false,
+  }) {
     // Listings are session-less, so only a whole-connection failure
     // (`sessionId == null`) reaches them.
     if (sessionId == null) {
@@ -1537,6 +1829,7 @@ class HubClient {
     for (final entry in [..._pendingCommands.entries]) {
       final pending = entry.value;
       if (sessionId != null && pending.sessionId != sessionId) continue;
+      if (skipReplacement && pending.followsReplacement) continue;
       _pendingCommands.remove(entry.key);
       pending.timer?.cancel();
       if (!pending.completer.isCompleted) {

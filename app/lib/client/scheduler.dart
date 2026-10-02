@@ -8,7 +8,7 @@ import 'dart:async';
 /// What a scheduled timer is for. The production scheduler ignores this; it
 /// exists so the test scheduler can fire one kind of timer without tripping
 /// the others.
-enum HubTimerKind { notify, reconnect, auth, command, connect }
+enum HubTimerKind { notify, reconnect, auth, command, connect, replacement }
 
 abstract class HubTimer {
   void cancel();
