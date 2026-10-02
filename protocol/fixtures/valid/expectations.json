@@ -29,6 +29,15 @@
     "ok": true,
     "queued": true
   },
+  "command-result-models.json": {
+    "type": "command-result",
+    "id": "cmd-1",
+    "ok": true,
+    "models": [
+      { "provider": "anthropic", "id": "claude-sonnet-4", "name": "Claude Sonnet 4" },
+      { "provider": "openai", "id": "gpt-5", "name": "GPT-5" }
+    ]
+  },
   "event-agent.json": {
     "type": "event",
     "payload": { "kind": "agent", "state": "running" }
@@ -63,6 +72,15 @@
       "tokens": 23400,
       "contextWindow": 128000,
       "thinkingLevel": "high"
+    }
+  },
+  "event-usage-model.json": {
+    "type": "event",
+    "payload": {
+      "kind": "usage",
+      "tokens": 23400,
+      "contextWindow": 128000,
+      "model": { "provider": "anthropic", "id": "claude-sonnet-4", "name": "Claude Sonnet 4" }
     }
   },
   "event-settled.json": {

@@ -54,7 +54,7 @@ export const HISTORY_MAX_BYTES = 768 * 1024;
  * - `register` { sessionId, sessionFile?, cwd?, name?, model?, thinkingLevel?, mode?, pid? }
  * - `event`  { payload: stream | message | agent | tool | status }
  * - `history` { sessionId, entries: unknown[], truncated: boolean }
- * - `command-result` { id, ok, error?, commands? }
+ * - `command-result` { id, ok, error?, commands?, models? }
  *
  * viewer -> hub (LAN listener):
  * - `hello`  { ticket XOR token }
@@ -79,7 +79,7 @@ export const HISTORY_MAX_BYTES = 768 * 1024;
  * - `snapshot` { sessionId, lastSeq, agentState, entries: unknown[], truncated }
  *   — `lastSeq`/`agentState` are hub-tracked; `entries` are agent-supplied and
  *   may be truncated.
- * - `command-result` { id, ok, error?, commands? }
+ * - `command-result` { id, ok, error?, commands?, models? }
  * - `resync-required` { sessionId, reason }
  * - `session-gone` { sessionId }
  *
@@ -144,12 +144,15 @@ export type StreamPhase = (typeof STREAM_PHASES)[number];
  * and the app derives it rather than trusting a second source of truth.
  * `thinkingLevel` is the level in effect when the reading was taken (pi's
  * `ThinkingLevel`); it is optional so an older pi without a level omits it.
+ * `model` is the session's current model when the reading was taken; it is
+ * optional so an older pi without one omits the field.
  */
 export interface ContextUsagePayload {
   kind: 'usage';
   tokens: number | null;
   contextWindow: number;
   thinkingLevel?: string;
+  model?: ModelSummary;
 }
 
 /** The agent's lifecycle transition. Carried inside an `event`. */
@@ -216,6 +219,13 @@ export interface HistoryMessage {
   truncated: boolean;
 }
 
+/** The `{provider, id, name}` projection of a pi model the app needs. */
+export interface ModelSummary {
+  provider: string;
+  id: string;
+  name: string;
+}
+
 export interface SlashCommand {
   name: string;
   description?: string;
@@ -229,6 +239,8 @@ export interface CommandResultMessage {
   error?: string;
   /** Present only on a `listCommands` result; validated if present. */
   commands?: SlashCommand[];
+  /** Present only on a `listModels` result; validated if present. */
+  models?: ModelSummary[];
   /**
    * Tri-state: absent = the bridge did not queue this (unknown / not-queued);
    * `true` = accepted and dispatched as a mid-turn `steer`; `false` = never sent.
@@ -549,6 +561,13 @@ function isOptionalString(value: unknown): boolean {
   return value === undefined || typeof value === 'string';
 }
 
+/** True when `value` is a `{provider, id, name}` triple of non-empty strings. */
+function isModelSummary(value: unknown): boolean {
+  const model = asObject(value);
+  return model !== null && asString(model.provider) !== null &&
+    asString(model.id) !== null && asString(model.name) !== null;
+}
+
 /** Machine-readable failure reasons, stable enough for M5 to map and M7 to port. */
 export type DecodeErrorCode =
   | 'malformed-json'
@@ -661,6 +680,9 @@ export function decode(text: string): DecodeResult {
         if (!isOptionalString(body.thinkingLevel)) {
           return fail('bad-field', 'usage thinkingLevel must be a string');
         }
+        if (body.model !== undefined && !isModelSummary(body.model)) {
+          return fail('bad-field', 'usage model must carry provider, id and name strings');
+        }
         return { ok: true, value: parsed as EventMessage };
       }
       return fail('bad-payload', `unknown event payload kind: ${String(kind)}`);
@@ -715,6 +737,16 @@ export function decode(text: string): DecodeResult {
           }
           if (!isOptionalString(command.description)) {
             return fail('bad-field', 'command-result command description must be a string');
+          }
+        }
+      }
+      if (message.models !== undefined) {
+        if (!Array.isArray(message.models)) {
+          return fail('bad-field', 'command-result models must be an array');
+        }
+        for (const entry of message.models) {
+          if (!isModelSummary(entry)) {
+            return fail('bad-field', 'command-result model must carry provider, id and name strings');
           }
         }
       }
