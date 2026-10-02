@@ -1,0 +1,18 @@
+{
+  "protocolVersion": 1,
+  "type": "event",
+  "payload": {
+    "kind": "tool",
+    "toolCallId": "call-table",
+    "name": "ls",
+    "status": "done",
+    "view": {
+      "type": "table",
+      "columns": ["name", "type"],
+      "rows": [
+        ["app", "directory"],
+        ["README.md", "file"]
+      ]
+    }
+  }
+}

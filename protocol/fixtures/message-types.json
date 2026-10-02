@@ -24,6 +24,7 @@
   "eventPayloadKinds": ["stream", "message", "agent", "tool", "status", "usage", "settled"],
   "streamPhases": ["thinking"],
   "sessionOrigins": ["app", "pc"],
+  "toolStatuses": ["running", "done", "error"],
   "agentMessageTypes": ["register", "event", "history", "command-result"],
   "viewerMessageTypes": [
     "subscribe",

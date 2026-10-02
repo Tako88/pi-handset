@@ -3,8 +3,10 @@
   "type": "event",
   "payload": {
     "kind": "tool",
-    "toolCallId": "call-1",
     "name": "read",
-    "status": "running"
+    "status": "running",
+    "args": {
+      "path": "/etc/hostname"
+    }
   }
 }

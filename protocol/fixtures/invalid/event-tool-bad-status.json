@@ -5,6 +5,6 @@
     "kind": "tool",
     "toolCallId": "call-1",
     "name": "read",
-    "status": "running"
+    "status": "bogus"
   }
 }

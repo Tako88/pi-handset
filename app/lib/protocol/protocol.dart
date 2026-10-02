@@ -21,6 +21,10 @@ const List<String> agentStates = ['idle', 'running', 'settled'];
 /// from the spawner's live children, never from a client claim.
 const List<String> sessionOrigins = ['app', 'pc'];
 
+/// The normalized statuses a `tool` payload may carry. Canonical; asserted
+/// against the shared `message-types.json` by the fixture suite.
+const List<String> toolStatuses = ['running', 'done', 'error'];
+
 /// The normalized payload kinds an `event` may carry.
 const List<String> eventPayloadKinds = [
   'stream',
@@ -226,8 +230,11 @@ DecodeResult decode(String text) {
         }
         return DecodeResult.ok(message);
       }
-      // `message`/`tool`/`status` are bridge-owned shapes the hub only relays,
-      // so their fields are accepted as-is. `usage` is the same deal except for
+      // `message`/`status` are bridge-owned shapes the hub only relays, so their
+      // fields are accepted as-is. `tool` is validated on its identity fields
+      // only (`toolCallId`/`name`/`status`); its optional `view` is carried
+      // through unvalidated so a `view`-absent or unknown-`view.type` frame still
+      // decodes and falls back in the app. `usage` is the same deal except for
       // its `thinkingLevel`: the numbers stay opaque, but the level is validated
       // because the app reads it directly. This is contract-pinning, not runtime
       // defence — the hub never decodes an event — so the shared fixtures and
@@ -244,7 +251,23 @@ DecodeResult decode(String text) {
         }
         return DecodeResult.ok(message);
       }
-      if (kind == 'message' || kind == 'tool' || kind == 'status') {
+      if (kind == 'tool') {
+        if (_nonEmptyString(body['toolCallId']) == null ||
+            _nonEmptyString(body['name']) == null) {
+          return const DecodeResult.fail(
+            'bad-field',
+            'tool requires toolCallId and name strings',
+          );
+        }
+        if (!toolStatuses.contains(body['status'])) {
+          return DecodeResult.fail(
+            'bad-field',
+            'tool status must be one of ${toolStatuses.join(', ')}',
+          );
+        }
+        return DecodeResult.ok(message);
+      }
+      if (kind == 'message' || kind == 'status') {
         return DecodeResult.ok(message);
       }
       if (kind == 'usage') {

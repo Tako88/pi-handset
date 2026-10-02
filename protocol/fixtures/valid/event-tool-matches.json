@@ -1,0 +1,16 @@
+{
+  "protocolVersion": 1,
+  "type": "event",
+  "payload": {
+    "kind": "tool",
+    "toolCallId": "call-matches",
+    "name": "grep",
+    "status": "done",
+    "view": {
+      "type": "matches",
+      "matches": [
+        { "file": "app/foo.dart", "line": 3, "text": "print('new');" }
+      ]
+    }
+  }
+}

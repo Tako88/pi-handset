@@ -1,0 +1,14 @@
+{
+  "protocolVersion": 1,
+  "type": "event",
+  "payload": {
+    "kind": "tool",
+    "toolCallId": "call-unknown-view",
+    "name": "future-tool",
+    "status": "done",
+    "view": {
+      "type": "future-thing",
+      "detail": "a view type this app does not know"
+    }
+  }
+}

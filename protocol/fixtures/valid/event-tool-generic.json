@@ -1,0 +1,14 @@
+{
+  "protocolVersion": 1,
+  "type": "event",
+  "payload": {
+    "kind": "tool",
+    "toolCallId": "call-generic",
+    "name": "custom-tool",
+    "status": "error",
+    "view": {
+      "type": "generic",
+      "target": "app/foo.dart"
+    }
+  }
+}

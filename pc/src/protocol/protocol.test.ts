@@ -4,7 +4,9 @@ import { test } from 'node:test';
 // Deliberately `.ts`, and deliberately written before `./protocol.ts` exists:
 // the red run must fail with an unresolved import, not a loader error.
 import {
+  MAX_RELAY_BYTES,
   PROTOCOL_VERSION,
+  TOOL_VIEW_MAX_BYTES,
   decode,
   encode,
   isAgentMessageType,
@@ -284,9 +286,26 @@ test('a tool payload round-trips and is accepted whole', () => {
   const event = {
     protocolVersion: PROTOCOL_VERSION,
     type: 'event',
-    payload: { kind: 'tool', name: 'read', status: 'running' },
+    payload: {
+      kind: 'tool',
+      toolCallId: 'call-1',
+      name: 'read',
+      status: 'running',
+    },
   };
   assert.deepEqual(decode(JSON.stringify(event)), { ok: true, value: event });
+});
+
+test('decode rejects a tool payload without toolCallId (the pre-#6 shape)', () => {
+  expectReject(
+    JSON.stringify({
+      protocolVersion: PROTOCOL_VERSION,
+      type: 'event',
+      payload: { kind: 'tool', name: 'read', status: 'running' },
+    }),
+    'bad-field',
+    /toolCallId/i,
+  );
 });
 
 test('a usage payload round-trips, including unknown tokens', () => {
@@ -678,6 +697,14 @@ test('an agent-settled message round-trips through encode and decode', () => {
     truncated: false,
   };
   assert.deepEqual(decode(encode(message)), { ok: true, value: message });
+});
+
+// A tool frame is relayed, so the hub drops it whole whenever any byte is
+// outstanding on the viewer (see TOOL_VIEW_MAX_BYTES). It must be bounded to a
+// fraction of the relay budget, not the budget itself, or even a perfectly
+// bounded frame is dropped under any backlog.
+test('a tool view is bounded to a fraction of the relay budget', () => {
+  assert.ok(TOOL_VIEW_MAX_BYTES < MAX_RELAY_BYTES / 2);
 });
 
 test('decode rejects an agent-settled message with an empty label', () => {

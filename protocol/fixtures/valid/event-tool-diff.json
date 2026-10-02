@@ -1,0 +1,20 @@
+{
+  "protocolVersion": 1,
+  "type": "event",
+  "payload": {
+    "kind": "tool",
+    "toolCallId": "call-diff",
+    "name": "edit",
+    "status": "done",
+    "view": {
+      "type": "diff",
+      "path": "app/foo.dart",
+      "lines": [
+        { "kind": "ctx", "text": "void main() {" },
+        { "kind": "del", "text": "  print('old');" },
+        { "kind": "add", "text": "  print('new');" },
+        { "kind": "ctx", "text": "}" }
+      ]
+    }
+  }
+}
