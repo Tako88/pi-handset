@@ -29,9 +29,17 @@ import '../client/transcript.dart';
 import 'transcript_blocks.dart';
 
 class TranscriptView extends StatefulWidget {
-  const TranscriptView({super.key, required this.transcript});
+  const TranscriptView({
+    super.key,
+    required this.transcript,
+    this.onOpenLink = openExternalLink,
+  });
 
   final SessionTranscript transcript;
+
+  /// How a tapped link is opened, threaded to every [TextBlock]. Injectable so
+  /// a widget test can assert the wiring without a platform channel.
+  final Future<void> Function(Uri uri) onOpenLink;
 
   static const String emptyMessage = 'No messages yet.';
 
@@ -247,6 +255,7 @@ class _TranscriptViewState extends State<TranscriptView> {
                     text: widget.transcript.streamingText,
                     complete: false,
                   ),
+                  onOpenLink: widget.onOpenLink,
                 ),
               );
             }
@@ -274,7 +283,7 @@ class _TranscriptViewState extends State<TranscriptView> {
   Widget _block(TranscriptBlock block) {
     switch (block.kind) {
       case TranscriptBlockKind.text:
-        return TextBlock(block: block);
+        return TextBlock(block: block, onOpenLink: widget.onOpenLink);
       case TranscriptBlockKind.thinking:
         return ThinkingBlock(block: block);
       case TranscriptBlockKind.tool:
