@@ -6,6 +6,9 @@ dist/
 # Plan documents are not versioned
 .pi/plans/
 
+# Audit reports are not versioned
+.pi/audits/
+
 # Flutter golden-test failure artifacts — written beside the test file, and not
 # covered by the generated app/.gitignore
 **/test/**/failures/
