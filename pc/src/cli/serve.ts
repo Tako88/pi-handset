@@ -33,7 +33,7 @@ import {
 import type { LockResult } from '../hub/discovery.ts';
 import { createHub } from '../hub/hub.ts';
 import { TICKET_TTL_MS, createTicketStore } from '../hub/pairing.ts';
-import { createSpawner } from '../hub/spawner.ts';
+import { DEFAULT_MAX_SESSIONS, createSpawner } from '../hub/spawner.ts';
 import { PROTOCOL_VERSION } from '../protocol/protocol.ts';
 
 /** The viewer listener's default port. */
@@ -44,6 +44,8 @@ export interface ServeArgs {
   /** False binds the viewer listener to loopback instead of `0.0.0.0`. */
   lan: boolean;
   takeOver: boolean;
+  /** The most app-started sessions the supervisor may spawn at once. */
+  maxSessions: number;
 }
 
 function parsePort(value: string): number {
@@ -59,13 +61,32 @@ function parsePort(value: string): number {
   return port;
 }
 
+function parseMaxSessions(value: string): number {
+  // Digits only, same reasoning as `parsePort`: `Number()` would accept `0x10`,
+  // `1e3` and `2.5`. A cap of zero makes the app useless and is almost
+  // certainly a typo, so the floor is one.
+  if (!/^[0-9]+$/.test(value)) {
+    throw new Error(`--max-sessions must be a positive integer, got: ${value}`);
+  }
+  const count = Number(value);
+  if (!Number.isSafeInteger(count) || count < 1) {
+    throw new Error(`--max-sessions must be a positive integer, got: ${value}`);
+  }
+  return count;
+}
+
 /**
  * A pure flag parser. Unknown flags are an error, never silently ignored:
  * a typo'd `--no-lna` must not quietly expose the viewer port to the LAN.
  * `--port=9000` is deliberately unsupported, not silently accepted.
  */
 export function parseArgs(argv: readonly string[]): ServeArgs {
-  const args: ServeArgs = { port: DEFAULT_PORT, lan: true, takeOver: false };
+  const args: ServeArgs = {
+    port: DEFAULT_PORT,
+    lan: true,
+    takeOver: false,
+    maxSessions: DEFAULT_MAX_SESSIONS,
+  };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     switch (arg) {
@@ -81,6 +102,12 @@ export function parseArgs(argv: readonly string[]): ServeArgs {
       case '--take-over':
         args.takeOver = true;
         break;
+      case '--max-sessions': {
+        const value = argv[++i];
+        if (value === undefined) throw new Error('--max-sessions requires a value');
+        args.maxSessions = parseMaxSessions(value);
+        break;
+      }
       default:
         throw new Error(`unknown option: ${arg}`);
     }
@@ -228,7 +255,7 @@ async function main(): Promise<void> {
   const tickets = createTicketStore();
   // One supervisor per serve: the hub owns the spawner and closes it on a
   // graceful stop, group-killing every app-started child.
-  const spawner = createSpawner();
+  const spawner = createSpawner({ maxSessions: args.maxSessions });
   try {
     hub = await createHub({
       token,

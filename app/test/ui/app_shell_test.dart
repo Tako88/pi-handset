@@ -231,6 +231,18 @@ class ThrowingTokenStore extends InMemoryTokenStore {
       throw StateError('storage unavailable');
 }
 
+/// A token store whose token read fails, standing in for a broken platform
+/// keystore reached after the endpoint was already saved.
+class ThrowingReadTokenStore extends InMemoryTokenStore {
+  ThrowingReadTokenStore({super.initialEndpoint});
+
+  @override
+  Future<String?> read() async => throw PlatformException(
+        code: 'storage_error',
+        message: 'keystore unavailable',
+      );
+}
+
 /// Boots a harness and opens the first session, the state every menu test needs.
 Future<Harness> openFirstSession(WidgetTester tester) async {
   final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
@@ -981,6 +993,61 @@ void main() {
     expect(command['args'], {'text': '/review'});
   });
 
+  testWidgets('opening the / overlay refetches the session\'s commands',
+      (tester) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+    await tester.tap(find.text('api refactor'));
+    await settle(tester, h.scheduler);
+
+    // Reply to the per-open listCommands fetch with one command.
+    final listId = h.factory.last.sentFrames.firstWhere(
+      (frame) => frame['type'] == 'command' && frame['name'] == 'listCommands',
+    )['id'];
+    h.factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'command-result',
+      'id': listId,
+      'ok': true,
+      'commands': [
+        {'name': 'review', 'description': 'Review the working tree'},
+      ],
+    });
+    await settle(tester, h.scheduler);
+
+    await tester.enterText(find.byKey(const Key('compose-field')), '/');
+    await tester.pump();
+    final listFrames = h.factory.last.sentFrames
+        .where((f) => f['type'] == 'command' && f['name'] == 'listCommands')
+        .toList();
+    // The subscribe-time fetch plus the overlay-open refetch.
+    expect(listFrames, hasLength(2));
+    expect(
+      find.byKey(const Key('compose-suggestion-0-review')),
+      findsOneWidget,
+    );
+
+    h.factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'command-result',
+      'id': listFrames.last['id'],
+      'ok': true,
+      'commands': [
+        {'name': 'deploy', 'description': 'Ship it'},
+      ],
+    });
+    await settle(tester, h.scheduler);
+    expect(
+      find.byKey(const Key('compose-suggestion-0-deploy')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('compose-suggestion-0-review')), findsNothing);
+  });
+
   testWidgets('the floating panel never overflows with the keyboard up at 2x',
       (tester) async {
     tester.view.physicalSize = const Size(360 * 3, 640 * 3);
@@ -1323,6 +1390,43 @@ void main() {
 
     expect(find.byType(CircularProgressIndicator), findsNothing);
     expect(find.textContaining('storage unavailable'), findsOneWidget);
+  });
+
+  testWidgets('an unreadable stored token is visible, not an eternal spinner',
+      (tester) async {
+    final store = ThrowingReadTokenStore(
+      initialEndpoint: const HubEndpoint(host: '10.0.0.5', port: 8787),
+    );
+    final client = HubClient(
+      socketFactory: FakeSocketFactory().call,
+      scheduler: FakeScheduler(),
+      tokenStore: store,
+    );
+    await tester.pumpWidget(
+      PiDroidApp(
+        client: client,
+        tokenStore: store,
+        notifications: FakeNotificationPresenter(),
+      ),
+    );
+    await pumpBootstrap(tester);
+
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(find.textContaining('could not read the saved token'), findsOneWidget);
+  });
+
+  testWidgets('a remembered address with no stored token still reaches pairing',
+      (tester) async {
+    final h = Harness(
+      token: null,
+      endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787),
+    );
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(find.byType(PairingScreen), findsOneWidget);
+    expect(find.byKey(const Key('pairing-last-error')), findsNothing);
   });
 
   testWidgets('change hub clears the saved endpoint and token', (tester) async {

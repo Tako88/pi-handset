@@ -89,7 +89,9 @@ command"`, a stale bridge behind a new hub answers `ok:false "command not allowe
 and either way the panel just stays empty, where a new frame type would be closed `4003`
 and treated as terminal. The panel floats over the transcript and
 is capped to the space actually available, so it takes no `Column` slot and cannot
-overflow. The built-ins are still unreachable — see issue #3.
+overflow. Opening the `/` overlay refetches the list, so a PC-side `/reload` or a
+newly added extension shows up without reopening the session. The built-ins are still
+unreachable — see issue #3.
 
 **Session menu.** The transcript's ⋮ menu is the supported way to compact a session,
 rename it, choose its thinking level and switch its model. The menu shows the active
@@ -493,7 +495,9 @@ fish_add_path $HOME/Android/Sdk/emulator
   keystore-wrapped storage, which a normal restart reads fine but `adb install -r`
   of a rebuilt APK cannot decrypt. So "back to the pairing screen" after a rebuild
   is an install artifact, not a lost pairing — worth knowing before hunting a bug
-  that is not there.
+  that is not there. If the read itself fails, the app now says so on the pairing
+  screen (`could not read the saved token: …`) and returns to pairing, instead of
+  spinning on the splash forever.
 
 ## Further reading
 

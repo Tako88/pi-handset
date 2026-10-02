@@ -564,3 +564,53 @@ test('serve spawns bare pi on start-session and SIGTERM kills the group', async 
   await exited;
   await waitFor(() => !alive(shimPid), 'the shim to die with the supervisor', 5000);
 });
+
+test('--max-sessions caps the number of app-started sessions', async () => {
+  const port = await freePort();
+  const shimDir = mkdtempSync(join(tmpdir(), 'pi-droid-serve-cap-shim-'));
+  scratchShimDirs.push(shimDir);
+  writeFileSync(
+    join(shimDir, 'pi'),
+    '#!/bin/sh\n' + 'echo "$$" > "$0.pid"\n' + 'sleep 30\n',
+    { mode: 0o755 },
+  );
+
+  const serve = startServe(['--port', String(port), '--max-sessions', '1'], {
+    PATH: `${shimDir}:${process.env.PATH ?? ''}`,
+  });
+  await waitFor(() => readPid() === serve.child.pid, 'the discovery file');
+
+  const viewer = await authViewer(port);
+
+  viewer.send(
+    JSON.stringify({
+      protocolVersion: PROTOCOL_VERSION,
+      type: 'start-session',
+      id: 'start-1',
+    }),
+  );
+  const first = await awaitMessage(viewer, 'command-result');
+  assert.equal(first.id, 'start-1');
+  assert.equal(first.ok, true, `start was refused: ${String(first.error)}`);
+
+  viewer.send(
+    JSON.stringify({
+      protocolVersion: PROTOCOL_VERSION,
+      type: 'start-session',
+      id: 'start-2',
+    }),
+  );
+  const second = await awaitMessage(viewer, 'command-result');
+  assert.equal(second.id, 'start-2');
+  assert.equal(second.ok, false);
+  assert.equal(second.error, 'too many app sessions');
+
+  const shimPidFile = `${join(shimDir, 'pi')}.pid`;
+  await waitFor(() => existsSync(shimPidFile), 'the shim to start');
+  const shimPid = Number(readFileSync(shimPidFile, 'utf8').trim());
+
+  const exited = waitExit(serve.child);
+  serve.child.kill('SIGTERM');
+  await exited;
+  await waitFor(() => !alive(shimPid), 'the shim to die with the supervisor', 5000);
+});
