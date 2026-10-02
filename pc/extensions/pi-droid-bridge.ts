@@ -146,11 +146,27 @@ export interface BridgeCtx {
     | undefined;
 }
 
+/** A text part of a pi user message. */
+export interface TextPart {
+  type: 'text';
+  text: string;
+}
+
+/** A flat pi image content part, matching `pi-ai`'s `ImageContent`. */
+export interface ImagePart {
+  type: 'image';
+  data: string;
+  mimeType: string;
+}
+
+/** Pi user-message content: plain text, or a text part plus images. */
+export type UserMessageContent = string | (TextPart | ImagePart)[];
+
 /** The extension API, narrowed to what the bridge calls. */
 export interface BridgePi {
   on(event: string, handler: BridgeHandler): () => void;
   sendUserMessage(
-    content: string,
+    content: UserMessageContent,
     options?: { deliverAs?: 'steer' | 'followUp'; expandPromptTemplates?: boolean },
   ): void;
   setModel(model: unknown): Promise<boolean>;
@@ -200,6 +216,31 @@ function errorText(error: unknown): string {
     if (typeof message === 'string' && message.length > 0) return message;
   }
   return 'error';
+}
+
+/**
+ * The `images` argument of a send command, as `{type:'image',data,mimeType}`
+ * parts. Absent, `null` or an empty array means "no images"; a non-array or any
+ * element whose `data`/`mimeType` is not a non-empty string refuses the whole
+ * command. `type` is not read: the element is rebuilt flat, so pi always sees
+ * the exact `ImageContent` shape.
+ */
+function parseImages(
+  value: unknown,
+): { ok: true; images?: ImagePart[] } | { ok: false } {
+  if (value === undefined || value === null) return { ok: true };
+  if (!Array.isArray(value)) return { ok: false };
+  if (value.length === 0) return { ok: true };
+  const images: ImagePart[] = [];
+  for (const element of value) {
+    const part = asObject(element);
+    if (part === null) return { ok: false };
+    const data = asString(part.data);
+    const mimeType = asString(part.mimeType);
+    if (data === null || mimeType === null) return { ok: false };
+    images.push({ type: 'image', data, mimeType });
+  }
+  return { ok: true, images };
 }
 
 /**
@@ -1821,6 +1862,12 @@ class Bridge {
       case 'followup': {
         const text = asString(fields.text);
         if (text === null) return { ok: false, error: 'missing text' };
+        const imagesResult = parseImages(fields.images);
+        if (!imagesResult.ok) return { ok: false, error: 'malformed images' };
+        const content: UserMessageContent =
+          imagesResult.images === undefined
+            ? text
+            : [{ type: 'text', text }, ...imagesResult.images];
         // `steer` and `followup` name their mode explicitly. For a plain
         // `prompt` the mode is the agent's: the app cannot make this call well
         // because its agent state is a network round-trip stale, so a stale
@@ -1848,7 +1895,7 @@ class Bridge {
         // and leaves the model to read a command name as prose; pi's own
         // interactive path defaults it to true. Opting in is also what expands
         // `/skill:name`, and matches pi's steer, which expands templates too.
-        this.pi.sendUserMessage(text, {
+        this.pi.sendUserMessage(content, {
           expandPromptTemplates: true,
           ...(deliverAs === undefined ? {} : { deliverAs }),
         });
