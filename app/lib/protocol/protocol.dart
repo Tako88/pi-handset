@@ -58,7 +58,8 @@ const String capabilitySessionControl = 'session-control';
 const String capabilityAttachments = 'attachments';
 
 /// The hub capabilities this protocol version advertises on the `sessions`
-/// frame. Canonical; a viewer gates folder browsing on their presence.
+/// frame. Canonical; a viewer gates each capability's feature on its presence
+/// (folder listing, folder-chosen starts, session control, image attachments).
 const List<String> hubCapabilities = [
   capabilityListDirs,
   capabilityProjectSession,
