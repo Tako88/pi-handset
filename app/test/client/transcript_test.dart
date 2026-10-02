@@ -356,6 +356,19 @@ void main() {
     expect(blocks, hasLength(1));
     expect(blocks.single.kind, TranscriptBlockKind.text);
     expect(blocks.single.text, '[image]');
+
+    // Empty closes the input taxonomy alongside non-string/malformed/missing:
+    // `_decodeImageBytes` rejects an empty string before it ever calls
+    // `base64Decode`, so it can never yield a zero-byte image block.
+    final empty = deriveBlocks([
+      assistantWith([
+        {'type': 'image', 'data': ''},
+      ]),
+    ]);
+
+    expect(empty, hasLength(1));
+    expect(empty.single.kind, TranscriptBlockKind.text);
+    expect(empty.single.text, '[image]');
   });
 
   test('a part-trimmed image marker falls back to the placeholder', () {

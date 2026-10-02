@@ -186,6 +186,37 @@ rather than guess at it.
   rows it is a scroll window rather than a browseable list; the alternative is an
   overflow or a panel that steals the transcript's space.
 
+## Images
+
+- **A large image is not rendered; its part is replaced in place and the text
+  survives.** An image part whose bytes would push the message past the 256 KiB
+  relay cap (`MAX_RELAY_BYTES`) is replaced by `{type:'image',truncated:true,bytes}`,
+  and the app draws the `[image]` placeholder in its place; the message keeps its
+  role and text, so a short caption no longer vanishes with a big attachment (#32).
+  The bytes never reach the phone — the cap forbids it — so the image itself cannot
+  be recovered; the text can, which is the point. The trim is bounded
+  (`TRIM_MAX_ITERATIONS`) and falls back to the whole-message `{truncated:true,bytes}`
+  marker when the message cannot be rescued: the text alone busts the cap, there is
+  no trimmable image part, or there are more image parts than the bound. The same
+  trim runs on the history-collapse path, so a reconnect keeps the text too.
+- **A message trimmed to the relay cap can still make an over-budget frame.**
+  `boundMessage` targets the *message*, but the hub's per-viewer budget
+  (`sendToViewer`) measures the whole `{protocolVersion,type,payload}` frame against
+  the same `MAX_RELAY_BYTES`. A message that fits the cap exactly therefore produces
+  a frame that does not, and the hub drops it whole and tells the viewer to resync.
+  Pre-existing and unchanged by the image work; the visible effect is churn, not
+  loss, because the recovery snapshot is unbudgeted. The better fix is the
+  `TOOL_VIEW_MAX_BYTES` precedent — bound the payload below the budget by an envelope
+  margin — deliberately not taken here because it would change which text-only
+  messages get trimmed.
+- **A pathologically tall image is not memory-bounded by the decode cap.** The
+  renderer sets only `cacheWidth: 1024` (setting both dimensions would default
+  `ResizeImage` to `ResizeImagePolicy.exact` = `BoxFit.fill` and squash every image
+  into a square), and `ResizeImage.allowUpscaling` defaults to false. That bounds a
+  normal wide photo, but a very narrow image is not width-clamped, so its decode is
+  not bounded by the 1024 figure; the `maxHeight: 320` + `BoxFit.contain` still bound
+  the row. A real photo is unaffected.
+
 ## Tool rendering
 
 - **bash stdout and stderr arrive merged, and there is no structured exit code.** pi
