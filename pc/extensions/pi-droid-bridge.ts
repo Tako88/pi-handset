@@ -57,6 +57,7 @@ import type {
   SlashCommand,
   ToolPayload,
   ToolView,
+  TreeNodeSummary,
 } from '../src/protocol/protocol.ts';
 
 // ---------------------------------------------------------------------------
@@ -71,6 +72,27 @@ export interface BridgeSessionManager {
   getSessionId(): string;
   getSessionFile(): string | undefined;
   getEntries(): unknown[];
+  /** Look up one entry by id; used to validate a `/fork` target. */
+  getEntry(id: string): unknown;
+  /** pi's session tree, for `/tree`. Optional: absent on an older pi. */
+  getTree?(): unknown;
+}
+
+/**
+ * The command context pi hands a registered command's handler. It is the only
+ * surface that exposes the session actions, and pi invalidates it after
+ * `newSession`/`fork` — so a handler performs exactly one action and returns.
+ */
+export interface BridgeCommandCtx {
+  newSession(): Promise<{ cancelled: boolean }>;
+  fork(entryId: string): Promise<{ cancelled: boolean }>;
+  navigateTree(targetId: string): Promise<{ cancelled: boolean }>;
+}
+
+/** The options bag pi accepts from `registerCommand`. */
+export interface BridgeCommandRegistration {
+  description?: string;
+  handler: (args: string, ctx: BridgeCommandCtx) => unknown;
 }
 
 /** The `{provider, id, name}` slice of a pi `Model` the bridge projects onto the wire. */
@@ -141,6 +163,11 @@ export interface BridgePi {
    * `ok:false` result rather than a crash.
    */
   getCommands?(): SlashCommand[];
+  /**
+   * Register a slash command. Optional because the bridge's pi slice is
+   * structural: an older pi without it leaves the session actions as prose.
+   */
+  registerCommand?(name: string, options: BridgeCommandRegistration): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -759,7 +786,21 @@ export const COMMAND_ALLOWLIST = new Set([
   'setSessionName',
   'listCommands',
   'listModels',
+  'listTree',
+  'sessionNew',
+  'sessionTree',
+  'sessionFork',
 ]);
+
+/**
+ * The bridge's own registered command. Its sole purpose is to hand the handler
+ * a real `ExtensionCommandContext`, the only surface exposing
+ * `newSession`/`fork`/`navigateTree`.
+ */
+export const SESSION_COMMAND_NAME = 'pi-droid-session';
+
+/** The most `/tree` nodes a `listTree` result may carry. */
+export const TREE_MAX_NODES = 200;
 
 /**
  * The refusal for a command name the bridge will not dispatch — either because
@@ -831,6 +872,98 @@ export function projectHistory(entries: readonly unknown[], maxBytes: number): H
   }
   kept.reverse();
   return { entries: kept, truncated: kept.length < entries.length };
+}
+
+/**
+ * Flattens pi's session tree into the picker's bounded node list.
+ *
+ * Only a `message` entry whose role is `user`/`assistant` is emitted; every
+ * other entry (the other `SessionEntry` variants, tool results, system/custom
+ * messages) is traversed but not emitted, so message nodes below it are still
+ * reached.
+ *
+ * `getTree()` is typed `unknown` here because the bridge's pi slice is
+ * structural, so every access is defensive: a malformed node is skipped, never
+ * thrown. It is called inside dispatch, where a throw would surface as a
+ * generic refusal.
+ *
+ * Nodes are flattened in DFS order (parents before children, children in array
+ * order) and the newest `cap` are kept. An emitted node whose parent was
+ * dropped off the front is relinked to the top, so the app's indentation can
+ * never point at a missing id.
+ */
+export function projectTree(
+  roots: unknown,
+  cap = TREE_MAX_NODES,
+): { nodes: TreeNodeSummary[]; truncated: boolean } {
+  const emitted: Array<{ node: TreeNodeSummary; parentId: string | null }> = [];
+
+  const visit = (raw: unknown, nearestEmittedId: string | null): void => {
+    const treeNode = asObject(raw);
+    if (treeNode === null) return;
+    const entry = asObject(treeNode.entry);
+    if (entry === null) return;
+    const id = asString(entry.id);
+    const message = asObject(entry.message);
+    const role = message === null ? undefined : asString(message.role);
+    let nextNearest = nearestEmittedId;
+    if (entry.type === 'message' && id !== null && (role === 'user' || role === 'assistant')) {
+      const node: TreeNodeSummary = {
+        id,
+        parentId: nearestEmittedId,
+        role,
+        text: projectedMessageText(role, message as Record<string, unknown>),
+      };
+      const label = asString(treeNode.label);
+      if (label !== null) node.label = label;
+      emitted.push({ node, parentId: nearestEmittedId });
+      nextNearest = id;
+    }
+    const children = treeNode.children;
+    if (!Array.isArray(children)) return;
+    for (const child of children) visit(child, nextNearest);
+  };
+
+  if (Array.isArray(roots)) {
+    for (const root of roots) visit(root, null);
+  }
+
+  const truncated = emitted.length > cap;
+  const kept = truncated ? emitted.slice(emitted.length - cap) : emitted;
+  const keptIds = new Set(kept.map((item) => item.node.id));
+  const nodes = kept.map((item) =>
+    item.parentId !== null && keptIds.has(item.parentId)
+      ? item.node
+      : { ...item.node, parentId: null },
+  );
+  return { nodes, truncated };
+}
+
+/**
+ * The text of one emitted node. A user message's content may be a string or
+ * parts; an image part is marked rather than dropped. Only assistant text parts
+ * count — thinking and tool calls contribute nothing, so a pure tool-call turn
+ * legitimately has empty text.
+ */
+function projectedMessageText(
+  role: 'user' | 'assistant',
+  message: Record<string, unknown>,
+): string {
+  const content = message.content;
+  if (role === 'user' && typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  let text = '';
+  for (const part of content) {
+    const obj = asObject(part);
+    if (obj === null) continue;
+    if (role === 'user') {
+      if (obj.type === 'text' && typeof obj.text === 'string') text += obj.text;
+      else text += '[image]';
+    } else if (obj.type === 'text' && typeof obj.text === 'string') {
+      text += obj.text;
+    }
+  }
+  return text;
 }
 
 /**
@@ -1073,6 +1206,8 @@ interface CommandOutcome {
   commands?: SlashCommand[];
   models?: ModelSummary[];
   queued?: boolean;
+  tree?: TreeNodeSummary[];
+  treeTruncated?: boolean;
 }
 
 class Bridge {
@@ -1093,6 +1228,12 @@ class Bridge {
   private attempt = 0;
   private reconnectTimer: unknown = null;
   private closed = false;
+  /** The hub session id last reported by `session_start`. */
+  private registeredSessionId: string | null = null;
+  /** The id the next register must name as replaced, consumed only on a send. */
+  private replacesSessionId: string | null = null;
+  /** Guards the one-time internal command registration. */
+  private sessionCommandsRegistered = false;
 
   constructor(pi: BridgePi, deps: ResolvedDeps) {
     this.pi = pi;
@@ -1103,10 +1244,13 @@ class Bridge {
   }
 
   install(): void {
+    this.registerSessionCommand();
     // The socket is opened here, in the handler, never in the factory. Every
     // pi callback is guarded so an exception cannot escape into pi (which would
     // print to stderr and take the session down).
-    this.pi.on('session_start', (_event, ctx) => this.guard(() => this.onSessionStart(ctx)));
+    this.pi.on('session_start', (event, ctx) =>
+      this.guard(() => this.onSessionStart(ctx, event)),
+    );
     this.pi.on('session_shutdown', () => this.guard(() => this.onSessionShutdown()));
     this.pi.on('message_update', (event) => this.guard(() => this.onMessageUpdate(event)));
     // Real pi's assistant-completion signal. `message_update` never carries a
@@ -1190,7 +1334,82 @@ class Bridge {
     }
   }
 
-  private onSessionStart(ctx: BridgeCtx): void {
+  private registerSessionCommand(): void {
+    if (this.sessionCommandsRegistered) return;
+    this.sessionCommandsRegistered = true;
+    this.pi.registerCommand?.(SESSION_COMMAND_NAME, {
+      description: 'Drive pi session actions from the pi-droid app',
+      handler: (args, ctx) => this.onSessionCommand(args, ctx),
+    });
+  }
+
+  /**
+   * Runs inside a real pi command context. pi invalidates that context after
+   * `newSession`/`fork`, so the handler performs exactly one action and returns;
+   * any notice is emitted on the bridge's own socket, never on the context.
+   */
+  private async onSessionCommand(args: string, cmdCtx: BridgeCommandCtx): Promise<void> {
+    const [action, target] = args.trim().split(/\s+/, 2);
+    try {
+      if (action === 'new') {
+        const result = await cmdCtx.newSession();
+        if (result.cancelled) this.sendStatusError('the new session was cancelled');
+        return;
+      }
+      if (action === 'tree') {
+        if (target === undefined) {
+          this.sendStatusError('the tree target is missing');
+          return;
+        }
+        const result = await cmdCtx.navigateTree(target);
+        if (result.cancelled) this.sendStatusError('the tree navigation was cancelled');
+        return;
+      }
+      if (action === 'fork') {
+        if (target === undefined) {
+          this.sendStatusError('the fork target is missing');
+          return;
+        }
+        const result = await cmdCtx.fork(target);
+        if (result.cancelled) this.sendStatusError('the fork was cancelled');
+        return;
+      }
+      // An unknown action (empty or mistyped) must not fall through silently:
+      // `dispatch` already acked `ok:true`, so the only signal the app gets is
+      // this notice.
+      this.sendStatusError(`unknown session action: ${action || '(empty)'}`);
+      return;
+    } catch (error) {
+      // pi invalidates the context after `newSession`/`fork`, and this branch
+      // never touches `cmdCtx` again — the notice goes out on the bridge's own
+      // socket. A throw is surfaced, never left as an unhandled rejection.
+      this.sendStatusError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  /** Emits a notice the app renders in the transcript. */
+  private sendStatusError(message: string): void {
+    this.sendEvent({ kind: 'status', event: 'error', message });
+  }
+
+  private onSessionStart(ctx: BridgeCtx, event: unknown): void {
+    const reason =
+      typeof event === 'object' && event !== null
+        ? (event as { reason?: unknown }).reason
+        : undefined;
+    const sessionId = ctx.sessionManager.getSessionId();
+    // A replacement (`/new`, `/fork`, `/resume`) re-fires `session_start` under
+    // a new id; the successor's register names the id it replaced so the app can
+    // follow it instead of treating the new id as an unrelated session. `/resume`
+    // can reload the same id, so "differs" is part of the condition.
+    if (
+      (reason === 'new' || reason === 'fork' || reason === 'resume') &&
+      this.registeredSessionId !== null &&
+      this.registeredSessionId !== sessionId
+    ) {
+      this.replacesSessionId = this.registeredSessionId;
+    }
+    this.registeredSessionId = sessionId;
     // Session replacement invalidates the previous context: drop the old
     // socket and every session-scoped value before binding the new context.
     this.closeSocket('session replaced');
@@ -1298,9 +1517,10 @@ class Bridge {
     }, delay);
   }
 
-  private send(message: AgentToHubMessage): void {
-    if (this.socket === null || this.socket.readyState !== SOCKET_OPEN) return;
+  private send(message: AgentToHubMessage): boolean {
+    if (this.socket === null || this.socket.readyState !== SOCKET_OPEN) return false;
     this.socket.send(encodeAgentMessage(message));
+    return true;
   }
 
   private sendEvent(payload: EventPayload): void {
@@ -1324,8 +1544,15 @@ class Bridge {
     if (ctx.model !== undefined) message.model = ctx.model.id;
     if (ctx.thinkingLevel !== undefined) message.thinkingLevel = ctx.thinkingLevel;
     if (label !== null) message.name = label;
+    const replaces = this.replacesSessionId;
+    if (replaces !== null) message.replaces = replaces;
     this.lastLabel = label;
-    this.send(message);
+    if (this.send(message) && replaces !== null) {
+      // Consumed only by a register that actually reached the wire: a dropped
+      // register never told the hub, so the linkage must survive for the next
+      // real one.
+      this.replacesSessionId = null;
+    }
   }
 
   /**
@@ -1467,6 +1694,8 @@ class Bridge {
         outcome.commands,
         outcome.queued,
         outcome.models,
+        outcome.tree,
+        outcome.treeTruncated,
       );
     } catch (error) {
       this.sendCommandResult(
@@ -1566,6 +1795,11 @@ class Bridge {
         for (const entry of raw) {
           const name = asString((entry as { name?: unknown })?.name);
           if (name === null) continue;
+          // Hide the bridge's own command: the bare name and pi's `:N` duplicate
+          // form. A `pi-droid-session-foo` tail is a different, real command.
+          if (name === SESSION_COMMAND_NAME || name.startsWith(`${SESSION_COMMAND_NAME}:`)) {
+            continue;
+          }
           const command: SlashCommand = { name };
           const description = asString((entry as { description?: unknown })?.description);
           if (description !== null) command.description = description;
@@ -1587,6 +1821,14 @@ class Bridge {
         }
         return { ok: true, models };
       }
+      case 'listTree': {
+        const manager = ctx.sessionManager;
+        if (typeof manager.getTree !== 'function') {
+          return { ok: false, error: 'tree unavailable' };
+        }
+        const projection = projectTree(manager.getTree(), TREE_MAX_NODES);
+        return { ok: true, tree: projection.nodes, treeTruncated: projection.truncated };
+      }
       case 'setSessionName': {
         const sessionName = asString(fields.name);
         if (sessionName === null) return { ok: false, error: 'missing name' };
@@ -1596,9 +1838,51 @@ class Bridge {
         this.refreshLabel(this.currentLabel());
         return { ok: true };
       }
+      case 'sessionNew':
+        return this.triggerSessionAction('new');
+      case 'sessionTree': {
+        // `navigateTree` is in place but throws on a streaming/compacting
+        // session, so refuse synchronously rather than let pi throw later.
+        if (!ctx.isIdle()) {
+          return { ok: false, error: 'cannot navigate the tree while pi is working' };
+        }
+        const entryId = asString(fields.entryId);
+        if (entryId === null) return { ok: false, error: 'missing entry' };
+        return this.triggerSessionAction('tree', entryId);
+      }
+      case 'sessionFork': {
+        const entryId = asString(fields.entryId);
+        if (entryId === null) return { ok: false, error: 'missing entry' };
+        // Validate the target here, at dispatch: an entry can be invalidated by
+        // a turn landing between the app listing the tree and tapping a node.
+        const entry = asObject(ctx.sessionManager.getEntry(entryId));
+        const message = entry === null ? null : asObject(entry.message);
+        // The target must be a *message* entry with role `user` (pi's default
+        // `position:'before'` fork requirement). A non-message entry that merely
+        // carries a `message` object must be refused here, at dispatch — not
+        // later as a status error after `ok:true` was already acked.
+        if (entry?.type !== 'message' || message === null || message.role !== 'user') {
+          return { ok: false, error: 'unknown entry' };
+        }
+        return this.triggerSessionAction('fork', entryId);
+      }
       default:
         return { ok: false, error: COMMAND_NOT_ALLOWED };
     }
+  }
+
+  /**
+   * Triggers the bridge's own registered command — the only route to a real
+   * command context. Fire-and-forget, exactly like `sendUserMessage`; the
+   * replacement itself (or a status notice) is what confirms the outcome.
+   */
+  private triggerSessionAction(action: string, target?: string): CommandOutcome {
+    const text =
+      target === undefined
+        ? `/${SESSION_COMMAND_NAME} ${action}`
+        : `/${SESSION_COMMAND_NAME} ${action} ${target}`;
+    this.pi.sendUserMessage(text, { expandPromptTemplates: true });
+    return { ok: true };
   }
 
   private sendHistory(): void {
@@ -1706,6 +1990,8 @@ class Bridge {
     commands?: SlashCommand[],
     queued?: boolean,
     models?: ModelSummary[],
+    tree?: TreeNodeSummary[],
+    treeTruncated?: boolean,
   ): void {
     const message: CommandResultMessage = {
       protocolVersion: PROTOCOL_VERSION,
@@ -1717,6 +2003,8 @@ class Bridge {
     if (commands !== undefined) message.commands = commands;
     if (queued !== undefined) message.queued = queued;
     if (models !== undefined) message.models = models;
+    if (tree !== undefined) message.tree = tree;
+    if (treeTruncated !== undefined) message.treeTruncated = treeTruncated;
     this.send(message);
   }
 }
