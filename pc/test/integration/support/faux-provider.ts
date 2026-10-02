@@ -30,7 +30,14 @@ export default function fauxHarness(pi: {
   // `thinking_start`/`thinking_delta` for the scripted thinking block.
   const reasoning = mode === 'thinking';
   const faux = fauxProvider(
-    reasoning ? { models: [{ id: 'faux-1', name: 'Faux Model', reasoning: true }] } : undefined,
+    reasoning
+      ? { models: [{ id: 'faux-1', name: 'Faux Model', reasoning: true }] }
+      : {
+          models: [
+            { id: 'faux-1', name: 'Faux Model' },
+            { id: 'faux-2', name: 'Faux Two' },
+          ],
+        },
   );
   const reply = reasoning
     ? fauxAssistantMessage([fauxThinking(thinking), fauxText(text)])

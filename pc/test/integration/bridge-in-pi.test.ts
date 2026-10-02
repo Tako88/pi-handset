@@ -578,6 +578,94 @@ async function collectCommandResult(
   throw new Error(`timed out waiting for the command-result for ${id}`);
 }
 
+/**
+ * Polls `listModels` until both faux models appear. Faux availability is async
+ * after native registration (`registerNativeProvider` updates the sync snapshot
+ * before the provider is configured), so a single list right after boot is
+ * expected to omit both faux models. On timeout it fails naming what it did
+ * see — never a quietly shorter list.
+ */
+async function waitForBothFauxModels(
+  viewer: Viewer,
+  sessionId: string,
+  timeoutMs: number,
+): Promise<Array<Record<string, unknown>>> {
+  const deadline = Date.now() + timeoutMs;
+  let lastSeen: string[] = [];
+  let lastError: string | null = null;
+  let attempt = 0;
+  while (Date.now() < deadline) {
+    const id = `list-models-${attempt}`;
+    attempt += 1;
+    viewer.send({
+      protocolVersion: PROTOCOL_VERSION,
+      type: 'command',
+      id,
+      sessionId,
+      name: 'listModels',
+    });
+    let result: Record<string, unknown>;
+    try {
+      result = await collectCommandResult(viewer, id, Math.max(1, deadline - Date.now()));
+    } catch {
+      break; // The deadline expired while waiting for the reply.
+    }
+    if (result.ok !== true) {
+      lastError = String(result.error);
+      await delay(50);
+      continue;
+    }
+    const models = Array.isArray(result.models)
+      ? (result.models as Array<Record<string, unknown>>)
+      : [];
+    lastSeen = models.map((model) => `${String(model.provider)}/${String(model.id)}`);
+    const has = (provider: string, modelId: string): boolean =>
+      models.some((model) => model.provider === provider && model.id === modelId);
+    if (has('faux', 'faux-1') && has('faux', 'faux-2')) return models;
+    await delay(50);
+  }
+  throw new Error(
+    `listModels never offered both faux models within ${timeoutMs}ms ` +
+      `(last error: ${lastError ?? 'none'}; last ids: [${lastSeen.join(', ')}])`,
+  );
+}
+
+/**
+ * Reads relayed messages until the `command-result` for `id` AND a `usage`
+ * payload naming `modelId` have both arrived. The bridge emits usage *before*
+ * the command-result (the direct `sendUsageEvent` runs inside the dispatch), so
+ * a result-first-then-poll helper would discard the very frame it looks for.
+ */
+async function collectSwitch(
+  viewer: Viewer,
+  id: string,
+  modelId: string,
+  timeoutMs: number,
+): Promise<{ result: Record<string, unknown>; usage: Record<string, unknown> }> {
+  let result: Record<string, unknown> | null = null;
+  let usage: Record<string, unknown> | null = null;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (result !== null && usage !== null) return { result, usage };
+    const message = await viewer.tryNext(Math.min(1000, Math.max(1, deadline - Date.now())));
+    if (message === undefined) continue;
+    if (message.type === 'command-result' && message.id === id) {
+      result = message;
+      continue;
+    }
+    if (message.type !== 'event') continue;
+    const payload = message.payload as Record<string, unknown> | undefined;
+    if (payload?.kind !== 'usage') continue;
+    const model = payload.model as Record<string, unknown> | undefined;
+    if (model?.id === modelId) usage = payload;
+  }
+  throw new Error(
+    `timed out waiting for the switch: ` +
+      `command-result ${result === null ? 'missing' : `ok:${String(result.ok)}`}, ` +
+      `usage for ${modelId} ${usage === null ? 'missing' : 'seen'}`,
+  );
+}
+
 interface Booted {
   viewer: Viewer;
   session: SessionSummary;
@@ -955,6 +1043,46 @@ test("a real pi's command list reaches the viewer", async () => {
   for (const name of BUILTIN_COMMAND_NAMES) {
     assert.ok(!offered.has(name), `built-in ${name} must never be offered`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Model list and switch
+// ---------------------------------------------------------------------------
+
+test('a real pi lists its models and switches between them', async () => {
+  const { viewer, session } = await bootPi();
+
+  // Faux availability is async after native registration, so the list is polled
+  // rather than asserted once. The bridge's own refusal (below) is the honest
+  // red while `listModels` is unallowlisted.
+  const models = await waitForBothFauxModels(viewer, session.sessionId, STREAM_TIMEOUT_MS);
+
+  // The credential-leak witness: `headers`, `baseUrl`, `compat` and friends
+  // must never travel. Compared as a sorted set — key order is insertion order,
+  // not contract.
+  for (const entry of models) {
+    assert.deepEqual(
+      Object.keys(entry).sort(),
+      ['id', 'name', 'provider'],
+      `a model entry must carry exactly provider, id and name, got ${JSON.stringify(entry)}`,
+    );
+  }
+
+  const id = 'set-model-1';
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'command',
+    id,
+    sessionId: session.sessionId,
+    name: 'setModel',
+    args: { provider: 'faux', id: 'faux-2' },
+  });
+
+  const { result, usage } = await collectSwitch(viewer, id, 'faux-2', STREAM_TIMEOUT_MS);
+  assert.equal(result.ok, true, `setModel was refused: ${String(result.error)}`);
+  const model = usage.model as Record<string, unknown>;
+  assert.equal(model.provider, 'faux', 'the usage frame must name the new model');
+  assert.equal(model.id, 'faux-2', 'the usage frame must name the new model');
 });
 
 // ---------------------------------------------------------------------------

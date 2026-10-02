@@ -103,6 +103,7 @@ export const COMMAND_ALLOWLIST = new Set([
   'fetchHistory',
   'setSessionName',
   'listCommands',
+  'listModels',
 ]);
 
 export interface HubOptions {

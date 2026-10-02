@@ -42,9 +42,11 @@ import type {
   AgentToHubMessage,
   CommandMessage,
   CommandResultMessage,
+  ContextUsagePayload,
   EventMessage,
   EventPayload,
   HistoryMessage,
+  ModelSummary,
   RegisterMessage,
   SlashCommand,
 } from '../src/protocol/protocol.ts';
@@ -63,12 +65,33 @@ export interface BridgeSessionManager {
   getEntries(): unknown[];
 }
 
+/** The `{provider, id, name}` slice of a pi `Model` the bridge projects onto the wire. */
+export interface BridgeModel {
+  id: string;
+  provider: string;
+  name: string;
+}
+
+/** The slice of pi's `ModelRegistry` the bridge reads. Structural, like the rest
+ * of the pi slice: `getAvailable()` is the only list source and `find()`
+ * resolves a reference to the real `Model` `setModel` needs. */
+export interface BridgeModelRegistry {
+  getAvailable(): unknown[];
+  find(provider: string, modelId: string): unknown;
+}
+
 /** The extension context, narrowed to what the bridge reads. */
 export interface BridgeCtx {
   mode: string;
   cwd: string;
-  model?: { id: string } | undefined;
+  model?: BridgeModel | undefined;
   thinkingLevel?: string | undefined;
+  /**
+   * pi's model registry. Optional because the bridge's pi slice is structural:
+   * an older pi without it degrades to an `ok:false` result rather than a
+   * crash.
+   */
+  modelRegistry?: BridgeModelRegistry | undefined;
   sessionManager: BridgeSessionManager;
   abort(): void;
   compact(options?: unknown): void;
@@ -301,6 +324,7 @@ export const COMMAND_ALLOWLIST = new Set([
   'fetchHistory',
   'setSessionName',
   'listCommands',
+  'listModels',
 ]);
 
 /**
@@ -373,6 +397,23 @@ export function projectHistory(entries: readonly unknown[], maxBytes: number): H
   }
   kept.reverse();
   return { entries: kept, truncated: kept.length < entries.length };
+}
+
+/**
+ * Projects a pi `Model` onto the three fields the app needs. Deliberately not a
+ * passthrough: a `Model` carries `headers` (credentials), `baseUrl`, `compat`
+ * and cost data, none of which may leave the bridge. Returns null unless
+ * `provider`, `id` and `name` are all strings, so a malformed registry entry is
+ * skipped rather than sent half-formed.
+ */
+function projectModel(value: unknown): ModelSummary | null {
+  const model = asObject(value);
+  if (model === null) return null;
+  const provider = asString(model.provider);
+  const id = asString(model.id);
+  const name = asString(model.name);
+  if (provider === null || id === null || name === null) return null;
+  return { provider, id, name };
 }
 
 /**
@@ -596,6 +637,7 @@ interface CommandOutcome {
   ok: boolean;
   error?: string;
   commands?: SlashCommand[];
+  models?: ModelSummary[];
   queued?: boolean;
 }
 
@@ -676,6 +718,11 @@ class Bridge {
     // PC-side `/thinking`, or a clamp during `setModel`. Re-reporting usage keeps
     // the level the menu shows current without waiting for the next turn.
     this.pi.on('thinking_level_select', () => this.guard(() => this.sendUsageEvent()));
+    // A PC-side `/model` change: the app's model label must follow without
+    // waiting for the next turn, exactly as the thinking level does. `setModel`
+    // also re-baselines directly, because `_emitModelSelect` early-returns for
+    // an equal-model switch and the direct emit is then the only frame.
+    this.pi.on('model_select', () => this.guard(() => this.sendUsageEvent()));
     // `ctx.compact()` is fire-and-forget and passes no `onError`, so a failed
     // compaction is otherwise invisible. Surface every reason (manual, overflow,
     // threshold) — an auto-compaction failure is more consequential, not less.
@@ -959,6 +1006,7 @@ class Bridge {
         outcome.error,
         outcome.commands,
         outcome.queued,
+        outcome.models,
       );
     } catch (error) {
       this.sendCommandResult(
@@ -1018,10 +1066,25 @@ class Bridge {
         ctx.abort();
         return { ok: true };
       case 'setModel': {
-        if (fields.model === undefined) return { ok: false, error: 'missing model' };
-        const accepted = await this.pi.setModel(fields.model);
-        // The window belongs to the model, so an accepted switch changes the
-        // denominator; a refusal changes nothing.
+        // pi's AgentSession.setModel has no streaming guard: mid-turn it mutates
+        // agent.state.model under the in-flight call and cascades a thinking-level
+        // clamp. The phone cannot see streaming state, so refuse visibly rather
+        // than put the session on a mixed-model turn. Best-effort: isIdle() is
+        // read here with no await before setModel.
+        if (!ctx.isIdle()) return { ok: false, error: 'cannot switch the model while pi is working' };
+        const provider = asString(fields.provider);
+        const id = asString(fields.id);
+        if (provider === null || id === null) return { ok: false, error: 'missing model' };
+        const registry = ctx.modelRegistry;
+        if (registry === undefined || typeof registry.find !== 'function') {
+          return { ok: false, error: 'models unavailable' };
+        }
+        const model = registry.find(provider, id);
+        if (model === undefined || model === null) return { ok: false, error: 'model not found' };
+        const accepted = await this.pi.setModel(model);
+        // Kept even though `model_select` also re-reports: `_emitModelSelect`
+        // early-returns for an equal model, so a same-model switch would emit
+        // nothing. A duplicate on a real switch is harmless and idempotent.
         if (accepted) this.sendUsageEvent();
         return accepted ? { ok: true } : { ok: false, error: 'model not accepted' };
       }
@@ -1049,6 +1112,20 @@ class Bridge {
           commands.push(command);
         }
         return { ok: true, commands };
+      }
+      case 'listModels': {
+        const registry = ctx.modelRegistry;
+        if (registry === undefined || typeof registry.getAvailable !== 'function') {
+          return { ok: false, error: 'models unavailable' };
+        }
+        const raw = registry.getAvailable();
+        if (!Array.isArray(raw)) return { ok: false, error: 'models unavailable' };
+        const models: ModelSummary[] = [];
+        for (const entry of raw) {
+          const model = projectModel(entry);
+          if (model !== null) models.push(model);
+        }
+        return { ok: true, models };
       }
       case 'setSessionName': {
         const sessionName = asString(fields.name);
@@ -1100,17 +1177,16 @@ class Bridge {
       return;
     }
     if (usage === null) return;
+    const payload: ContextUsagePayload = {
+      kind: 'usage',
+      tokens: usage.tokens,
+      contextWindow: usage.contextWindow,
+    };
     const level = ctx.thinkingLevel;
-    if (typeof level === 'string') {
-      this.sendEvent({
-        kind: 'usage',
-        tokens: usage.tokens,
-        contextWindow: usage.contextWindow,
-        thinkingLevel: level,
-      });
-      return;
-    }
-    this.sendEvent({ kind: 'usage', tokens: usage.tokens, contextWindow: usage.contextWindow });
+    if (typeof level === 'string') payload.thinkingLevel = level;
+    const model = projectModel(ctx.model);
+    if (model !== null) payload.model = model;
+    this.sendEvent(payload);
   }
 
   /**
@@ -1164,6 +1240,7 @@ class Bridge {
     error?: string,
     commands?: SlashCommand[],
     queued?: boolean,
+    models?: ModelSummary[],
   ): void {
     const message: CommandResultMessage = {
       protocolVersion: PROTOCOL_VERSION,
@@ -1174,6 +1251,7 @@ class Bridge {
     if (error !== undefined) message.error = error;
     if (commands !== undefined) message.commands = commands;
     if (queued !== undefined) message.queued = queued;
+    if (models !== undefined) message.models = models;
     this.send(message);
   }
 }
