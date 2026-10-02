@@ -11,10 +11,13 @@
 /// how a block is painted.
 library;
 
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'tool_view.dart';
 
 /// The kinds of row a transcript renders, in order of appearance.
-enum TranscriptBlockKind { text, thinking, tool, notice }
+enum TranscriptBlockKind { text, thinking, tool, notice, image }
 
 /// One rendered row, derived from an entry (and, from M2, a paired result).
 class TranscriptBlock {
@@ -46,6 +49,10 @@ class TranscriptBlock {
   final ToolView? toolView;
   final bool isError;
 
+  /// The decoded bytes of an image part. Non-null exactly when [kind] is
+  /// [TranscriptBlockKind.image]; the constructor asserts that invariant.
+  final Uint8List? imageBytes;
+
   const TranscriptBlock({
     required this.kind,
     required this.id,
@@ -57,7 +64,11 @@ class TranscriptBlock {
     this.toolResult,
     this.toolView,
     this.isError = false,
-  });
+    this.imageBytes,
+  }) : assert(
+         kind != TranscriptBlockKind.image || imageBytes != null,
+         'an image block must carry decoded bytes',
+       );
 }
 
 /// Derives the ordered block list for [entries]. Pure and O(n) in the number of
@@ -211,6 +222,20 @@ Map<Object?, Object?>? _unwrap(Map<Object?, Object?> entry) {
   return null;
 }
 
+/// The decoded bytes of an `ImageContent` part, or null when the part is not
+/// renderable — missing/empty/non-string `data`, or `data` that is not base64.
+/// Never throws: `base64Decode` raises `FormatException`, and a throw here
+/// would escape `deriveBlocks` and blank the transcript.
+Uint8List? _decodeImageBytes(Map<Object?, Object?> part) {
+  final data = part['data'];
+  if (data is! String || data.isEmpty) return null;
+  try {
+    return base64Decode(data);
+  } on FormatException {
+    return null;
+  }
+}
+
 void _emitTextContent(
   List<TranscriptBlock> blocks,
   Object? content,
@@ -247,14 +272,26 @@ void _emitTextContent(
           );
         }
       } else if (type == 'image') {
-        blocks.add(
-          TranscriptBlock(
-            kind: TranscriptBlockKind.text,
-            id: '$idBase:$sub',
-            text: '[image]',
-            fromUser: fromUser,
-          ),
-        );
+        final bytes = _decodeImageBytes(part);
+        if (bytes != null) {
+          blocks.add(
+            TranscriptBlock(
+              kind: TranscriptBlockKind.image,
+              id: '$idBase:$sub',
+              imageBytes: bytes,
+              fromUser: fromUser,
+            ),
+          );
+        } else {
+          blocks.add(
+            TranscriptBlock(
+              kind: TranscriptBlockKind.text,
+              id: '$idBase:$sub',
+              text: '[image]',
+              fromUser: fromUser,
+            ),
+          );
+        }
       }
     }
     sub++;
@@ -315,13 +352,24 @@ void _emitAssistantContent(
           ),
         );
       } else if (type == 'image') {
-        blocks.add(
-          TranscriptBlock(
-            kind: TranscriptBlockKind.text,
-            id: '$idBase:$sub',
-            text: '[image]',
-          ),
-        );
+        final bytes = _decodeImageBytes(part);
+        if (bytes != null) {
+          blocks.add(
+            TranscriptBlock(
+              kind: TranscriptBlockKind.image,
+              id: '$idBase:$sub',
+              imageBytes: bytes,
+            ),
+          );
+        } else {
+          blocks.add(
+            TranscriptBlock(
+              kind: TranscriptBlockKind.text,
+              id: '$idBase:$sub',
+              text: '[image]',
+            ),
+          );
+        }
       }
     }
     sub++;

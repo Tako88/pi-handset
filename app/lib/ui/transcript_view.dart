@@ -297,6 +297,8 @@ class _TranscriptViewState extends State<TranscriptView> {
         );
       case TranscriptBlockKind.notice:
         return NoticeBlock(block: block);
+      case TranscriptBlockKind.image:
+        return ImageBlock(block: block);
     }
   }
 }
