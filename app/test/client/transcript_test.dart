@@ -8,6 +8,7 @@
 // test.
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pi_droid/client/tool_view.dart';
 import 'package:pi_droid/client/transcript.dart';
 
 Map<String, Object?> textBlock(String text) => {'type': 'text', 'text': text};
@@ -37,6 +38,19 @@ Map<String, Object?> toolResultMessage({
   'toolName': toolName,
   'content': content ?? [textBlock('file body')],
   'isError': isError,
+};
+
+Map<String, Object?> toolFrame({
+  required String toolCallId,
+  String name = 'read',
+  String status = 'done',
+  Object? view,
+}) => {
+  'kind': 'tool',
+  'toolCallId': toolCallId,
+  'name': name,
+  'status': status,
+  'view': ?view,
 };
 
 Map<String, Object?> assistantWith(Object? content) => {
@@ -508,5 +522,156 @@ void main() {
     expect(first, hasLength(3));
     expect(first.toSet(), hasLength(3));
     expect(second, first);
+  });
+
+  test('a kind:tool frame attaches its view to the paired call block', () {
+    final blocks = deriveBlocks([
+      assistantWith([toolCallBlock(id: 'call-1', name: 'edit')]),
+      toolFrame(
+        toolCallId: 'call-1',
+        name: 'edit',
+        view: {
+          'type': 'diff',
+          'path': 'app/foo.dart',
+          'lines': [
+            {'kind': 'add', 'text': 'x'},
+          ],
+        },
+      ),
+    ]);
+
+    expect(blocks, hasLength(1), reason: 'the annotation is not its own row');
+    expect(blocks.single.kind, TranscriptBlockKind.tool);
+    expect(blocks.single.toolView, isA<DiffView>());
+    expect((blocks.single.toolView as DiffView).path, 'app/foo.dart');
+  });
+
+  test('the later of two kind:tool frames for one id wins', () {
+    // running→done: the done frame carries the real view and must replace the
+    // input-only one the running frame showed.
+    final blocks = deriveBlocks([
+      toolFrame(
+        toolCallId: 'call-1',
+        name: 'edit',
+        status: 'running',
+        view: {'type': 'diff', 'path': 'running.dart', 'lines': <Object?>[]},
+      ),
+      toolFrame(
+        toolCallId: 'call-1',
+        name: 'edit',
+        status: 'done',
+        view: {'type': 'diff', 'path': 'done.dart', 'lines': <Object?>[]},
+      ),
+      assistantWith([toolCallBlock(id: 'call-1', name: 'edit')]),
+    ]);
+
+    expect(blocks, hasLength(1));
+    expect((blocks.single.toolView as DiffView).path, 'done.dart');
+  });
+
+  test('a viewless later frame does not erase an earlier view', () {
+    // A done frame may carry no view at all; the running frame's view must
+    // survive it. Only the presence of a view replaces a view.
+    final blocks = deriveBlocks([
+      toolFrame(
+        toolCallId: 'call-1',
+        name: 'edit',
+        status: 'running',
+        view: {'type': 'diff', 'path': 'running.dart', 'lines': <Object?>[]},
+      ),
+      toolFrame(toolCallId: 'call-1', name: 'edit', status: 'done'),
+      assistantWith([toolCallBlock(id: 'call-1', name: 'edit')]),
+    ]);
+
+    expect(blocks, hasLength(1));
+    expect((blocks.single.toolView as DiffView).path, 'running.dart');
+  });
+
+  test('a bare kind:tool frame emits no block of its own', () {
+    final blocks = deriveBlocks([
+      assistantWith([toolCallBlock(id: 'call-1')]),
+      toolFrame(toolCallId: 'call-1', view: {'type': 'generic'}),
+    ]);
+
+    expect(blocks, hasLength(1), reason: 'only the call renders');
+    expect(blocks.single.toolName, 'read');
+  });
+
+  test('a paired call and result with no kind:tool frame leaves toolView null', () {
+    // Version skew: an older bridge emits no view, and the block still renders
+    // (through the generic preview) rather than being dropped.
+    final blocks = deriveBlocks([
+      assistantWith([toolCallBlock(id: 'call-1')]),
+      toolResultMessage(toolCallId: 'call-1'),
+    ]);
+
+    expect(blocks, hasLength(1));
+    expect(blocks.single.toolResult, isNotNull);
+    expect(blocks.single.toolView, isNull);
+  });
+
+  test('a snapshot history entry list attaches an injected view', () {
+    final blocks = deriveBlocks([
+      {
+        'type': 'message',
+        'message': assistantWith([toolCallBlock(id: 'call-1')]),
+      },
+      toolFrame(
+        toolCallId: 'call-1',
+        name: 'read',
+        view: {'type': 'file', 'path': 'a.dart', 'content': 'x'},
+      ),
+    ]);
+
+    expect(blocks, hasLength(1));
+    expect(blocks.single.toolView, isA<FileView>());
+    expect((blocks.single.toolView as FileView).path, 'a.dart');
+  });
+
+  test('a standalone orphan result also gets its view attached', () {
+    final blocks = deriveBlocks([
+      toolResultMessage(
+        toolCallId: 'orphan-1',
+        toolName: 'grep',
+        content: [textBlock('No matches found')],
+      ),
+      toolFrame(
+        toolCallId: 'orphan-1',
+        name: 'grep',
+        view: {'type': 'matches', 'matches': <Object?>[]},
+      ),
+    ]);
+
+    expect(blocks, hasLength(1));
+    expect(blocks.single.toolView, isA<MatchesView>());
+    expect((blocks.single.toolView as MatchesView).matches, isEmpty);
+  });
+
+  test('a result first-wins while a view last-wins — the two rules are opposite', () {
+    // Two opposite rules in one test so neither can be "simplified" into the
+    // other: resultsById keeps the first duplicate (fork semantics), viewsById
+    // keeps the last (running→done).
+    final blocks = deriveBlocks([
+      toolFrame(
+        toolCallId: 'call-1',
+        name: 'edit',
+        status: 'running',
+        view: {'type': 'diff', 'path': 'first.dart', 'lines': <Object?>[]},
+      ),
+      toolResultMessage(toolCallId: 'call-1', content: [textBlock('first result')]),
+      toolResultMessage(toolCallId: 'call-1', content: [textBlock('second result')]),
+      toolFrame(
+        toolCallId: 'call-1',
+        name: 'edit',
+        status: 'done',
+        view: {'type': 'diff', 'path': 'last.dart', 'lines': <Object?>[]},
+      ),
+      assistantWith([toolCallBlock(id: 'call-1', name: 'edit')]),
+    ]);
+
+    expect(blocks, hasLength(1));
+    expect(blocks.single.text, contains('first result'));
+    expect(blocks.single.text, isNot(contains('second result')));
+    expect((blocks.single.toolView as DiffView).path, 'last.dart');
   });
 }
