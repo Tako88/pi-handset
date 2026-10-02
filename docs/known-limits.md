@@ -216,6 +216,32 @@ rather than guess at it.
   normal wide photo, but a very narrow image is not width-clamped, so its decode is
   not bounded by the 1024 figure; the `maxHeight: 320` + `BoxFit.contain` still bound
   the row. A real photo is unaffected.
+- **An image cannot be sent on its own; it needs a caption.** The bridge refuses a
+  `prompt`/`steer`/`followup` with a missing or empty `text` before it looks at
+  `images`, so a picked image must travel with some words. Tapping send with a chip
+  and an empty draft therefore shows `'Add a caption to send the image'` and sends
+  nothing, rather than a dead tap.
+- **The `attachments` capability is advertised by the hub while the image mapping
+  lives in the bridge, so a hub restart and a pi `/reload` must deploy together.**
+  A new hub with an old bridge advertises `attachments`, the app offers the `+`, and
+  the old bridge ignores the unknown `images` field and sends text only — a silent
+  drop with no signal to close it. The bridge's shape-refusal cannot detect an old
+  bridge; deploy discipline (restart the hub *and* reload pi) is the only defence.
+  Against an old hub the app shows no `+` at all.
+- **One gallery image per send, and no camera.** The chip holds at most one image
+  and picking again replaces it; a chip list, drag-reorder and camera capture are not
+  built. Camera would also need a runtime permission, which the gallery path
+  deliberately avoids — the main manifest declares no media or camera permission.
+- **The 350 KiB local cap is the only guaranteed size defence, and it is coupled to
+  the hub's 1 MiB `maxPayload`.** A picked image over `maxAttachmentBytes` (350 KiB) is
+  refused locally with `'That image is too large to send'` — never sent as a frame the
+  hub would drop. Base64 inflates by 4/3 (350 KiB → ~467 KiB), which fits the whole
+  `{protocolVersion,type,payload}` envelope inside the default `maxPayload` of 1 MiB;
+  pi 1.0.0 normalizes prompt images but 0.84.1 does not, so nothing downstream can be
+  relied on. The cap assumes that 1 MiB default (configurable in `HubOptions`, but
+  `serve` exposes no CLI flag for it); a hub run with a smaller payload would turn an
+  at-cap frame into the silent drop the guard exists to prevent. There is no
+  shrink-and-retry: an over-cap image must be replaced with a smaller one.
 
 ## Tool rendering
 
@@ -278,8 +304,8 @@ rather than guess at it.
   equivalent settings file.
 - **The old-hub compatibility gate is a capability array, not a version.** The first
   post-auth `sessions` frame carries
-  `capabilities: ["list-dirs","project-session","session-control"]`; a hub that
-  predates them omits the field. The app then refuses `list-dirs` and
+  `capabilities: ["list-dirs","project-session","session-control","attachments"]`;
+  a hub that predates them omits the field. The app then refuses `list-dirs` and
   `start-session{cwd}` **locally, without sending**, and the FAB falls back to the old
   direct start; the New/Fork menu items are likewise omitted rather than sent. This is
   load-bearing in two directions: an unknown viewer frame is closed `4003`, which the

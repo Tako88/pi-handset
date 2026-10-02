@@ -34,7 +34,8 @@ mislabelled as thinking. The reasoning itself streams too — into its own row a
 the reply, replaced by the committed thinking block when the message lands. Image
 parts render as images, capped at 1024 px wide with the aspect ratio preserved,
 and an image part too large to relay is replaced in place with an `[image]`
-placeholder while the message keeps its role and text.
+placeholder while the message keeps its role and text. The composer can send one
+downscaled gallery image with a caption.
 
 One deliberate tradeoff worth knowing: opening a long transcript lays it out once
 (O(n)) because starting at the bottom requires it; streaming frames stay lazy. A

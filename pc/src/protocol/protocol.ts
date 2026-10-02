@@ -523,7 +523,8 @@ export interface ResyncRequiredMessage {
 }
 
 /** The hub capabilities this protocol version advertises on the `sessions`
- * frame. Canonical; a viewer gates folder browsing on their presence. */
+ * frame. Canonical; a viewer gates each capability's feature on its presence
+ * (folder listing, folder-chosen starts, session control, image attachments). */
 export const HUB_CAPABILITIES = ['list-dirs', 'project-session', 'session-control', 'attachments'] as const;
 export type HubCapability = (typeof HUB_CAPABILITIES)[number];
 
