@@ -186,6 +186,51 @@ rather than guess at it.
   rows it is a scroll window rather than a browseable list; the alternative is an
   overflow or a panel that steals the transcript's space.
 
+## Tool rendering
+
+- **bash stdout and stderr arrive merged, and there is no structured exit code.** pi
+  points both streams at one `onData` sink and carries no code in the result's
+  `content` or `details`; a non-zero exit is thrown as an error instead. So the command
+  view shows the command plus one merged output pane, and derives `exitCode` by
+  parsing a trailing `Command exited with code N` for failures, and by recording `0`
+  when `isError` is false. `Command aborted`, `Command timed out after N seconds` and
+  `Command terminated without an exit code` parse to *no* code, even though their text
+  contains digits. Separating the streams is impossible from the relayed data.
+- **write has no old-content diff, and its summary claims no line delta.** pi's `write`
+  returns `details: undefined` and `Successfully wrote to <path>`; the file's previous
+  contents are nowhere on the extension surface. The write view is therefore a diff
+  whose every line is an addition, built from the new content in `input.content` — and
+  its collapsed summary deliberately shows no `+N −M` count, because there is no old
+  file to diff against. An honest write→old/new diff cannot be produced from pi data.
+- **The table renderer has one built-in producer: `ls`.** None of pi's built-in tools
+  emits a tabular structure; `ls` is the one naturally tabular built-in (one entry per
+  row, a `/` suffix marking a directory), so it maps to `{type:'table', columns:['name','type']}`.
+  The renderer itself is general, but a custom tool's `details` are shape-unstable and
+  are deliberately not guessed at.
+- **History doubles tool bytes, because a view mirrors content already in the messages.**
+  Every tool call and result is relayed twice through history — once as the pi message,
+  once as the normalized `tool` frame — so fewer messages fit `HISTORY_MAX_BYTES` in a
+  tool-heavy session. Each payload is bounded on its own and the window keeps the newest
+  turns, so the visible cost is older turns being dropped (`truncated == true`), not a
+  single oversized frame.
+- **Tool frames are bounded to a quarter of the relay budget, and a drop is recovered,
+  not lost.** `boundToolPayload` caps a tool payload at `TOOL_VIEW_MAX_BYTES` (64 KiB),
+  a quarter of `MAX_RELAY_BYTES` (256 KiB). A frame that fills the budget is admitted
+  only when no byte is outstanding, so a payload bounded at the budget itself would be
+  dropped under *any* backlog; at a quarter it is dropped only under a severe one. A
+  dropped `running` or `done` frame therefore leaves its row stale (or collapsed) under
+  load — likely, not impossible — and the guarantee is the recovery path: the hub's
+  **unbudgeted** `resync-required` makes the app re-request history, and the
+  **unbudgeted** `snapshot` carries the annotated frames back (collapsed).
+- **A pre-#6 `tool` frame without a `toolCallId` is rejected and dropped silently.** The
+  decoder requires a non-empty `toolCallId` and `name` and a valid `status`; a frame in
+  the old `{kind:'tool', name, status, args}` shape fails as `bad-field`, and the app
+  drops any non-ok frame without a word. No live producer ever emitted that shape — the
+  bridge emits no `tool` frame before this change — so the blast radius was the golden
+  fixture and the contract, both updated. The version-skew fallback is narrower than
+  "never drops": only a frame whose `view` is **absent or an unknown type** decodes and
+  renders through the generic block.
+
 ## App-started sessions
 
 
