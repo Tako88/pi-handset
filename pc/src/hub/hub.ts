@@ -104,6 +104,10 @@ export const COMMAND_ALLOWLIST = new Set([
   'setSessionName',
   'listCommands',
   'listModels',
+  'listTree',
+  'sessionNew',
+  'sessionTree',
+  'sessionFork',
 ]);
 
 export interface HubOptions {

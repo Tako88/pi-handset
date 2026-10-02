@@ -30,6 +30,7 @@ import {
   type MatchesView,
   type SlashCommand,
   type ToolPayload,
+  type TreeNodeSummary,
 } from '../src/protocol/protocol.ts';
 import { writeDiscovery } from '../src/hub/discovery.ts';
 import { loadOrCreateToken } from '../src/hub/auth.ts';
@@ -43,6 +44,7 @@ import {
   RATE_LIMITED_RECONNECT_MS,
   COMMAND_ALLOWLIST as BRIDGE_COMMAND_ALLOWLIST,
   COMMAND_NOT_ALLOWED,
+  SESSION_COMMAND_NAME,
   SETTLED_TEXT_MAX_CODE_POINTS,
   annotateToolViews,
   boundToolPayload,
@@ -62,6 +64,7 @@ import {
 import type {
   AssistantMessageEvent,
   BridgeCloseEvent,
+  BridgeCommandCtx,
   BridgeCtx,
   BridgeDeps,
   BridgeHandler,
@@ -132,6 +135,11 @@ class StubPi implements BridgePi {
   commands: Array<{ name: string; description?: string; source?: string; sourceInfo?: unknown }> = [];
   /** A false value models an older pi with no `getCommands` at all. */
   commandsAvailable = true;
+  /** Commands the bridge registered, in registration order. */
+  readonly registeredCommands: Array<{
+    name: string;
+    options: { description?: string; handler: (args: string, ctx: BridgeCommandCtx) => unknown };
+  }> = [];
   private sessionName: string | undefined;
 
   on(event: string, handler: BridgeHandler): () => void {
@@ -169,6 +177,57 @@ class StubPi implements BridgePi {
       ? this.commands
       : (undefined as unknown as SlashCommand[]);
   }
+
+  registerCommand(
+    name: string,
+    options: { description?: string; handler: (args: string, ctx: BridgeCommandCtx) => unknown },
+  ): void {
+    this.registeredCommands.push({ name, options });
+  }
+}
+
+/**
+ * The command context pi passes a registered command's handler. Records every
+ * method call and models pi's `assertActive`: for `newSession`/`fork` the second
+ * call on a stale context throws, exactly as pi does. `navigateTree` does not
+ * invalidate the ctx in pi, so the stub is deliberately stricter for `tree`:
+ * the handler must still act exactly once and return.
+ */
+class StubCommandCtx implements BridgeCommandCtx {
+  readonly calls: string[] = [];
+  private cancelled = false;
+  private error: unknown;
+  private used = false;
+
+  private act(method: string): { cancelled: boolean } {
+    if (this.used) throw new Error(`command context is stale on ${method}`);
+    this.used = true;
+    this.calls.push(method);
+    if (this.error !== undefined) throw this.error;
+    return { cancelled: this.cancelled };
+  }
+
+  async newSession(): Promise<{ cancelled: boolean }> {
+    return this.act('newSession');
+  }
+
+  async fork(entryId: string): Promise<{ cancelled: boolean }> {
+    void entryId;
+    return this.act('fork');
+  }
+
+  async navigateTree(targetId: string): Promise<{ cancelled: boolean }> {
+    void targetId;
+    return this.act('navigateTree');
+  }
+
+  setCancel(value: boolean): void {
+    this.cancelled = value;
+  }
+
+  setThrow(error: unknown): void {
+    this.error = error;
+  }
 }
 
 interface TestCtx extends BridgeCtx {
@@ -187,16 +246,29 @@ interface TestCtx extends BridgeCtx {
   removeRegistry(): void;
   /** Replace the session entries (history/annotation tests). */
   setEntries(entries: unknown[]): void;
+  /** Point the manager at another hub session id, as a replacement does. */
+  setSessionId(id: string): void;
+  /** Replace pi's session tree (listTree tests). */
+  setTree(nodes: unknown[]): void;
 }
 
-function makeCtx(mode = 'tui'): TestCtx {
+function makeCtx(mode = 'tui', sessionId = 'sess-1'): TestCtx {
   let aborts = 0;
   let compacts = 0;
   let usageCalls = 0;
   let idle = true;
   let idleError: unknown;
+  let currentSessionId = sessionId;
   let available: unknown[] = [{ provider: 'test-provider', id: 'test-model', name: 'Test Model' }];
   let entries: unknown[] = [{ type: 'message', id: 'e1' }];
+  // A small real-shaped tree: `{entry, children, label?}`, exactly what pi's
+  // `sessionManager.getTree()` returns. Tests replace it wholesale.
+  let tree: unknown[] = [
+    {
+      entry: { type: 'message', id: 't1', message: { role: 'user', content: 'hello' } },
+      children: [],
+    },
+  ];
   let usage: { tokens: number | null; contextWindow: number } | undefined = {
     tokens: 23400,
     contextWindow: 128000,
@@ -216,9 +288,12 @@ function makeCtx(mode = 'tui'): TestCtx {
         ),
     },
     sessionManager: {
-      getSessionId: () => 'sess-1',
-      getSessionFile: () => '/sessions/sess-1.jsonl',
+      getSessionId: () => currentSessionId,
+      getSessionFile: () => `/sessions/${currentSessionId}.jsonl`,
       getEntries: () => entries,
+      getEntry: (id: string) =>
+        entries.find((entry) => (entry as { id?: unknown }).id === id),
+      getTree: () => tree,
     },
     abort: () => {
       aborts += 1;
@@ -255,6 +330,12 @@ function makeCtx(mode = 'tui'): TestCtx {
     setEntries: (next) => {
       entries = next;
     },
+    setSessionId: (next) => {
+      currentSessionId = next;
+    },
+    setTree: (next) => {
+      tree = next;
+    },
   };
   return ctx;
 }
@@ -265,7 +346,7 @@ interface Harness {
   writes: Array<{ stream: string; text: string }>;
   timers: Array<{ fn: () => void; ms: number }>;
   startCtx: TestCtx;
-  start(mode?: string): TestCtx;
+  start(mode?: string, sessionId?: string, reason?: string): TestCtx;
   fireTimer(index?: number): void;
 }
 
@@ -295,9 +376,9 @@ function makeHarness(overrides: Partial<BridgeDeps> = {}): Harness {
   };
   installBridge(pi, deps);
 
-  const start = (mode = 'tui'): TestCtx => {
-    startCtx = makeCtx(mode);
-    pi.handlers.get('session_start')!({ type: 'session_start', reason: 'startup' }, startCtx);
+  const start = (mode = 'tui', sessionId = 'sess-1', reason = 'startup'): TestCtx => {
+    startCtx = makeCtx(mode, sessionId);
+    pi.handlers.get('session_start')!({ type: 'session_start', reason }, startCtx);
     return startCtx;
   };
 
@@ -1830,6 +1911,11 @@ test('every allowlisted command is actually dispatched', async () => {
   // says it may send. `fetchHistory` is handled in `dispatch`, *before*
   // `dispatchCommand`, which is exactly how a reader of the switch alone
   // concludes it is unimplemented — it is not.
+  // The session-control names must stay covered: iterating the allowlist
+  // silently shrinks if one is dropped, so pin them here.
+  for (const name of ['listTree', 'sessionNew', 'sessionTree', 'sessionFork']) {
+    assert.ok(BRIDGE_COMMAND_ALLOWLIST.has(name), `${name} is missing from the allowlist`);
+  }
   for (const name of BRIDGE_COMMAND_ALLOWLIST) {
     const harness = makeHarness();
     harness.start();
@@ -2333,6 +2419,417 @@ test('the retained context follows a session switch', async () => {
   secondSocket.open();
   await sendCommand(harness.pi, secondSocket, 'abort');
   assert.equal(secondCtx.aborts(), 1);
+});
+
+test('install registers the internal session command', () => {
+  const harness = makeHarness();
+  // The bridge can only drive a session action through a real command context,
+  // and a command context is reachable only from a registered command. One
+  // registration, once per install.
+  assert.deepEqual(
+    harness.pi.registeredCommands.map((command) => command.name),
+    [SESSION_COMMAND_NAME],
+  );
+});
+
+test('a replacement session_start registers the id it replaced', () => {
+  for (const reason of ['new', 'fork', 'resume']) {
+    const harness = makeHarness();
+    harness.start('tui', 'sess-1', 'startup');
+    harness.sockets[0]!.open();
+    harness.start('tui', 'sess-2', reason);
+    const second = harness.sockets[1]!;
+    second.open();
+    const register = parsed(second).find((m) => m.type === 'register')!;
+    assert.equal(register.replaces, 'sess-1', `${reason} did not carry replaces`);
+  }
+});
+
+test('a non-replacement session_start carries no replaces', () => {
+  for (const reason of ['startup', 'reload']) {
+    const harness = makeHarness();
+    harness.start('tui', 'sess-1', 'startup');
+    harness.sockets[0]!.open();
+    harness.start('tui', 'sess-2', reason);
+    const second = harness.sockets[1]!;
+    second.open();
+    const register = parsed(second).find((m) => m.type === 'register')!;
+    assert.equal(register.replaces, undefined, `${reason} carried replaces`);
+  }
+});
+
+test('a resume that reloads the same session id carries no replaces', () => {
+  const harness = makeHarness();
+  harness.start('tui', 'sess-1', 'startup');
+  harness.sockets[0]!.open();
+  // `/resume` can reload the very id already registered; naming it as replaced
+  // would make the app follow a successor that does not exist.
+  harness.start('tui', 'sess-1', 'resume');
+  const second = harness.sockets[1]!;
+  second.open();
+  const register = parsed(second).find((m) => m.type === 'register')!;
+  assert.equal(register.replaces, undefined);
+});
+
+test('replaces survives a register that could not be sent and is cleared only after one that was', () => {
+  const harness = makeHarness();
+  harness.start('tui', 'sess-1', 'startup');
+  harness.sockets[0]!.open();
+  harness.start('tui', 'sess-2', 'new');
+  // sockets[1] is deliberately left closed, and a label refresh is the one
+  // closed-socket path that calls `sendRegister`. It must not consume the
+  // replacement: nothing reached the hub, so the app never saw the linkage.
+  harness.pi.setSessionName('renamed while closed');
+  harness.pi.handlers.get('session_info_changed')!(
+    { type: 'session_info_changed' },
+    harness.startCtx,
+  );
+  const second = harness.sockets[1]!;
+  second.open();
+  const registers = parsed(second).filter((m) => m.type === 'register');
+  assert.equal(registers.length, 1);
+  assert.equal(registers[0]!.replaces, 'sess-1');
+  // A second rename now reaches the open socket, so the flag is consumed and the
+  // next register omits it — it must not link a third, later register.
+  harness.pi.setSessionName('renamed while open');
+  harness.pi.handlers.get('session_info_changed')!(
+    { type: 'session_info_changed' },
+    harness.startCtx,
+  );
+  const after = parsed(second).filter((m) => m.type === 'register');
+  assert.equal(after.length, 2);
+  assert.equal(after[1]!.replaces, undefined);
+});
+
+test('sessionNew acknowledges and triggers the registered command', async () => {
+  const harness = makeHarness();
+  harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'sessionNew');
+  assert.equal((parsed(socket).at(-1) as { ok: boolean }).ok, true);
+  // The only route to a command context is a real command invocation, so the
+  // bridge triggers its own registered command rather than calling pi directly.
+  assert.deepEqual(
+    harness.pi.userMessages.map((message) => message.content),
+    [`/${SESSION_COMMAND_NAME} new`],
+  );
+});
+
+test('the registered handler for new calls newSession exactly once and returns', async () => {
+  const harness = makeHarness();
+  const handler = harness.pi.registeredCommands[0]!.options.handler;
+  const cmdCtx = new StubCommandCtx();
+  await handler('new', cmdCtx);
+  // The stub throws on a second call, modelling pi's `assertActive`: a handler
+  // that touched the context again after `newSession` would blow up here.
+  assert.deepEqual(cmdCtx.calls, ['newSession']);
+});
+
+test('a cancelled newSession emits an error status instead of a silent ack', async () => {
+  const harness = makeHarness();
+  harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  const handler = harness.pi.registeredCommands[0]!.options.handler;
+  const cmdCtx = new StubCommandCtx();
+  cmdCtx.setCancel(true);
+  await handler('new', cmdCtx);
+  // pi resolves `{cancelled:true}` when a `session_before_switch` handler
+  // cancels. Without this notice the app would wait on a replacement that will
+  // never come.
+  const status = parsed(socket).find(
+    (message) =>
+      message.type === 'event' && (message.payload as { kind?: string }).kind === 'status',
+  );
+  assert.ok(status, 'a cancelled replacement emitted no status');
+  assert.equal((status.payload as { event?: string }).event, 'error');
+});
+
+test('a navigateTree failure emits an error status', async () => {
+  const harness = makeHarness();
+  harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  const handler = harness.pi.registeredCommands[0]!.options.handler;
+  const cmdCtx = new StubCommandCtx();
+  cmdCtx.setThrow(new Error('cannot navigate'));
+  await handler('tree t9', cmdCtx);
+  // `navigateTree` throws on a streaming/compacting session or an unknown id.
+  // The throw must become a notice, never an unhandled rejection inside pi.
+  const status = parsed(socket).find(
+    (message) =>
+      message.type === 'event' && (message.payload as { kind?: string }).kind === 'status',
+  );
+  assert.ok(status, 'a throwing tree navigation emitted no status');
+  assert.equal((status.payload as { event?: string }).event, 'error');
+  assert.match((status.payload as { message?: string }).message ?? '', /cannot navigate/);
+});
+
+test('an unknown session action emits an error status instead of a silent ack', async () => {
+  const harness = makeHarness();
+  harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  const handler = harness.pi.registeredCommands[0]!.options.handler;
+  // `dispatch` has already acked `ok:true`; a mistyped action must not fall off
+  // the end of the handler silently.
+  await handler('bogus t1', new StubCommandCtx());
+  const status = parsed(socket).find(
+    (message) =>
+      message.type === 'event' && (message.payload as { kind?: string }).kind === 'status',
+  );
+  assert.ok(status, 'an unknown action emitted no status');
+  assert.equal((status.payload as { event?: string }).event, 'error');
+  assert.equal(
+    (status.payload as { message?: string }).message,
+    'unknown session action: bogus',
+  );
+  // An empty action names itself too, rather than printing nothing.
+  await handler('', new StubCommandCtx());
+  const last = parsed(socket).at(-1) as { payload?: { message?: string } };
+  assert.equal(last.payload?.message, 'unknown session action: (empty)');
+});
+
+test('sessionTree refuses while pi is working', async () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  ctx.setIdle(false);
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'sessionTree', { entryId: 't1' });
+  const result = parsed(socket).at(-1) as { ok: boolean; error?: string };
+  assert.equal(result.ok, false);
+  // The specific reason, not the generic allowlist refusal: `navigateTree`
+  // throws mid-stream, so the bridge refuses before triggering the command.
+  assert.equal(result.error, 'cannot navigate the tree while pi is working');
+  assert.deepEqual(harness.pi.userMessages, []);
+});
+
+test('sessionFork rejects a non-user entry', async () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  // Forking with the default `before` position requires a user message entry;
+  // an assistant entry is not a valid fork target.
+  ctx.setEntries([{ type: 'message', id: 'e9', message: { role: 'assistant', content: [] } }]);
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'sessionFork', { entryId: 'e9' });
+  const result = parsed(socket).at(-1) as { ok: boolean; error?: string };
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'unknown entry');
+  // Refused before the command is ever triggered.
+  assert.deepEqual(harness.pi.userMessages, []);
+});
+
+test('sessionFork rejects a non-message entry that carries a user message', async () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  // A non-message variant that happens to carry a `message` object must not
+  // pass the role check: it would only fail later, after `ok:true` was acked.
+  ctx.setEntries([{ type: 'compaction', id: 'c9', message: { role: 'user', content: 'x' } }]);
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'sessionFork', { entryId: 'c9' });
+  const result = parsed(socket).at(-1) as { ok: boolean; error?: string };
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'unknown entry');
+  assert.deepEqual(harness.pi.userMessages, []);
+});
+
+test('a sessionFork for a user entry triggers the fork with the entry id', async () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  ctx.setEntries([{ type: 'message', id: 'e3', message: { role: 'user', content: 'hi' } }]);
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'sessionFork', { entryId: 'e3' });
+  assert.equal((parsed(socket).at(-1) as { ok: boolean }).ok, true);
+  assert.deepEqual(
+    harness.pi.userMessages.map((message) => message.content),
+    [`/${SESSION_COMMAND_NAME} fork e3`],
+  );
+  const handler = harness.pi.registeredCommands[0]!.options.handler;
+  const cmdCtx = new StubCommandCtx();
+  await handler('fork e3', cmdCtx);
+  assert.deepEqual(cmdCtx.calls, ['fork']);
+});
+
+test('listTree projects the real session tree into relinked, role-tagged nodes', async () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  ctx.setTree([
+    {
+      entry: { type: 'message', id: 'u1', message: { role: 'user', content: 'first' } },
+      children: [
+        {
+          entry: { type: 'compaction', id: 'c1' },
+          children: [
+            {
+              entry: {
+                type: 'message',
+                id: 'u2',
+                message: {
+                  role: 'user',
+                  content: [
+                    { type: 'text', text: 'second ' },
+                    { type: 'image', data: 'AAAA' },
+                  ],
+                },
+              },
+              children: [
+                {
+                  entry: {
+                    type: 'message',
+                    id: 'a1',
+                    message: { role: 'assistant', content: [{ type: 'toolCall', id: 't1' }] },
+                  },
+                  children: [
+                    {
+                      entry: {
+                        type: 'message',
+                        id: 'tr1',
+                        message: { role: 'toolResult', toolCallId: 't1', content: [] },
+                      },
+                      children: [
+                        {
+                          entry: { type: 'message', id: 'u3', message: { role: 'user', content: 'third' } },
+                          children: [],
+                        },
+                      ],
+                    },
+                  ],
+                },
+                // A malformed node: entry.message is missing. Skipped, never
+                // thrown; the projection is called inside dispatch, where a
+                // throw would surface as a generic refusal.
+                { entry: { type: 'message', id: 'bad' }, children: [] },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+  ]);
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'listTree');
+  const result = parsed(socket).at(-1) as {
+    ok: boolean;
+    tree: TreeNodeSummary[];
+    treeTruncated: boolean;
+  };
+  assert.equal(result.ok, true);
+  // Non-message entries are traversed but not emitted, and a message node's
+  // parent is its nearest EMITTED ancestor — so u2 relinks past the compaction
+  // to u1, and u3 relinks past the toolResult to a1.
+  assert.deepEqual(result.tree, [
+    { id: 'u1', parentId: null, role: 'user', text: 'first' },
+    { id: 'u2', parentId: 'u1', role: 'user', text: 'second [image]' },
+    { id: 'a1', parentId: 'u2', role: 'assistant', text: '' },
+    { id: 'u3', parentId: 'a1', role: 'user', text: 'third' },
+  ]);
+  assert.equal(result.treeTruncated, false);
+});
+
+test('listTree keeps the newest 200 nodes and repairs the dangling parent', async () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  let chain: unknown[] = [];
+  for (let index = 204; index >= 0; index -= 1) {
+    chain = [
+      {
+        entry: { type: 'message', id: `n${index}`, message: { role: 'user', content: `m${index}` } },
+        children: chain,
+      },
+    ];
+  }
+  ctx.setTree(chain);
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'listTree');
+  const result = parsed(socket).at(-1) as {
+    tree: TreeNodeSummary[];
+    treeTruncated: boolean;
+  };
+  assert.equal(result.treeTruncated, true);
+  assert.equal(result.tree.length, 200);
+  assert.equal(result.tree[0]!.id, 'n5');
+  // n5's parent (n4) was dropped, so it must not point at a missing id.
+  assert.equal(result.tree[0]!.parentId, null);
+  assert.equal(result.tree.at(-1)!.id, 'n204');
+});
+
+test('listTree refuses when pi has no getTree', async () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  delete (ctx.sessionManager as { getTree?: unknown }).getTree;
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'listTree');
+  const result = parsed(socket).at(-1) as { ok: boolean; error?: string };
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'tree unavailable');
+});
+
+test('listTree projects an empty tree as no nodes and not truncated', async () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  // A fresh session legitimately has no message entries yet — that is an empty
+  // picker, never an error and never a truncation.
+  ctx.setTree([]);
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'listTree');
+  const result = parsed(socket).at(-1) as {
+    ok: boolean;
+    tree: unknown[];
+    treeTruncated: boolean;
+  };
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.tree, []);
+  assert.equal(result.treeTruncated, false);
+});
+
+test("listCommands omits the bridge's own session command", async () => {
+  const harness = makeHarness();
+  // pi exposes registered extension commands through `getCommands()`; the
+  // bridge's own command must never appear in the app's `/` overlay. The filter
+  // hides the bare name and pi's `:N` duplicate form only — a hypothetical
+  // `pi-droid-session-foo` is still a real, distinct command.
+  harness.pi.commands = [
+    { name: SESSION_COMMAND_NAME },
+    { name: `${SESSION_COMMAND_NAME}:2` },
+    { name: `${SESSION_COMMAND_NAME}-foo` },
+    { name: 'ping' },
+  ];
+  harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'listCommands');
+  const result = parsed(socket).at(-1) as { commands: Array<{ name: string }> };
+  assert.deepEqual(
+    result.commands.map((command) => command.name),
+    [`${SESSION_COMMAND_NAME}-foo`, 'ping'],
+  );
+});
+
+test('after a session switch the previous session id is refused as a mismatch', async () => {
+  const harness = makeHarness();
+  harness.start('tui', 'sess-1', 'startup');
+  harness.sockets[0]!.open();
+  const secondCtx = harness.start('tui', 'sess-2', 'startup');
+  const secondSocket = harness.sockets[1]!;
+  secondSocket.open();
+  // A stale id from before the replacement must not be dispatched against the
+  // successor context. `sendCommand` hardcodes `sess-1`, which is exactly the
+  // stale id under test.
+  await sendCommand(harness.pi, secondSocket, 'abort');
+  const result = parsed(secondSocket).at(-1) as { ok: boolean; error?: string };
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'session mismatch');
+  assert.equal(secondCtx.aborts(), 0);
+  assert.equal(secondCtx.compacts(), 0);
 });
 
 test('commands arriving after shutdown are ignored', async () => {
