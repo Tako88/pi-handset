@@ -671,6 +671,214 @@ test('an oversized toolResult message_end is replaced by a byte-count marker', (
   });
 });
 
+// ---------------------------------------------------------------------------
+// In-place image-part trim (#32)
+// ---------------------------------------------------------------------------
+// A message oversized only because of an image part is trimmed in place: the
+// image becomes `{type:'image',truncated:true,bytes}` and the message keeps its
+// role and text. A message that cannot be rescued that way (text alone busts
+// the cap, no trimmable part, or too many parts) keeps the whole-message marker
+// as the fallback.
+
+/** One image content part carrying `size` bytes of fake base64. */
+function imagePart(size: number, mimeType = 'image/png'): Record<string, unknown> {
+  return { type: 'image', data: 'A'.repeat(size), mimeType };
+}
+
+test('an oversized image part is replaced in place and the text survives', () => {
+  const image = imagePart(MAX_RELAY_BYTES + 1);
+  const huge = { role: 'user', content: [{ type: 'text', text: 'look at this' }, image] };
+  const result = normalizeMessageEnd({ type: 'message_end', message: huge });
+  assert.equal(result.kind, 'emit');
+  if (result.kind !== 'emit') return;
+  assert.equal(result.payload.kind, 'message');
+  const payload = result.payload as unknown as {
+    message: { role?: string; content?: unknown[] };
+    truncated?: boolean;
+  };
+  assert.equal(payload.truncated, true);
+  assert.equal(payload.message.role, 'user');
+  assert.deepEqual(payload.message.content?.[0], { type: 'text', text: 'look at this' });
+  assert.deepEqual(payload.message.content?.[1], {
+    type: 'image',
+    truncated: true,
+    bytes: Buffer.byteLength(JSON.stringify(image)),
+  });
+  // Bounded to the MESSAGE cap only (R1 policy (a)): the hub budgets the whole
+  // frame, and a message at the cap makes an over-budget frame. Asserting the
+  // encoded frame fits would be false near the cap, so it is deliberately not
+  // asserted here.
+  assert.ok(
+    Buffer.byteLength(JSON.stringify(payload.message)) <= MAX_RELAY_BYTES,
+    'the trimmed message must serialize within the shared cap',
+  );
+});
+
+test('an oversized assistant message_end keeps its role and text', () => {
+  const image = imagePart(MAX_RELAY_BYTES + 1, 'image/jpeg');
+  const huge = { role: 'assistant', content: [{ type: 'text', text: 'here' }, image] };
+  const result = normalizeMessageEnd({ type: 'message_end', message: huge });
+  assert.equal(result.kind, 'emit');
+  if (result.kind !== 'emit') return;
+  const payload = result.payload as unknown as {
+    message: { role?: string; content?: unknown[] };
+    truncated?: boolean;
+  };
+  assert.equal(payload.truncated, true);
+  assert.equal(payload.message.role, 'assistant');
+  assert.deepEqual(payload.message.content?.[0], { type: 'text', text: 'here' });
+  assert.deepEqual(payload.message.content?.[1], {
+    type: 'image',
+    truncated: true,
+    bytes: Buffer.byteLength(JSON.stringify(image)),
+  });
+});
+
+test('only the image parts it takes to fit are trimmed', () => {
+  const big = imagePart(200_000);
+  const small = imagePart(100_000);
+  const huge = { role: 'user', content: [{ type: 'text', text: 'hi' }, big, small] };
+  const result = normalizeMessageEnd({ type: 'message_end', message: huge });
+  assert.equal(result.kind, 'emit');
+  if (result.kind !== 'emit') return;
+  const payload = result.payload as unknown as { message: { content?: unknown[] } };
+  const content = payload.message.content ?? [];
+  assert.equal(content.length, 3);
+  // Largest first: the 200 KB part goes, the 100 KB part stays intact, and
+  // exactly one part carries the marker.
+  assert.deepEqual(content[1], {
+    type: 'image',
+    truncated: true,
+    bytes: Buffer.byteLength(JSON.stringify(big)),
+  });
+  assert.deepEqual(content[2], small);
+  assert.equal(content.filter((part) => (part as { truncated?: boolean }).truncated === true).length, 1);
+});
+
+test('a toolResult message with an oversized image keeps its text', () => {
+  const image = imagePart(MAX_RELAY_BYTES + 1);
+  const huge = {
+    role: 'toolResult',
+    toolCallId: 'call-1',
+    toolName: 'read',
+    content: [{ type: 'text', text: 'file body' }, image],
+    isError: false,
+  };
+  const result = normalizeMessageEnd({ type: 'message_end', message: huge });
+  assert.equal(result.kind, 'emit');
+  if (result.kind !== 'emit') return;
+  const payload = result.payload as unknown as { message: { role?: string; content?: unknown[] } };
+  assert.equal(payload.message.role, 'toolResult');
+  assert.deepEqual(payload.message.content?.[0], { type: 'text', text: 'file body' });
+  assert.deepEqual(payload.message.content?.[1], {
+    type: 'image',
+    truncated: true,
+    bytes: Buffer.byteLength(JSON.stringify(image)),
+  });
+});
+
+// PIN: green today. NC-5b removes the whole-message fallback.
+test('an oversized text-only message still falls back to the whole-message marker', () => {
+  const huge = { role: 'assistant', content: [{ type: 'text', text: 'x'.repeat(MAX_RELAY_BYTES + 1) }] };
+  const result = normalizeMessageEnd({ type: 'message_end', message: huge });
+  assert.equal(result.kind, 'emit');
+  if (result.kind !== 'emit') return;
+  const payload = result.payload as { message?: unknown; truncated?: boolean };
+  assert.equal(payload.truncated, true);
+  assert.deepEqual(payload.message, { truncated: true, bytes: Buffer.byteLength(JSON.stringify(huge)) });
+});
+
+// PIN: green today. NC-5b removes the whole-message fallback.
+test('a message whose own text busts the cap falls back to the marker', () => {
+  const huge = {
+    role: 'user',
+    content: [{ type: 'text', text: 'x'.repeat(MAX_RELAY_BYTES + 1) }, imagePart(4)],
+  };
+  const result = normalizeMessageEnd({ type: 'message_end', message: huge });
+  assert.equal(result.kind, 'emit');
+  if (result.kind !== 'emit') return;
+  const payload = result.payload as { message?: unknown };
+  assert.deepEqual(payload.message, { truncated: true, bytes: Buffer.byteLength(JSON.stringify(huge)) });
+});
+
+// PIN: green today. NC-5c removes the `bytes <= maxBytes` early-return in
+// `boundMessage`, forcing this already-fitting message down the trim path:
+// nothing is trimmed, `trimmed === false`, and the whole-message marker is
+// returned. Observed red: `payload.truncated` expected false, actual true
+// (`true !== false` at the `assert.equal(payload.truncated, false)` line).
+test('a small message with a small image is forwarded byte-for-byte', () => {
+  const small = { role: 'user', content: [{ type: 'text', text: 'hi' }, imagePart(4)] };
+  const result = normalizeMessageEnd({ type: 'message_end', message: small });
+  assert.equal(result.kind, 'emit');
+  if (result.kind !== 'emit') return;
+  const payload = result.payload as { message?: unknown; truncated?: boolean };
+  assert.equal(payload.truncated, false);
+  assert.deepEqual(payload.message, small);
+});
+
+// PIN: green today. NC-5b removes the whole-message fallback.
+test('a message with a non-string image data part and oversized text falls back to the whole marker', () => {
+  const huge = {
+    role: 'user',
+    content: [{ type: 'text', text: 'x'.repeat(MAX_RELAY_BYTES + 1) }, { type: 'image', data: 123 }],
+  };
+  const result = normalizeMessageEnd({ type: 'message_end', message: huge });
+  assert.equal(result.kind, 'emit');
+  if (result.kind !== 'emit') return;
+  const payload = result.payload as { message?: unknown };
+  assert.deepEqual(payload.message, { truncated: true, bytes: Buffer.byteLength(JSON.stringify(huge)) });
+});
+
+// PIN: green today. NC-10 raises TRIM_MAX_ITERATIONS past the bound.
+test('a message with more image parts than the trim bound falls back to the whole message marker', () => {
+  // Each part must be large enough that more than TRIM_MAX_ITERATIONS (64) of
+  // them have to go before the message fits: after 64 trims, the 6 remaining
+  // 50 KB parts still exceed the cap, so the loop hits its bound and the whole
+  // marker is the fallback. (With the parts too small the loop would succeed
+  // well inside the bound and this pin would be vacuous.)
+  const parts = Array.from({ length: 70 }, () => imagePart(50_000));
+  const huge = { role: 'user', content: parts };
+  const result = normalizeMessageEnd({ type: 'message_end', message: huge });
+  assert.equal(result.kind, 'emit');
+  if (result.kind !== 'emit') return;
+  const payload = result.payload as { message?: unknown };
+  assert.deepEqual(payload.message, { truncated: true, bytes: Buffer.byteLength(JSON.stringify(huge)) });
+});
+
+test('an oversized toolResult message_end still emits its bounded tool frame alongside the trimmed message', () => {
+  const harness = makeHarness();
+  harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  const before = socket.sent.length;
+  const image = imagePart(MAX_RELAY_BYTES + 1);
+  const original = {
+    role: 'toolResult',
+    toolCallId: 'call-1',
+    toolName: 'read',
+    content: [{ type: 'text', text: 'file body' }, image],
+    isError: false,
+  };
+  harness.pi.handlers.get('message_end')!({ type: 'message_end', message: original }, harness.startCtx);
+  const frames = parsed(socket).slice(before);
+  const messageFrame = frames.find((m) => (m.payload as { kind?: string })?.kind === 'message');
+  assert.ok(messageFrame, 'the trimmed message must be relayed');
+  const payload = messageFrame.payload as { message: { role?: string; content?: unknown[] } };
+  assert.equal(payload.message.role, 'toolResult');
+  assert.deepEqual(payload.message.content?.[0], { type: 'text', text: 'file body' });
+  assert.deepEqual(payload.message.content?.[1], {
+    type: 'image',
+    truncated: true,
+    bytes: Buffer.byteLength(JSON.stringify(image)),
+  });
+  // The tool frame is built from the ORIGINAL message (onMessageEnd's
+  // `original`), never the trimmed payload; it has its own bound and an image
+  // read degrades to a generic view, so it stays small.
+  const toolFrame = frames.find((m) => (m.payload as { kind?: string })?.kind === 'tool');
+  assert.ok(toolFrame, 'the tool frame must still be emitted');
+  assert.equal((toolFrame.payload as { toolCallId?: string }).toolCallId, 'call-1');
+});
+
 test('the message_end handler relays assistant, user and toolResult messages and ignores other roles', () => {
   const harness = makeHarness();
   harness.start();
@@ -2937,6 +3145,46 @@ test('projectHistory collapses an entry too large to ever fit, and keeps walking
   });
   assert.deepEqual(projection.entries[2], { id: 'new' });
   assert.ok(Buffer.byteLength(JSON.stringify(projection.entries)) <= 2048);
+});
+
+test('an oversized history entry with an image keeps its text', () => {
+  const image = { type: 'image', data: 'A'.repeat(4096) };
+  const entry = {
+    type: 'message',
+    message: { role: 'user', content: [{ type: 'text', text: 'hi' }, image] },
+  };
+  const projection = projectHistory([entry], 2048);
+  assert.equal(projection.entries.length, 1);
+  const kept = projection.entries[0] as { message?: { content?: unknown[] } };
+  // Not the whole-entry marker: the trim rescued it and rebuilt the wrapper.
+  assert.notDeepEqual(kept, { truncated: true, bytes: Buffer.byteLength(JSON.stringify(entry)) });
+  assert.deepEqual(kept.message?.content?.[0], { type: 'text', text: 'hi' });
+  assert.deepEqual(kept.message?.content?.[1], {
+    type: 'image',
+    truncated: true,
+    bytes: Buffer.byteLength(JSON.stringify(image)),
+  });
+});
+
+// PIN: green today. NC-8 omits the marker fallback before the `break`.
+test('a trimmed history entry that still does not fit the window falls back to the marker and the walk continues', () => {
+  const smallOld = { id: 'old' };
+  const smallNewest = { id: 'new', text: 'n'.repeat(600) };
+  const bigImageMsg = {
+    role: 'user',
+    content: [{ type: 'text', text: 't'.repeat(1500) }, { type: 'image', data: 'A'.repeat(5000) }],
+  };
+  const projection = projectHistory([smallOld, bigImageMsg, smallNewest], 2048);
+  // The trim fits the entry on its own, but not the *remaining* window after the
+  // newest entry. The marker fallback must run before the break so the older
+  // entry survives and the window flag stays false.
+  assert.equal(projection.truncated, false);
+  assert.deepEqual(projection.entries[0], smallOld);
+  assert.deepEqual(projection.entries[1], {
+    truncated: true,
+    bytes: Buffer.byteLength(JSON.stringify(bigImageMsg)),
+  });
+  assert.deepEqual(projection.entries[2], smallNewest);
 });
 
 test('projectHistory collapses a giant even when it is the newest entry', () => {

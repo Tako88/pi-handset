@@ -203,10 +203,62 @@ function errorText(error: unknown): string {
 }
 
 /**
+ * The most image parts the trim loop may replace before giving up.
+ *
+ * ponytail: the loop is capped at this many iterations; each iteration
+ * re-serializes the whole message, so an unbounded loop on a pathological
+ * message with thousands of image parts would multiply hundreds-of-KiB
+ * stringifies on the event loop. Past the bound the whole-message marker is the
+ * fallback. Raise the bound if a real message ever needs more.
+ */
+export const TRIM_MAX_ITERATIONS = 64;
+
+/**
+ * Replaces the largest image part, one at a time, with `{type:'image',
+ * truncated:true,bytes}` until the message fits, and returns the trimmed
+ * message; null when it cannot be rescued (no image part left, the remaining
+ * text alone still busts the cap, or the part count exceeds the iteration
+ * bound). Text parts are never touched, and a message that already fits never
+ * needs this. Terminates because a marker part has no string `data` and so is
+ * never chosen twice.
+ */
+function trimOversizedImageParts(message: unknown, maxBytes: number): unknown | null {
+  const obj = asObject(message);
+  if (obj === null || !Array.isArray(obj.content)) return null;
+  const content = [...obj.content];
+  const fits = (): boolean =>
+    Buffer.byteLength(JSON.stringify({ ...obj, content })) <= maxBytes;
+  let trimmed = false;
+  for (let guard = 0; guard < TRIM_MAX_ITERATIONS && !fits(); guard += 1) {
+    let index = -1;
+    let size = -1;
+    for (let i = 0; i < content.length; i += 1) {
+      const part = asObject(content[i]);
+      if (part === null || part.type !== 'image' || typeof part.data !== 'string') continue;
+      const bytes = Buffer.byteLength(JSON.stringify(part));
+      if (bytes > size) {
+        size = bytes;
+        index = i;
+      }
+    }
+    if (index === -1) break;
+    content[index] = { type: 'image', truncated: true, bytes: size };
+    trimmed = true;
+  }
+  return trimmed && fits() ? { ...obj, content } : null;
+}
+
+/**
  * Bounds an agent-supplied `message` to the shared relay cap. A message that
- * fits is returned untouched; an oversized one (e.g. a `done` carrying base64
- * images) is replaced by a small marker, so it cannot exceed the hub's frame
- * cap and cost the transcript a message.
+ * fits is returned untouched; an oversized one whose bulk is an image part is
+ * trimmed in place (the image becomes a marker, the role and text survive);
+ * anything that cannot be rescued that way is replaced by a small marker, so it
+ * cannot exceed the hub's frame cap and cost the transcript a message.
+ *
+ * The target is the *message*, never the hub's frame: `sendToViewer` budgets
+ * the whole `{protocolVersion,type,payload}` envelope against the same cap, so a
+ * message at the cap makes an over-budget frame that is dropped (R1 policy (a);
+ * see docs/known-limits.md).
  */
 function boundMessage(
   message: unknown,
@@ -215,6 +267,8 @@ function boundMessage(
   const serialized = JSON.stringify(message) ?? 'null';
   const bytes = Buffer.byteLength(serialized);
   if (bytes <= maxBytes) return { message, truncated: false };
+  const trimmed = trimOversizedImageParts(message, maxBytes);
+  if (trimmed !== null) return { message: trimmed, truncated: true };
   return { message: { truncated: true, bytes }, truncated: true };
 }
 
@@ -861,6 +915,20 @@ export interface HistoryProjection {
   truncated: boolean;
 }
 
+/** The image-part trim for one history entry, rebuilding whatever shape was
+ * unwrapped: a `{type:'message', message}` wrapper keeps its wrapper, a bare
+ * `{role, content}` message stays bare. Null when the entry is not a message or
+ * the trim could not rescue it. */
+function trimHistoryEntry(entry: unknown, maxBytes: number): unknown | null {
+  const message = entryMessage(entry);
+  if (message === null) return null;
+  const trimmed = trimOversizedImageParts(message, maxBytes);
+  if (trimmed === null) return null;
+  const obj = asObject(entry);
+  if (obj === null) return null;
+  return obj.message !== undefined ? { ...obj, message: trimmed } : trimmed;
+}
+
 /**
  * The most recent entries that fit in `maxBytes`, in chronological order.
  *
@@ -875,19 +943,33 @@ export interface HistoryProjection {
 export function projectHistory(entries: readonly unknown[], maxBytes: number): HistoryProjection {
   const kept: unknown[] = [];
   let bytes = 2; // the enclosing `[]`
+  const sized = (value: unknown): number =>
+    Buffer.byteLength(JSON.stringify(value) ?? 'null') + (kept.length > 0 ? 1 : 0);
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index];
     const serialized = JSON.stringify(entry) ?? 'null';
-    let size = Buffer.byteLength(serialized) + (kept.length > 0 ? 1 : 0);
     let value = entry;
+    let size = sized(entry);
     if (size > maxBytes) {
       // An entry no window could ever hold (a 1.4 MB tool result is real here)
       // would otherwise be a hard wall: it stops the walk and leaves most of
-      // the budget unspent, so everything older becomes unreachable. Collapse
-      // it to the marker the app already renders as a notice, which keeps the
-      // walk honest — a named gap, not a silent one.
-      value = { truncated: true, bytes: Buffer.byteLength(serialized) };
-      size = Buffer.byteLength(JSON.stringify(value)) + (kept.length > 0 ? 1 : 0);
+      // the budget unspent. Prefer an image-part trim, which keeps the entry's
+      // text; collapse to the notice marker only when that cannot rescue it.
+      const trimmed = trimHistoryEntry(entry, maxBytes);
+      if (trimmed !== null) {
+        value = trimmed;
+        size = sized(value);
+      }
+      // Fall back to the whole-entry marker whenever the entry still cannot
+      // fit — the trim failed, the trimmed value still busts the cap, or it no
+      // longer fits the *remaining* window. Doing this BEFORE the `break`
+      // preserves today's behaviour: a slightly oversized entry collapses to a
+      // tiny marker and the walk CONTINUES, keeping older entries rather than
+      // dropping them and flipping the window flag.
+      if (size > maxBytes || bytes + size > maxBytes) {
+        value = { truncated: true, bytes: Buffer.byteLength(serialized) };
+        size = sized(value);
+      }
     }
     if (bytes + size > maxBytes) break;
     bytes += size;

@@ -17,7 +17,7 @@ and so is transcript parity with the pi TUI (M1–M3).
 
 | | `pc/` (Node + TypeScript) | `app/` (Flutter + Dart) |
 |---|---|---|
-| Suite | 519 tests passing | 520 tests passing |
+| Suite | 531 tests passing | 547 tests passing |
 | Static gate | `tsc --noEmit` clean | `flutter analyze` clean |
 | Product code | hub, protocol codec, pi bridge | protocol codec, client, UI |
 
@@ -31,7 +31,10 @@ is (`23k / 128k · 18%`, or `? / 128k` while pi cannot say), read at turn bounda
 rather than per token. The status is precise rather than a guess: the bridge relays a
 **content-free** `thinking` phase frame first, so a slow first token is never
 mislabelled as thinking. The reasoning itself streams too — into its own row above
-the reply, replaced by the committed thinking block when the message lands.
+the reply, replaced by the committed thinking block when the message lands. Image
+parts render as images, capped at 1024 px wide with the aspect ratio preserved,
+and an image part too large to relay is replaced in place with an `[image]`
+placeholder while the message keeps its role and text.
 
 One deliberate tradeoff worth knowing: opening a long transcript lays it out once
 (O(n)) because starting at the bottom requires it; streaming frames stay lazy. A
@@ -39,8 +42,8 @@ thinking-heavy turn roughly doubles the relayed bytes, since the reasoning arriv
 once as deltas and again inside the committed message — the committed copy is the
 one the transcript keeps, and the live row is retired in the same update that
 commits it. The exception: a reasoning-heavy message that exceeds the relay cap
-arrives as a byte-count notice instead, so the live row is replaced by that notice
-rather than by the thinking block.
+with no image part to trim arrives as a byte-count notice instead, so the live row
+is replaced by that notice rather than by the thinking block.
 
 **Done:** the wire protocol and codec, single-use pairing tickets, the persisted
 pairing token, the discovery file and the lock that makes `serve` exclusive, the

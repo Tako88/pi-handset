@@ -308,10 +308,14 @@ void main() {
 
     // A mid-stream user steer whose image part was trimmed: no top-level
     // `truncated`, so it appends without wiping the reply still arriving.
+    final before = client.transcript('s1')!.entries.length;
     factory.last.receive(partTrimmedFrame('user'));
     await pumpEventQueue();
 
     final transcript = client.transcript('s1')!;
+    // Two-sided: the frame must both append a row AND leave the buffer alone,
+    // or an ignored frame would pass this test vacuously.
+    expect(transcript.entries, hasLength(before + 1));
     expect(transcript.streamingText, 'partial');
     expect(transcript.streaming, isTrue);
   });
