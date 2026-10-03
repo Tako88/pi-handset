@@ -268,8 +268,10 @@ rather than guess at it.
   Every tool call and result is relayed twice through history — once as the pi message,
   once as the normalized `tool` frame — so fewer messages fit `HISTORY_MAX_BYTES` in a
   tool-heavy session. Each payload is bounded on its own and the window keeps the newest
-  turns, so the visible cost is older turns being dropped (`truncated == true`), not a
-  single oversized frame.
+  turns. Since the window is now the **page size**, the visible cost is more pages to
+  page through rather than older turns being unreachable: `truncated == true` offers the
+  `Load older messages` control (see **History paging** below), and never a single
+  oversized frame.
 - **Tool frames are bounded to a quarter of the relay budget, and a drop is recovered,
   not lost.** `boundToolPayload` caps a tool payload at `TOOL_VIEW_MAX_BYTES` (64 KiB),
   a quarter of `MAX_RELAY_BYTES` (256 KiB). A frame that fills the budget is admitted
@@ -287,6 +289,62 @@ rather than guess at it.
   fixture and the contract, both updated. The version-skew fallback is narrower than
   "never drops": only a frame whose `view` is **absent or an unknown type** decodes and
   renders through the generic block.
+
+## History paging
+
+- **Loaded older pages do not survive a re-baseline.** `_onSnapshot` replaces the
+  entries wholesale, so a reconnect, a `resync-required`, or a `leaf` move drops every
+  page the user loaded and the transcript opens again at the newest page. The merged list
+  shares no identity with a new branch, and after a leaf move the old pages belong to a
+  different branch outright, so there is nothing to keep them attached to.
+- **Retained pages grow without bound.** Every page the user asks for stays for the
+  session, so paging back through a very long session grows the app's memory and the
+  per-frame cost of deriving blocks from its merged entry list. There is no eviction;
+  that is the deliberate price of fast re-scroll over a hard cap — pages the user asked
+  for stay for the session.
+- **Paging degrades to the static notice.** The `Load older messages` control is
+  data-driven by `olderCursor`, which only a cursor-honouring bridge emits. An old hub
+  rebuilds the snapshot and strips the extra fields; an old bridge emits neither
+  `olderCursor` nor the routing `cursor`. Either way the app shows today's truncated
+  notice and no control, and no capability advertises paging — a capability would lie in
+  the new-hub/old-bridge skew, where the bridge cannot honour a cursor.
+- **The scroll anchor is approximate.** The prepend correction uses a `maxScrollExtent`
+  delta, so under `ListView.builder`'s lazy extent estimation it is approximate, and it
+  **over-corrects when a page and a concurrent bottom append land in the same update** —
+  the appended height inflates the measured insertion, so the anchored row can drift.
+  And when the pre-prepend transcript **fitted** the viewport (`oldMax == 0`) the
+  correction is skipped, because the viewport absorbs part of the insertion and the delta
+  under-measures it: the view lands on the top of the newly loaded page with the previous
+  context below the fold. Near-unreachable — a page that fits an ~800 px viewport can only
+  be truncated when the whole 768 KiB budget went to entries that all collapsed to
+  `{truncated:true,bytes}` markers. Recorded rather than fixed; the upgrade path is a
+  keyed-anchor measurement (keep the old first block's id and correct by its measured
+  render-position delta), which is also exact under concurrent appends.
+- **The hub forwards each distinct cursor separately.** `pendingHistory` is keyed by
+  cursor, so viewers asking for the same page coalesce while distinct cursors each ride
+  their own forwarded `history-request`, costing the bridge a full `annotateToolViews` +
+  projection. One authenticated viewer can mint distinct cursors with no cap, and a
+  pending key lives until it is answered or its connection closes. The bound is named
+  here, not hidden.
+- **A leaf move or a compaction invalidates the anchor (the common case).**
+  `buildContextEntries` follows the leaf, so a leaf move (or a compaction) shifts the
+  annotated array; a cursor minted against the old path then fails its anchor check and
+  the bridge silently answers a fresh baseline. That is the normal invalidation, not an
+  error. The `leaf` handler re-requests the baseline, whose arrival clears any in-flight
+  page for the session, so a late page cannot land on the new branch.
+- **An unanswered page request is bounded by a 30-second timeout.** A live socket is not
+  a live agent — the bridge returns silently when it has no `ctx` — so without the
+  timeout an unanswered page would leave `Load older messages` disabled with single-flight
+  blocking a retry. On expiry the app clears the pending key and the loading state, so the
+  control returns to `Load older messages` and a retry works. One downgrade shape is
+  outside the supported deploy matrix: a cursor sent to a bridge that no longer echoes
+  cursors is dropped by the hub, so the tap simply does nothing until the timeout.
+- **A re-register keeps the session's pending history keys.** A bridge takeover reuses the
+  hub's `Session` object, including its cursor-keyed `pendingHistory` map, so a request
+  left pending across the re-register is coalesced with a retry carrying the same cursor
+  and the page is never forwarded — until the page timeout fires, or a request with a
+  different key (a baseline) is sent. Pre-existing takeover shape, small window, named
+  rather than hidden.
 
 ## App-started sessions
 
@@ -430,10 +488,12 @@ rather than guess at it.
   navigates, nothing is prefilled, and no message appears — the picker's check mark was
   stale. The user re-opens the picker for a fresh list.
 - **Two navigations inside one round-trip can both be answered by one snapshot.** The hub
-  coalesces pending `history-request`s and answers them all with the history it has when
-  the bridge replies, so a second move issued while the first request is pending joins it.
-  The screen can briefly show the earlier branch and heals on the next re-baseline (the
-  next leaf event, turn or reconnect). Rare.
+  coalesces pending `history-request`s **per cursor**: two cursorless baseline requests, as
+  here, join one forwarded request and are answered together with the history the bridge
+  returns, so a second move issued while the first request is pending joins it (a page
+  request carrying a different cursor is forwarded separately — see **History paging**
+  below). The screen can briefly show the earlier branch and heals on the next re-baseline
+  (the next leaf event, turn or reconnect). Rare.
 - **A PC-side navigation mid-turn discards the phone's in-flight streamed text.** A leaf
   event re-requests history, and the snapshot replaces the entries wholesale, dropping the
   live `streamingText`. The turn is over by the time pi emits the leaf, so the committed
