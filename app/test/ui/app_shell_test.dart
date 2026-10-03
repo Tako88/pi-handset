@@ -56,6 +56,65 @@ Future<void> pressSystemBack(WidgetTester tester, FakeScheduler scheduler) async
   await settle(tester, scheduler);
 }
 
+/// Opens [label] from the session list and pumps the push transition to
+/// completion, so the transcript is onstage before the test interacts with it.
+Future<void> openSession(WidgetTester tester, Harness h, String label) async {
+  await tester.tap(find.text(label));
+  await settle(tester, h.scheduler);
+  await tester.pumpAndSettle();
+}
+
+/// Drives the platform's predictive-back gesture on `flutter/backgesture` and
+/// returns whether the framework claimed it (a route's detector handled it).
+///
+/// The shape matters: `PredictiveBackEvent.isButtonEvent` is true for a zero
+/// progress at a zero offset, and the detector declines button events, so a
+/// "0.0 progress at [0,0]" gesture can never be claimed. Move the touch and the
+/// progress to make it a real drag.
+Future<bool> startBackGesture(WidgetTester tester) async {
+  final reply = await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+    SystemChannels.backGesture.name,
+    SystemChannels.backGesture.codec.encodeMethodCall(
+      const MethodCall('startBackGesture', <String, Object?>{
+        'touchOffset': <double>[20.0, 400.0],
+        'progress': 0.25,
+        'swipeEdge': 0,
+      }),
+    ),
+    (_) {},
+  );
+  return SystemChannels.backGesture.codec.decodeEnvelope(reply!) as bool;
+}
+
+/// Sends the platform's predictive-back `commitBackGesture`.
+Future<void> commitBackGesture(WidgetTester tester) async {
+  await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+    SystemChannels.backGesture.name,
+    SystemChannels.backGesture.codec.encodeMethodCall(
+      const MethodCall('commitBackGesture'),
+    ),
+    (_) {},
+  );
+}
+
+/// Sends the platform's predictive-back `cancelBackGesture`.
+Future<void> cancelBackGesture(WidgetTester tester) async {
+  await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+    SystemChannels.backGesture.name,
+    SystemChannels.backGesture.codec.encodeMethodCall(
+      const MethodCall('cancelBackGesture'),
+    ),
+    (_) {},
+  );
+}
+
+/// Whether an `unsubscribe` was sent for [sessionId]. Frames carry
+/// `protocolVersion` too, so match per field — never compare whole maps.
+bool sentUnsubscribe(Harness h, String sessionId) => h.factory.last.sentFrames
+    .where((f) => f['type'] == 'unsubscribe')
+    .map((f) => f['sessionId'])
+    .contains(sessionId);
+
 /// Pumps the app with the phone reporting [brightness] as its dark-mode setting.
 ///
 /// The ambient `MediaQuery` is supplied explicitly rather than by setting
@@ -307,8 +366,7 @@ Future<Harness> openFirstSession(WidgetTester tester) async {
   await pumpBootstrap(tester);
   h.factory.last.receive(sessionsFrame([sessionS1]));
   await settle(tester, h.scheduler);
-  await tester.tap(find.text('api refactor'));
-  await settle(tester, h.scheduler);
+  await openSession(tester, h, 'api refactor');
   return h;
 }
 
@@ -320,8 +378,7 @@ Future<Harness> openSessionControlSession(WidgetTester tester) async {
   await pumpBootstrap(tester);
   h.factory.last.receive(controlSessionsFrame([sessionS1]));
   await settle(tester, h.scheduler);
-  await tester.tap(find.text('api refactor'));
-  await settle(tester, h.scheduler);
+  await openSession(tester, h, 'api refactor');
   return h;
 }
 
@@ -346,8 +403,7 @@ Future<Harness> openAttachmentsSession(
   await pumpBootstrap(tester);
   h.factory.last.receive(attachmentsSessionsFrame([sessionS1]));
   await settle(tester, h.scheduler);
-  await tester.tap(find.text('api refactor'));
-  await settle(tester, h.scheduler);
+  await openSession(tester, h, 'api refactor');
   return h;
 }
 
@@ -399,8 +455,7 @@ void main() {
     await pumpBootstrap(tester);
     h.factory.last.receive(sessionsFrame([sessionS1]));
     await settle(tester, h.scheduler);
-    await tester.tap(find.text('api refactor'));
-    await settle(tester, h.scheduler);
+    await openSession(tester, h, 'api refactor');
 
     h.factory.last.receive(usageFrame(23400, 128000));
     await settle(tester, h.scheduler);
@@ -416,8 +471,7 @@ void main() {
     await pumpBootstrap(tester);
     h.factory.last.receive(sessionsFrame([sessionS1]));
     await settle(tester, h.scheduler);
-    await tester.tap(find.text('api refactor'));
-    await settle(tester, h.scheduler);
+    await openSession(tester, h, 'api refactor');
 
     h.factory.last.receive(usageFrame(null, 128000));
     await settle(tester, h.scheduler);
@@ -431,8 +485,7 @@ void main() {
     await pumpBootstrap(tester);
     h.factory.last.receive(sessionsFrame([sessionS1]));
     await settle(tester, h.scheduler);
-    await tester.tap(find.text('api refactor'));
-    await settle(tester, h.scheduler);
+    await openSession(tester, h, 'api refactor');
 
     expect(find.byKey(const Key('context-usage')), findsNothing);
   });
@@ -480,8 +533,7 @@ void main() {
     await pumpBootstrap(tester);
     h.factory.last.receive(sessionsFrame([sessionS1]));
     await settle(tester, h.scheduler);
-    await tester.tap(find.text('api refactor'));
-    await settle(tester, h.scheduler);
+    await openSession(tester, h, 'api refactor');
 
     h.factory.last.receive(usageFrame(23400, 128000));
     await settle(tester, h.scheduler);
@@ -541,8 +593,7 @@ void main() {
     await pumpBootstrap(tester);
     h.factory.last.receive(sessionsFrame([sessionS1]));
     await settle(tester, h.scheduler);
-    await tester.tap(find.text('api refactor'));
-    await settle(tester, h.scheduler);
+    await openSession(tester, h, 'api refactor');
 
     await tester.tap(find.byKey(const Key('session-menu')));
     await tester.pumpAndSettle();
@@ -570,8 +621,7 @@ void main() {
     await pumpBootstrap(tester);
     h.factory.last.receive(sessionsFrame([sessionS1]));
     await settle(tester, h.scheduler);
-    await tester.tap(find.text('api refactor'));
-    await settle(tester, h.scheduler);
+    await openSession(tester, h, 'api refactor');
 
     await tester.tap(find.byKey(const Key('session-menu')));
     await tester.pumpAndSettle();
@@ -592,8 +642,7 @@ void main() {
     await pumpBootstrap(tester);
     h.factory.last.receive(sessionsFrame([sessionS1]));
     await settle(tester, h.scheduler);
-    await tester.tap(find.text('api refactor'));
-    await settle(tester, h.scheduler);
+    await openSession(tester, h, 'api refactor');
 
     await tester.tap(find.byKey(const Key('session-menu')));
     await tester.pumpAndSettle();
@@ -615,8 +664,7 @@ void main() {
     await pumpBootstrap(tester);
     h.factory.last.receive(sessionsFrame([sessionS1]));
     await settle(tester, h.scheduler);
-    await tester.tap(find.text('api refactor'));
-    await settle(tester, h.scheduler);
+    await openSession(tester, h, 'api refactor');
 
     await tester.tap(find.byKey(const Key('session-menu')));
     await tester.pumpAndSettle();
@@ -636,8 +684,7 @@ void main() {
     await pumpBootstrap(tester);
     h.factory.last.receive(sessionsFrame([sessionS1]));
     await settle(tester, h.scheduler);
-    await tester.tap(find.text('api refactor'));
-    await settle(tester, h.scheduler);
+    await openSession(tester, h, 'api refactor');
 
     h.factory.last.receive(usageFrameWithLevel(23400, 128000, 'high'));
     await settle(tester, h.scheduler);
@@ -658,8 +705,7 @@ void main() {
     await pumpBootstrap(tester);
     h.factory.last.receive(sessionsFrame([sessionS1]));
     await settle(tester, h.scheduler);
-    await tester.tap(find.text('api refactor'));
-    await settle(tester, h.scheduler);
+    await openSession(tester, h, 'api refactor');
 
     h.factory.last.receive(usageFrameWithLevel(23400, 128000, 'high'));
     await settle(tester, h.scheduler);
@@ -1069,8 +1115,7 @@ void main() {
     await pumpBootstrap(tester);
     h.factory.last.receive(sessionsFrame([sessionS1]));
     await settle(tester, h.scheduler);
-    await tester.tap(find.text('api refactor'));
-    await settle(tester, h.scheduler);
+    await openSession(tester, h, 'api refactor');
 
     h.factory.last.receive(usageFrame(23400, 128000));
     await settle(tester, h.scheduler);
@@ -1091,8 +1136,7 @@ void main() {
     await pumpBootstrap(tester);
     h.factory.last.receive(sessionsFrame([sessionS1]));
     await settle(tester, h.scheduler);
-    await tester.tap(find.text('api refactor'));
-    await settle(tester, h.scheduler);
+    await openSession(tester, h, 'api refactor');
 
     h.factory.last.receive(usageFrame(23400, 128000));
     await settle(tester, h.scheduler);
@@ -1113,8 +1157,7 @@ void main() {
     await pumpBootstrap(tester);
     h.factory.last.receive(sessionsFrame([sessionS1]));
     await settle(tester, h.scheduler);
-    await tester.tap(find.text('api refactor'));
-    await settle(tester, h.scheduler);
+    await openSession(tester, h, 'api refactor');
 
     // No usage frame has arrived, so the slot is empty. The announcement must
     // still be visible — an auto-compaction can be the first thing that happens.
@@ -1154,8 +1197,7 @@ void main() {
       h.factory.last.receive(sessionsFrame([sessionS1]));
       await settle(tester, h.scheduler);
 
-      await tester.tap(find.text('api refactor'));
-      await settle(tester, h.scheduler);
+      await openSession(tester, h, 'api refactor');
 
       await tester.enterText(find.byKey(const Key('compose-field')), 'hi pi');
       await tester.tap(find.byKey(const Key('compose-send')));
@@ -1177,14 +1219,197 @@ void main() {
     h.factory.last.receive(sessionsFrame([sessionS1]));
     await settle(tester, h.scheduler);
 
-    await tester.tap(find.text('api refactor'));
-    await settle(tester, h.scheduler);
+    await openSession(tester, h, 'api refactor');
     expect(find.byKey(const Key('compose-field')), findsOneWidget);
 
     await pressSystemBack(tester, h.scheduler);
+    await tester.pumpAndSettle();
 
     expect(find.byKey(const Key('compose-field')), findsNothing);
     expect(find.text('pi sessions · 10.0.0.5:8787'), findsOneWidget);
+    expect(sentUnsubscribe(h, 's1'), isTrue);
+  });
+
+  testWidgets('opening a session pushes the transcript as a route over the list', (
+    tester,
+  ) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+
+    await openSession(tester, h, 'api refactor');
+
+    // The transcript is a real route, so the platform has something to preview.
+    expect(
+      tester.state<NavigatorState>(find.byType(Navigator)).canPop(),
+      isTrue,
+    );
+    expect(find.byKey(const Key('compose-field')), findsOneWidget);
+    // The list is underneath and covered, so it is offstage.
+    expect(find.text('pi sessions · 10.0.0.5:8787'), findsNothing);
+  });
+
+  testWidgets('a cold-start session id boots onto the transcript route', (
+    tester,
+  ) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app(initialSessionId: 's1'));
+    await pumpBootstrap(tester);
+
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    // The queued open subscribes once authenticated; that subscribe schedules
+    // the frame that pushes the route, so flush twice before pumping it in.
+    await settle(tester, h.scheduler);
+    await settle(tester, h.scheduler);
+    await tester.pumpAndSettle();
+
+    // A cold start carrying a session id boots straight into the transcript,
+    // as a real route over the list — not onto the session list.
+    expect(find.byKey(const Key('compose-field')), findsOneWidget);
+    expect(
+      tester.state<NavigatorState>(find.byType(Navigator)).canPop(),
+      isTrue,
+    );
+  });
+
+  testWidgets('a predictive back gesture pops the transcript and unsubscribes', (
+    tester,
+  ) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+    await openSession(tester, h, 'api refactor');
+
+    expect(await startBackGesture(tester), isTrue);
+    await commitBackGesture(tester);
+    // Deliberately flush the coalesced emit AFTER the pop transition finishes.
+    // `_close()` unsubscribes, which schedules a deferred state emit; landing it
+    // on a disposed route reaches `removeRoute` and trips
+    // `assert(route._isInstalledIn(this))` unless the PopScope cleared the latch
+    // first. Do NOT collapse this back into `settle` — that would hide the
+    // ordering this test pins.
+    await tester.pumpAndSettle();
+    h.scheduler.flushNotifications();
+    await tester.pump();
+
+    expect(find.byKey(const Key('compose-field')), findsNothing);
+    expect(find.text('pi sessions · 10.0.0.5:8787'), findsOneWidget);
+    expect(sentUnsubscribe(h, 's1'), isTrue);
+  });
+
+  testWidgets('a cancelled predictive back gesture leaves the transcript up', (
+    tester,
+  ) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+    await openSession(tester, h, 'api refactor');
+
+    expect(await startBackGesture(tester), isTrue);
+    await cancelBackGesture(tester);
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('compose-field')), findsOneWidget);
+    expect(sentUnsubscribe(h, 's1'), isFalse);
+  });
+
+  testWidgets('repeated sessions pushes do not push a second transcript', (
+    tester,
+  ) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+    await openSession(tester, h, 'api refactor');
+
+    // The same session registers again: the route must be reused, not stacked.
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+    await tester.pumpAndSettle();
+
+    // skipOffstage: false — a covered route is offstage, so the default finder
+    // would miss a duplicate and the control would be vacuous.
+    expect(
+      find.byKey(const Key('compose-field'), skipOffstage: false),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('the transcript updates while it is the current route', (
+    tester,
+  ) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+    await openSession(tester, h, 'api refactor');
+
+    h.factory.last.receive(snapshotFrame('s1', 1));
+    await settle(tester, h.scheduler);
+    await tester.pumpAndSettle();
+
+    // A state change that arrives while the transcript is the current route must
+    // be reflected on screen.
+    expect(find.text('message 0'), findsOneWidget);
+  });
+
+  testWidgets(
+    'switching sessions rebuilds the transcript in place without a second push',
+    (tester) async {
+      final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+      await tester.pumpWidget(h.app());
+      await pumpBootstrap(tester);
+      h.factory.last.receive(sessionsFrame([sessionS1, sessionS2]));
+      await settle(tester, h.scheduler);
+      await openSession(tester, h, 'api refactor');
+
+      // A switch keeps the id non-null, so the route is reused and only its
+      // content changes — no second push.
+      h.notifications.requestOpen.add('s2');
+      await tester.pump();
+      await settle(tester, h.scheduler);
+      await tester.pumpAndSettle();
+
+      expect(find.text('second session'), findsOneWidget);
+      expect(
+        find.byKey(const Key('compose-field'), skipOffstage: false),
+        findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets('the draft survives leaving and re-entering the transcript', (
+    tester,
+  ) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+    await openSession(tester, h, 'api refactor');
+
+    await tester.enterText(find.byKey(const Key('compose-field')), 'half typed');
+    await tester.pump();
+
+    await pressSystemBack(tester, h.scheduler);
+    await tester.pumpAndSettle();
+    await openSession(tester, h, 'api refactor');
+
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const Key('compose-field')))
+          .controller!
+          .text,
+      'half typed',
+    );
   });
 
   testWidgets('the keyboard does not cover the composer', (tester) async {
@@ -1194,8 +1419,7 @@ void main() {
 
     h.factory.last.receive(sessionsFrame([sessionS1]));
     await settle(tester, h.scheduler);
-    await tester.tap(find.text('api refactor'));
-    await settle(tester, h.scheduler);
+    await openSession(tester, h, 'api refactor');
 
     // The keyboard, as the engine reports it: a bottom view inset. Scaffold's
     // resizeToAvoidBottomInset only promises to resize the BODY, so anything in
@@ -1220,8 +1444,7 @@ void main() {
 
     h.factory.last.receive(sessionsFrame([sessionS1]));
     await settle(tester, h.scheduler);
-    await tester.tap(find.text('api refactor'));
-    await settle(tester, h.scheduler);
+    await openSession(tester, h, 'api refactor');
 
     // Reply to the per-open listCommands fetch with one command.
     final listId = h.factory.last.sentFrames.firstWhere(
@@ -1280,8 +1503,7 @@ void main() {
 
     h.factory.last.receive(sessionsFrame([sessionS1]));
     await settle(tester, h.scheduler);
-    await tester.tap(find.text('api refactor'));
-    await settle(tester, h.scheduler);
+    await openSession(tester, h, 'api refactor');
 
     // Reply to the per-open listCommands fetch with one command.
     final listId = h.factory.last.sentFrames.firstWhere(
@@ -1351,8 +1573,7 @@ void main() {
     await pumpBootstrap(tester);
     h.factory.last.receive(sessionsFrame([sessionS1]));
     await settle(tester, h.scheduler);
-    await tester.tap(find.text('api refactor'));
-    await settle(tester, h.scheduler);
+    await openSession(tester, h, 'api refactor');
 
     final listId = h.factory.last.sentFrames.firstWhere(
       (frame) => frame['type'] == 'command' && frame['name'] == 'listCommands',
@@ -1410,6 +1631,9 @@ void main() {
     // frame in between, which would unmount the view and dispose its state.
     h.client.subscribe('s2');
     await settle(tester, h.scheduler);
+    // The transcript is now a pushed route: pump its transition before touching
+    // it, or the drag below lands on an off-screen frame.
+    await tester.pumpAndSettle();
     h.factory.last.receive(snapshotFrame('s2', 60));
     await settle(tester, h.scheduler);
     await tester.pump();
@@ -1455,8 +1679,7 @@ void main() {
     await pumpBootstrap(tester);
     h.factory.last.receive(sessionsFrame([sessionS1]));
     await settle(tester, h.scheduler);
-    await tester.tap(find.text('api refactor'));
-    await settle(tester, h.scheduler);
+    await openSession(tester, h, 'api refactor');
 
     await tester.enterText(find.byKey(const Key('compose-field')), 'hi pi');
     await tester.tap(find.byKey(const Key('compose-send')));
@@ -1627,8 +1850,7 @@ void main() {
     await pumpBootstrap(tester);
     h.factory.last.receive(sessionsFrame([sessionS1]));
     await settle(tester, h.scheduler);
-    await tester.tap(find.text('api refactor'));
-    await settle(tester, h.scheduler);
+    await openSession(tester, h, 'api refactor');
 
     for (var i = 0; i <= HubClient.maxConsecutiveResyncs; i++) {
       h.factory.last.receive({
@@ -1874,8 +2096,7 @@ void main() {
     await settle(tester, h.scheduler);
 
     // Foregrounded on s1; s2 settles: the app must notify.
-    await tester.tap(find.text('api refactor'));
-    await settle(tester, h.scheduler);
+    await openSession(tester, h, 'api refactor');
 
     h.factory.last.receive(
       settledFrame(
@@ -1901,8 +2122,7 @@ void main() {
     await pumpBootstrap(tester);
     h.factory.last.receive(sessionsFrame([sessionS1]));
     await settle(tester, h.scheduler);
-    await tester.tap(find.text('api refactor'));
-    await settle(tester, h.scheduler);
+    await openSession(tester, h, 'api refactor');
 
     h.factory.last.receive(settledFrame(sessionId: 's1'));
     await settle(tester, h.scheduler);
@@ -1916,8 +2136,7 @@ void main() {
     await pumpBootstrap(tester);
     h.factory.last.receive(sessionsFrame([sessionS1]));
     await settle(tester, h.scheduler);
-    await tester.tap(find.text('api refactor'));
-    await settle(tester, h.scheduler);
+    await openSession(tester, h, 'api refactor');
 
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
     await tester.pump();
@@ -1948,8 +2167,7 @@ void main() {
     expect(h.notifications.shown, hasLength(1));
 
     // Opening s1 from the list makes that shade entry stale.
-    await tester.tap(find.text('api refactor'));
-    await settle(tester, h.scheduler);
+    await openSession(tester, h, 'api refactor');
 
     expect(
       h.notifications.cancelled,
@@ -1965,8 +2183,7 @@ void main() {
     await pumpBootstrap(tester);
     h.factory.last.receive(sessionsFrame([sessionS1]));
     await settle(tester, h.scheduler);
-    await tester.tap(find.text('api refactor'));
-    await settle(tester, h.scheduler);
+    await openSession(tester, h, 'api refactor');
 
     // Backgrounded: the settle for the open session raises a notification.
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
@@ -2009,8 +2226,7 @@ void main() {
     await settle(tester, h.scheduler);
 
     // Opening s1 engages only s1.
-    await tester.tap(find.text('api refactor'));
-    await settle(tester, h.scheduler);
+    await openSession(tester, h, 'api refactor');
 
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
     await tester.pump();
@@ -2271,8 +2487,10 @@ void main() {
     h.factory.last.receive(sessionsFrame([sessionS1]));
     await settle(tester, h.scheduler);
     // The subscribe the queue sent schedules its own notify; flush that frame
-    // so the transcript view is actually mounted.
+    // so the transcript route is actually pushed, then pump its transition so
+    // the view is onstage (a pushed route is offstage mid-transition).
     await settle(tester, h.scheduler);
+    await tester.pumpAndSettle();
 
     // The tap opened the transcript even though the session does not exist.
     expect(h.client.state.activeSessionId, 'ghost');
@@ -2286,6 +2504,7 @@ void main() {
       });
     }
     await settle(tester, h.scheduler);
+    await tester.pumpAndSettle();
 
     // The UI returns to the session list rather than hanging on a transcript,
     // and says why.
@@ -2327,8 +2546,7 @@ void main() {
     await pumpBootstrap(tester);
     h.factory.last.receive(sessionsFrame([sessionS1]));
     await settle(tester, h.scheduler);
-    await tester.tap(find.text('api refactor'));
-    await settle(tester, h.scheduler);
+    await openSession(tester, h, 'api refactor');
 
     // An old hub cannot carry the image, so the affordance is omitted rather
     // than offered and silently dropped.
@@ -2456,8 +2674,7 @@ void main() {
     h.factory.last.receive(attachmentsSessionsFrame([sessionS1, sessionS2]));
     await settle(tester, h.scheduler);
 
-    await tester.tap(find.text('api refactor'));
-    await settle(tester, h.scheduler);
+    await openSession(tester, h, 'api refactor');
     await tester.tap(find.byKey(const Key('compose-attach')));
     await tester.pump();
     await tester.pump();
@@ -2465,8 +2682,8 @@ void main() {
 
     // Switch to the other session: the image belonged to s1 and must not follow.
     await pressSystemBack(tester, h.scheduler);
-    await tester.tap(find.text('second session'));
-    await settle(tester, h.scheduler);
+    await tester.pumpAndSettle();
+    await openSession(tester, h, 'second session');
     expect(find.byKey(const Key('compose-attachment')), findsNothing);
 
     await tester.enterText(find.byKey(const Key('compose-field')), 'hi pi');
