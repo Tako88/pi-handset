@@ -945,6 +945,7 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
                     TranscriptView(
                       key: ValueKey(activeId),
                       transcript: transcript,
+                      onLoadOlder: () => widget.client.loadOlder(activeId),
                     ),
                   ),
                   // The suggestions float over the transcript instead of taking

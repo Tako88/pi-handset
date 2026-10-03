@@ -17,6 +17,15 @@
 /// `pixels`, silently shifting everything the viewer sees on every frame of
 /// streaming growth.
 ///
+/// The same natural order is why a **prepend** needs correcting: inserting an
+/// older page at the top preserves `pixels`, so the viewed content slides down
+/// by the inserted height. The prepend is detected by entry-object identity and
+/// undone with a post-frame jump — never a follow-jump — so loading a page does
+/// not move the content being read. The correction is approximate: it measures
+/// the inserted height as the `maxScrollExtent` delta, which `ListView.builder`
+/// estimates and which under-measures when the pre-prepend content fitted the
+/// viewport (that case is skipped rather than guessed).
+///
 /// Presentational: block derivation happens in the client, not here, so a
 /// stream delta never re-walks the transcript.
 library;
@@ -32,10 +41,15 @@ class TranscriptView extends StatefulWidget {
   const TranscriptView({
     super.key,
     required this.transcript,
+    required this.onLoadOlder,
     this.onOpenLink = openExternalLink,
   });
 
   final SessionTranscript transcript;
+
+  /// Loads one older page into the transcript. Required, not optional: an
+  /// omitted handler would render a control that does nothing.
+  final VoidCallback onLoadOlder;
 
   /// How a tapped link is opened, threaded to every [TextBlock]. Injectable so
   /// a widget test can assert the wiring without a platform channel.
@@ -52,6 +66,16 @@ class TranscriptView extends StatefulWidget {
   /// The streaming row's key. Stable across frames so its element and repaint
   /// boundary are reused while deltas accumulate.
   static const Key streamingKey = ValueKey('transcript-streaming');
+
+  /// The load-older control's key, present only while the transcript has an
+  /// [SessionTranscript.olderCursor] to resume from.
+  static const Key loadOlderKey = ValueKey('history-load-older');
+
+  /// The load-older control's idle label.
+  static const String loadOlderLabel = 'Load older messages';
+
+  /// The load-older control's label while a page is in flight.
+  static const String loadingOlderLabel = 'Loading older messages…';
 
   /// The live reasoning row's key. It exists only while the reasoning streams,
   /// and is replaced by the committed thinking block when the message lands.
@@ -109,6 +133,27 @@ class _TranscriptViewState extends State<TranscriptView> {
     // Collapse what is no longer current: the in-flight call moved on, or the
     // turn settled. A no-op while the derivation is unchanged.
     _adoptDerived(_currentToolId(widget.transcript));
+    // A prepend grows the list at the top. In a natural-order list `pixels` is
+    // preserved, so the viewed content would slide down by the inserted height;
+    // correct it in a post-frame callback, when the new extent is measurable.
+    // Never follow-jump on a prepend: the content being read must not move.
+    if (_isPrepend(oldWidget.transcript.entries, widget.transcript.entries)) {
+      final oldOffset = _controller.hasClients ? _controller.offset : null;
+      final oldMax =
+          _controller.hasClients ? _controller.position.maxScrollExtent : null;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !_controller.hasClients) return;
+        if (oldOffset == null || oldMax == null) return;
+        // `maxScrollExtent` is an estimate under `ListView.builder`, and when
+        // the pre-prepend content fitted the viewport (`oldMax <= 0`) the
+        // viewport absorbs part of the insertion, so this delta under-measures
+        // it. Skip rather than guess; the seam-loss is a documented limit.
+        final inserted = _controller.position.maxScrollExtent - oldMax;
+        if (oldMax <= 0 || inserted <= 0) return;
+        _controller.jumpTo(oldOffset + inserted);
+      });
+      return;
+    }
     // Read the flag *before* the change is laid out: once the list grows, a
     // follower's old offset no longer looks like the bottom.
     final wasFollowing = _following;
@@ -220,6 +265,20 @@ class _TranscriptViewState extends State<TranscriptView> {
           itemCount: itemCount,
           itemBuilder: (context, index) {
             if (truncated && index == 0) {
+              if (widget.transcript.olderCursor != null) {
+                final loading = widget.transcript.historyLoading;
+                return RepaintBoundary(
+                  key: TranscriptView.loadOlderKey,
+                  child: TextButton(
+                    onPressed: loading ? null : widget.onLoadOlder,
+                    child: Text(
+                      loading
+                          ? TranscriptView.loadingOlderLabel
+                          : TranscriptView.loadOlderLabel,
+                    ),
+                  ),
+                );
+              }
               return const RepaintBoundary(
                 key: ValueKey('history-truncated'),
                 child: NoticeBlock(
@@ -301,4 +360,22 @@ class _TranscriptViewState extends State<TranscriptView> {
         return ImageBlock(block: block);
     }
   }
+}
+
+/// Whether [now] is [old] with entries prepended: the suffix of [now] equals
+/// [old] by **object identity**.
+///
+/// Entries, not blocks: a rebuild re-creates every `TranscriptBlock` object, and
+/// block ids are not exact either — prepending an older page can legitimately
+/// re-pair a straddling `toolCall`/`toolResult`, changing the suffix's ids. The
+/// entry list is exact for the shapes the client produces: a prepend spreads the
+/// retained element objects, an append puts them *first* (failing the suffix
+/// test), and a baseline decodes fresh objects (also failing it).
+bool _isPrepend(List<Object?> old, List<Object?> now) {
+  if (now.length <= old.length || old.isEmpty) return false;
+  final start = now.length - old.length;
+  for (var i = 0; i < old.length; i++) {
+    if (!identical(now[start + i], old[i])) return false;
+  }
+  return true;
 }

@@ -45,7 +45,13 @@ SessionTranscript mixed(int count) => SessionTranscript(
 );
 
 Widget wrap(SessionTranscript transcript, {Key? key}) =>
-    MaterialApp(home: TranscriptView(key: key, transcript: transcript));
+    MaterialApp(
+      home: TranscriptView(
+        key: key,
+        transcript: transcript,
+        onLoadOlder: () {},
+      ),
+    );
 
 /// The scroll offset of the transcript's list. In a natural-order list the
 /// bottom is `maxScrollExtent`, not 0.
@@ -74,6 +80,18 @@ bool atBottom(WidgetTester tester) {
   }
   return (text!, top);
 }
+
+/// Flattened `{type, text}` entries that render as uniform `message N` rows.
+/// Building them (rather than a bare block list) gives the view the entry
+/// object identity its prepend detector needs.
+List<Object?> userEntries(int count, {String prefix = 'message'}) => [
+  for (var i = 0; i < count; i++) {'type': 'user', 'text': '$prefix $i'},
+];
+
+/// A transcript whose blocks are derived from its entries, so a prepend is
+/// detectable and the two stay consistent.
+SessionTranscript fromEntries(List<Object?> entries) =>
+    SessionTranscript(entries: entries, blocks: deriveBlocks(entries));
 
 void main() {
   testWidgets('a tall transcript starts at the bottom', (tester) async {
@@ -389,6 +407,72 @@ void main() {
         findsOneWidget,
         reason: 'following must resume after returning to the bottom',
       );
+    },
+  );
+
+  testWidgets(
+    'a prepend keeps the visible row anchored and does not follow-jump',
+    (tester) async {
+      final existing = userEntries(60);
+      final older = userEntries(20, prefix: 'older');
+      await tester.pumpWidget(wrap(fromEntries(existing)));
+      await tester.pump();
+
+      await tester.drag(find.byType(ListView), const Offset(0, 300));
+      await tester.pumpAndSettle();
+
+      final away = scrollOffset(tester);
+      expect(away, greaterThan(0));
+      expect(atBottom(tester), isFalse);
+      final (anchorText, anchorTop) = topmostMessage(tester);
+
+      await tester.pumpWidget(wrap(fromEntries([...older, ...existing])));
+      await tester.pump();
+
+      expect(
+        find.text(anchorText),
+        findsOneWidget,
+        reason: 'the anchored row must still be on screen after a prepend',
+      );
+      expect(
+        tester.getTopLeft(find.text(anchorText)).dy,
+        anchorTop,
+        reason:
+            'a prepend must not shift the content a scrolled-away viewer sees',
+      );
+      expect(
+        atBottom(tester),
+        isFalse,
+        reason: 'a prepend must not jump to the bottom',
+      );
+    },
+  );
+
+  testWidgets(
+    'a prepend to a short transcript does not yank to the bottom',
+    (tester) async {
+      // Fits the viewport, so `maxScrollExtent == 0` and the offset correction
+      // is skipped (the formula cannot measure through viewport-absorbed
+      // slack). It deliberately does NOT assert the page-top outcome: landing
+      // on the new page's top is the documented seam-loss, not intended
+      // behaviour.
+      final existing = userEntries(3);
+      final older = userEntries(60, prefix: 'older');
+      await tester.pumpWidget(wrap(fromEntries(existing)));
+      await tester.pump();
+      expect(atBottom(tester), isTrue);
+      expect(scrollOffset(tester), 0);
+
+      await tester.pumpWidget(wrap(fromEntries([...older, ...existing])));
+      await tester.pump();
+
+      expect(
+        atBottom(tester),
+        isFalse,
+        reason:
+            'a prepend must not follow-jump a short transcript to the bottom',
+      );
+      expect(scrollOffset(tester), 0);
     },
   );
 }
