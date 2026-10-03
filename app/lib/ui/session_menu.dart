@@ -1,4 +1,4 @@
-/// The transcript app bar's overflow menu: new, fork, compact, rename,
+/// The transcript app bar's overflow menu: new, fork, mute, compact, rename,
 /// thinking level and model.
 ///
 /// The menu is the reachable path to commands the bridge already implements and
@@ -38,10 +38,12 @@ class SessionMenuButton extends StatelessWidget {
     super.key,
     required this.thinkingLevel,
     required this.model,
+    required this.muted,
     required this.onCompact,
     required this.onRename,
     required this.onThinkingLevel,
     required this.onModel,
+    required this.onToggleNotify,
     this.onNewSession,
     this.onFork,
   });
@@ -54,10 +56,17 @@ class SessionMenuButton extends StatelessWidget {
   /// has arrived (or an older bridge omits the field).
   final String? model;
 
+  /// Whether the active session's notifications are muted. The item shows the
+  /// action available, so this drives the `Mute`/`Unmute` label.
+  final bool muted;
+
   final VoidCallback onCompact;
   final VoidCallback onRename;
   final VoidCallback onThinkingLevel;
   final VoidCallback onModel;
+
+  /// Flips the active session's muted flag.
+  final VoidCallback onToggleNotify;
 
   /// Replaces the session with a fresh one. Null (no `session-control`
   /// capability) hides the item.
@@ -78,6 +87,8 @@ class SessionMenuButton extends StatelessWidget {
             onNewSession?.call();
           case 'fork':
             onFork?.call();
+          case 'notify':
+            onToggleNotify();
           case 'compact':
             onCompact();
           case 'rename':
@@ -101,6 +112,11 @@ class SessionMenuButton extends StatelessWidget {
             value: 'fork',
             child: Text('Fork'),
           ),
+        PopupMenuItem<String>(
+          key: const Key('session-menu-notify'),
+          value: 'notify',
+          child: Text(muted ? 'Unmute' : 'Mute'),
+        ),
         const PopupMenuItem<String>(
           key: Key('session-menu-compact'),
           value: 'compact',

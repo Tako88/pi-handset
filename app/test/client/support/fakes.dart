@@ -14,16 +14,28 @@ import 'package:pi_droid/client/notification_presenter.dart';
 import 'package:pi_droid/client/scheduler.dart';
 import 'package:pi_droid/client/token_store.dart';
 
-/// An in-memory [TokenStore] for tests, holding both the token and the
-/// remembered endpoint. Lives here, not in `lib/`, because a test double should
-/// not ship in the app tree.
+/// An in-memory [TokenStore] for tests, holding the token, the remembered
+/// endpoint and the notification policy blob. Lives here, not in `lib/`, because
+/// a test double should not ship in the app tree.
 class InMemoryTokenStore implements TokenStore {
   String? _token;
   HubEndpoint? _endpoint;
 
-  InMemoryTokenStore({String? initial, HubEndpoint? initialEndpoint})
-    : _token = initial,
-      _endpoint = initialEndpoint;
+  /// The notification policy blob. Public so a shell test can read it back with
+  /// a cast from the `TokenStore`-typed harness field.
+  String? notifyState;
+
+  /// How many times [writeNotifyState] has been called. A test can zero this to
+  /// prove a push did not rewrite the blob even when the written bytes are
+  /// identical to what was already there.
+  int notifyWrites = 0;
+
+  InMemoryTokenStore({
+    String? initial,
+    HubEndpoint? initialEndpoint,
+    this.notifyState,
+  }) : _token = initial,
+       _endpoint = initialEndpoint;
 
   @override
   Future<String?> read() async => _token;
@@ -50,6 +62,15 @@ class InMemoryTokenStore implements TokenStore {
   Future<void> clearEndpoint() async {
     _endpoint = null;
   }
+
+  @override
+  Future<String?> readNotifyState() async => notifyState;
+
+  @override
+  Future<void> writeNotifyState(String state) async {
+    notifyWrites++;
+    notifyState = state;
+  }
 }
 
 /// A [TokenStore] whose token write blocks until [gate] completes. Lets a test
@@ -58,6 +79,7 @@ class GatedTokenStore implements TokenStore {
   final Completer<void> gate = Completer<void>();
   String? _token;
   HubEndpoint? _endpoint;
+  String? _notifyState;
 
   @override
   Future<String?> read() async => _token;
@@ -84,6 +106,16 @@ class GatedTokenStore implements TokenStore {
   @override
   Future<void> clearEndpoint() async {
     _endpoint = null;
+  }
+
+  // The notify policy is not gated: only the token write's blocking window is
+  // under test here.
+  @override
+  Future<String?> readNotifyState() async => _notifyState;
+
+  @override
+  Future<void> writeNotifyState(String state) async {
+    _notifyState = state;
   }
 }
 

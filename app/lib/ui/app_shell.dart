@@ -18,6 +18,7 @@ import '../client/endpoint_store.dart';
 import '../client/attachment.dart';
 import '../client/context_usage.dart';
 import '../client/hub_client.dart';
+import '../client/notification_policy.dart';
 import '../client/notification_presenter.dart';
 import '../client/settle_notification.dart';
 import '../client/token_store.dart';
@@ -83,6 +84,10 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
 
   /// The app's foreground/background reading, driving the notify rule.
   AppPresence _presence = AppPresence.foreground;
+
+  /// The persisted engagement/mute policy. Restored in [_bootstrap] before the
+  /// endpoint read so a `sessions` push cannot migrate against an empty policy.
+  NotificationPolicy _notifyPolicy = NotificationPolicy();
 
   /// The endpoint of an in-flight pairing. Persisted only once authentication
   /// succeeds, so a typo'd host is never saved and auto-dialled.
@@ -163,6 +168,10 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
     if (sessionId == null) return;
     _pendingOpenSessionId = null;
     widget.client.subscribe(sessionId);
+    // Opening is engagement: remembered across restarts, fire-and-forget like
+    // the endpoint write.
+    _notifyPolicy.engage(sessionId);
+    unawaited(widget.tokenStore.writeNotifyState(_notifyPolicy.encode()));
     // The user is now looking at this session, so any shade entry for it is
     // stale. `cancel` on a missing id is a no-op.
     unawaited(
@@ -170,15 +179,23 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
     );
   }
 
-  /// A settle broadcast: notify unless the app is foregrounded on that session.
+  /// A settle broadcast: notify only for a session the user engaged and has not
+  /// muted, and never while it is on screen.
   void _onSettle(AgentSettledEvent event) {
     if (!mounted) return;
-    if (!shouldNotifyOnSettle(
-      _presence,
-      _state.activeSessionId,
-      event.sessionId,
+    final engaged =
+        _hasAppOrigin(event.sessionId) ||
+        _notifyPolicy.isEngaged(event.sessionId);
+    final muted = _notifyPolicy.isMuted(event.sessionId);
+    if (!_notifyPolicy.shouldNotify(
+      presence: _presence,
+      activeSessionId: _state.activeSessionId,
+      sessionId: event.sessionId,
+      engaged: engaged,
+      muted: muted,
     )) {
-      // The session is on screen; clear any entry a backgrounded settle left.
+      // The session is on screen or muted; clear any entry a backgrounded
+      // settle left.
       unawaited(
         widget.notifications.cancel(
           id: notificationIdForSession(event.sessionId),
@@ -198,6 +215,15 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
 
   void _onState(HubClientState state) {
     if (!mounted) return;
+    // A `/new`//`/fork` successor carries the id it replaced: inherit the
+    // predecessor's engagement and mute. Null-guarded — most sessions are not
+    // replacements, and `replacesSessionId` is null for an ordinary one.
+    var changed = false;
+    for (final s in state.sessions) {
+      final from = s.replacesSessionId;
+      if (from == null) continue;
+      if (_notifyPolicy.migrate(from: from, to: s.sessionId)) changed = true;
+    }
     final previous = _state.activeSessionId;
     final pending =
         state.status == HubConnectionStatus.connected ? _pendingEndpoint : null;
@@ -217,6 +243,10 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
       }
     });
     if (pending != null) unawaited(widget.tokenStore.writeEndpoint(pending));
+    // Only a real migration writes: an ordinary push must not churn the store.
+    if (changed) {
+      unawaited(widget.tokenStore.writeNotifyState(_notifyPolicy.encode()));
+    }
     if (state.status == HubConnectionStatus.connected && !_foregroundStarted) {
       // Started here, while the app is foregrounded, never from the background:
       // Android forbids a background FGS start on API 31+.
@@ -226,7 +256,42 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
     _drainOpen();
   }
 
+  /// Flips the active session's mute override and persists it.
+  void _toggleNotify(String sessionId) {
+    setState(
+      () => _notifyPolicy.setMuted(
+        sessionId,
+        !_notifyPolicy.isMuted(sessionId),
+      ),
+    );
+    unawaited(widget.tokenStore.writeNotifyState(_notifyPolicy.encode()));
+  }
+
+  /// Whether the hub registered [sessionId] as started from the app.
+  ///
+  /// Reads the live client snapshot, not the coalesced shell `_state`:
+  /// `widget.client.state` is updated synchronously when the `sessions` frame is
+  /// parsed, before the coalesced `changes` emit, while `_state` lags to that
+  /// emit. A settle emitted in the same frame as a registration would see a
+  /// stale `_state` and deny an app-started session its engagement.
+  bool _hasAppOrigin(String sessionId) {
+    for (final s in widget.client.state.sessions) {
+      if (s.sessionId == sessionId) return s.origin == 'app';
+    }
+    return false;
+  }
+
   Future<void> _bootstrap() async {
+    // Load the notify policy before the endpoint read, hence before
+    // `client.start`: the first `sessions` push may carry a replacement, so the
+    // policy must exist before a socket does, or that push would migrate
+    // against an empty policy and then be overwritten by the stale blob.
+    try {
+      final blob = await widget.tokenStore.readNotifyState();
+      if (mounted) _notifyPolicy = NotificationPolicy.decode(blob);
+    } catch (_) {
+      // A broken store yields an empty policy rather than blocking boot.
+    }
     HubEndpoint? endpoint;
     try {
       endpoint = await widget.tokenStore.readEndpoint();
@@ -729,6 +794,8 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
         ),
         actions: [
           SessionMenuButton(
+            muted: _notifyPolicy.isMuted(activeId),
+            onToggleNotify: () => _toggleNotify(activeId),
             thinkingLevel: transcript.thinkingLevel,
             model: transcript.currentModel?.name,
             onCompact: () => _compact(context),

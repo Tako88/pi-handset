@@ -14,6 +14,7 @@ import 'package:pi_droid/client/attachment.dart';
 import 'package:pi_droid/client/endpoint_store.dart';
 import 'package:pi_droid/client/hub_client.dart';
 import 'package:pi_droid/client/hub_socket.dart';
+import 'package:pi_droid/client/notification_policy.dart';
 import 'package:pi_droid/client/settle_notification.dart';
 import 'package:pi_droid/client/token_store.dart';
 import 'package:pi_droid/ui/app_shell.dart';
@@ -243,8 +244,16 @@ Map<String, Object?> snapshotFrame(String sessionId, int count) => {
 };
 
 class Harness {
-  Harness({String? token = testToken, HubEndpoint? endpoint, TokenStore? tokenStore})
-    : store = tokenStore ?? InMemoryTokenStore(initial: token, initialEndpoint: endpoint) {
+  Harness({
+    String? token = testToken,
+    HubEndpoint? endpoint,
+    TokenStore? tokenStore,
+    String? notifyState,
+  }) : store = tokenStore ?? InMemoryTokenStore(
+         initial: token,
+         initialEndpoint: endpoint,
+         notifyState: notifyState,
+       ) {
     client = HubClient(
       socketFactory: factory.call,
       scheduler: scheduler,
@@ -1853,7 +1862,12 @@ void main() {
   testWidgets('a settle for another session notifies while foreground', (
     tester,
   ) async {
-    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    // s2 is engaged via persistence: this test pins the presence rule, not the
+    // engagement gate.
+    final h = Harness(
+      notifyState: (NotificationPolicy()..engage('s2')).encode(),
+      endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787),
+    );
     await tester.pumpWidget(h.app());
     await pumpBootstrap(tester);
     h.factory.last.receive(sessionsFrame([sessionS1, sessionS2]));
@@ -1917,7 +1931,12 @@ void main() {
   testWidgets('opening a session dismisses its stale notification', (
     tester,
   ) async {
-    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    // s1 is engaged via persistence: the stale entry is raised for an engaged
+    // session, then opening it must cancel it.
+    final h = Harness(
+      notifyState: (NotificationPolicy()..engage('s1')).encode(),
+      endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787),
+    );
     await tester.pumpWidget(h.app());
     await pumpBootstrap(tester);
     h.factory.last.receive(sessionsFrame([sessionS1]));
@@ -1970,6 +1989,217 @@ void main() {
       h.notifications.cancelled,
       contains(notificationIdForSession('s1')),
     );
+  });
+
+  testWidgets('opening a session engages and persists it', (tester) async {
+    final h = await openFirstSession(tester);
+
+    expect(
+      NotificationPolicy.decode((h.store as InMemoryTokenStore).notifyState)
+          .isEngaged('s1'),
+      isTrue,
+    );
+  });
+
+  testWidgets('a never-opened session stays silent', (tester) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+    h.factory.last.receive(sessionsFrame([sessionS1, sessionS2]));
+    await settle(tester, h.scheduler);
+
+    // Opening s1 engages only s1.
+    await tester.tap(find.text('api refactor'));
+    await settle(tester, h.scheduler);
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    await tester.pump();
+
+    // s2 was never opened: silent.
+    h.factory.last.receive(settledFrame(sessionId: 's2', label: 'second session'));
+    await settle(tester, h.scheduler);
+    expect(h.notifications.shown, isEmpty);
+
+    // s1 was opened: it notifies (non-vacuous control).
+    h.factory.last.receive(settledFrame(sessionId: 's1'));
+    await settle(tester, h.scheduler);
+    expect(h.notifications.shown, hasLength(1));
+  });
+
+  testWidgets('an app-origin session notifies without being opened', (
+    tester,
+  ) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+    h.factory.last.receive(sessionsFrame([appSessionA1, sessionS2]));
+    await settle(tester, h.scheduler);
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    await tester.pump();
+
+    h.factory.last.receive(settledFrame(sessionId: 'a1', label: 'New session'));
+    await settle(tester, h.scheduler);
+    expect(h.notifications.shown, hasLength(1));
+
+    // A pc session that was never opened stays silent.
+    h.factory.last.receive(settledFrame(sessionId: 's2', label: 'second session'));
+    await settle(tester, h.scheduler);
+    expect(h.notifications.shown, hasLength(1));
+  });
+
+  testWidgets('a persisted engagement survives a restart', (tester) async {
+    final h = Harness(
+      notifyState: (NotificationPolicy()..engage('s1')).encode(),
+      endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787),
+    );
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    await tester.pump();
+    h.factory.last.receive(settledFrame(sessionId: 's1'));
+    await settle(tester, h.scheduler);
+
+    expect(h.notifications.shown, hasLength(1));
+  });
+
+  testWidgets('an ordinary sessions push does not rewrite the policy', (
+    tester,
+  ) async {
+    final h = await openFirstSession(tester);
+    final store = h.store as InMemoryTokenStore;
+
+    // Opening s1 engages it, so that write is expected. Zero the counter now so
+    // the ordinary push below is the only thing it can observe: a rewrite that
+    // re-encodes the same bytes would otherwise be invisible to a value check.
+    store.notifyWrites = 0;
+
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+
+    expect(store.notifyWrites, 0, reason: 'an unchanged push must not write');
+
+    // A real replacement changes the policy, so it must write exactly once —
+    // proving the counter is live and the zero above is not vacuous.
+    h.factory.last.receive(
+      sessionsFrame([
+        {
+          'sessionId': 's2',
+          'label': 'successor',
+          'agentState': 'idle',
+          'replacesSessionId': 's1',
+        },
+      ]),
+    );
+    await settle(tester, h.scheduler);
+
+    expect(store.notifyWrites, 1);
+  });
+
+  testWidgets('muting stops notifications and unmuting restores them', (
+    tester,
+  ) async {
+    final h = await openFirstSession(tester);
+
+    await tester.tap(find.byKey(const Key('session-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('session-menu-notify')));
+    await tester.pumpAndSettle();
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    await tester.pump();
+
+    h.factory.last.receive(settledFrame(sessionId: 's1'));
+    await settle(tester, h.scheduler);
+    expect(h.notifications.shown, isEmpty);
+
+    // Frames are disabled while paused, so a popup cannot be built; resume long
+    // enough to reopen the menu, then go back to background for the settle.
+    // Lifecycle transitions must follow the platform's ordering.
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+    await tester.pump();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    await tester.pump();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('session-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('session-menu-notify')));
+    await tester.pumpAndSettle();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    await tester.pump();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+    await tester.pump();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    await tester.pump();
+
+    h.factory.last.receive(settledFrame(sessionId: 's1'));
+    await settle(tester, h.scheduler);
+    expect(h.notifications.shown, hasLength(1));
+  });
+
+  testWidgets('a replacement migrates the engaged flag', (tester) async {
+    final h = await openFirstSession(tester);
+
+    h.factory.last.receive(
+      sessionsFrame([
+        {
+          'sessionId': 's2',
+          'label': 'successor',
+          'agentState': 'idle',
+          'replacesSessionId': 's1',
+        },
+      ]),
+    );
+    await settle(tester, h.scheduler);
+
+    final policy = NotificationPolicy.decode(
+      (h.store as InMemoryTokenStore).notifyState,
+    );
+    expect(policy.isEngaged('s2'), isTrue);
+    expect(policy.contains('s1'), isFalse);
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    await tester.pump();
+    h.factory.last.receive(settledFrame(sessionId: 's2', label: 'successor'));
+    await settle(tester, h.scheduler);
+    expect(h.notifications.shown, hasLength(1));
+  });
+
+  testWidgets('a muted predecessor keeps its successor muted', (tester) async {
+    final h = await openFirstSession(tester);
+
+    await tester.tap(find.byKey(const Key('session-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('session-menu-notify')));
+    await tester.pumpAndSettle();
+
+    h.factory.last.receive(
+      sessionsFrame([
+        {
+          'sessionId': 's2',
+          'label': 'successor',
+          'agentState': 'idle',
+          'replacesSessionId': 's1',
+        },
+      ]),
+    );
+    await settle(tester, h.scheduler);
+
+    expect(
+      NotificationPolicy.decode((h.store as InMemoryTokenStore).notifyState)
+          .isMuted('s2'),
+      isTrue,
+    );
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    await tester.pump();
+    h.factory.last.receive(settledFrame(sessionId: 's2', label: 'successor'));
+    await settle(tester, h.scheduler);
+    expect(h.notifications.shown, isEmpty);
   });
 
   testWidgets('a cold tap opens the session only after authentication', (
