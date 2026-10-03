@@ -384,15 +384,55 @@ rather than guess at it.
   statics, and the `ctx.sessionManager` the bridge holds is a `ReadonlySessionManager`
   exposing only `getSessionDir()`. The bridge cannot import pi, so the list cannot be
   read. Tracked as an issue rather than silently dropped.
-- **`/tree` is out of scope (issue [#29](https://github.com/Tako88/PI-Droid/issues/29)).**
-  Navigating the session tree changes only which leaf is current: pi's log is
-  append-only and its history projection is leaf-independent, so the transcript the app
-  re-requests after a navigation is **byte-identical**. There is no leaf signal — the
-  bridge does not forward pi's `session_tree` event, and `TreeNodeSummary` carries no
-  current-leaf marker — so a picker would look like a no-op button. The bridge's
-  `sessionTree` action exists and is tested, but it is **dormant, unexposed
-  infrastructure** for #29; the app has no menu item, client method or subscription for
-  it. (`/fork`'s picker reuses the same `listTree` projection.)
+- **The Tree picker navigates without summarizing.** v1 mirrors pi's `/tree` minus the
+  summary step: moving the leaf does not summarize the branch you leave, so nothing new
+  is written to the session file. pi itself defaults to "No summary" but also offers
+  "Summarize" and a custom prompt; neither is offered here. Reason: the summary is a
+  model call whose result has no phone rendering (below), and v1 is deliberately the
+  navigation-only half.
+- **The tree is the message skeleton, not the whole session file.** Only `user` and
+  `assistant` message entries are offered as navigation targets. Tool results, compaction
+  entries, branch summaries, `session_info` and `model_change` are not, because the
+  bridge's tree projection emits a node only for a `message` entry whose role is user or
+  assistant. pi's own `/tree` can navigate to the omitted entries.
+- **A branch summary on the path has no phone rendering.** A summary written by a
+  PC-side `/tree` is relayed as the raw `branch_summary` entry it is — it becomes the
+  leaf, so it stays on the active branch — but the app's block model emits no row for its
+  `branchSummary` role (nor for a `compactionSummary`), so the summary does not appear in
+  the transcript at all. With none of pi's own summary entry in the picker either (the
+  skeleton above), a summary is readable only by opening the session on the PC. Not
+  built.
+- **The composer prefill is the projection's flattened text, not pi's raw editor text.**
+  Tapping a user node fills an empty composer with the text the tree projection emitted
+  (`projectedMessageText`), which joins a message's text parts and marks every non-text
+  part as `[image]`. A message that was an image with a caption therefore prefills the
+  caption plus `[image]`, not the original parts — and re-editing it from the phone sends
+  that flattened text. pi prefills its own editor with the raw content. The rule for
+  *when* to prefill matches pi: a user node only, and only into an empty composer.
+- **Navigating is refused while pi is working** (streaming or compacting), with a visible
+  error. Reason: pi's own `/tree` aborts the running turn and then navigates, but an
+  accidental tap on the phone should not discard a turn the user did not mean to cancel,
+  and the phone cannot see streaming state to warn about it. The refusal is a deliberate
+  deviation from pi, read at dispatch.
+- **A tap on a point pi has already left ends silently.** If the leaf moved between the
+  picker's `listTree` and the tap (a PC-side `/tree`, or a turn landing), pi early-returns
+  `{cancelled:false}` before emitting, so the tap produces no `leaf` event: nothing
+  navigates, nothing is prefilled, and no message appears — the picker's check mark was
+  stale. The user re-opens the picker for a fresh list.
+- **Two navigations inside one round-trip can both be answered by one snapshot.** The hub
+  coalesces pending `history-request`s and answers them all with the history it has when
+  the bridge replies, so a second move issued while the first request is pending joins it.
+  The screen can briefly show the earlier branch and heals on the next re-baseline (the
+  next leaf event, turn or reconnect). Rare.
+- **A PC-side navigation mid-turn discards the phone's in-flight streamed text.** A leaf
+  event re-requests history, and the snapshot replaces the entries wholesale, dropping the
+  live `streamingText`. The turn is over by the time pi emits the leaf, so the committed
+  content is right and only a visible jump results.
+- **A `leaf` event is attributed to whichever session the app has active.** Relayed event
+  frames carry no session id, so the client keys the move — and the history request it
+  triggers — on the active session. This is the same one-session-model race every relayed
+  event has (the `usage`-frame case above); revisiting the session re-subscribes and
+  requests history, which heals it.
 - **A successful `sessionNew`/`sessionFork` ack is not the confirmation.** The ack means
   *"the bridge accepted this and handed it to pi"* (`ok:true`), not that the session was
   replaced. The confirmation is the **replacement itself** — the old session id goes away
@@ -402,10 +442,12 @@ rather than guess at it.
   `newSession`/`fork` resolve `{cancelled:true}` when a `session_before_switch` or
   `session_before_fork` handler cancels, and the bridge emits a `status` error for it, so
   the phone sees a message rather than an ack over a replacement that never happened.
-- **A PC-side `/tree` leaves the phone stale.** Navigating the tree changes the leaf,
-  not the append-only log, so no event is emitted that the app can see; the transcript
-  the phone shows stays as it was until the next event (a turn, a compaction, a
-  reconnect). The app cannot detect it.
+- **A PC-side `/tree` now reaches the phone, but only a build that has the signal.**
+  The bridge forwards pi's `session_tree` event as a `leaf` frame, so a `/tree` run on
+  the PC re-baselines the phone's transcript to the new branch. An app or bridge that
+  predates the `leaf` kind still goes stale on it — an old app drops the frame, and an
+  old hub closes the bridge (`4002`) before it is forwarded, so the deploy gate below
+  applies. The move itself is real either way; only the phone's view lags.
 - **A fork target can go stale between the list and the tap, and there is no retry.** An
   entry invalidated by a turn landing between `listTree` and the tap is refused at
   dispatch as `unknown entry`, which the app shows as a SnackBar; the user re-opens the
@@ -446,7 +488,15 @@ rather than guess at it.
   refuses the new commands; the bridge is read from disk by pi, so a running pi needs
   `/reload` (or a restart); and the menu items and follow logic ship in the app. An old
   app ignores the new `replacesSessionId` field and the capability, so it is never
-  offered the items.
+  offered the items. **Tree navigation adds a harder reason for the restart:** the leaf
+  signal is a new event payload kind, and the hub validates a relayed event's `kind`
+  against `EVENT_PAYLOAD_KINDS` (read at import) and closes the bridge's socket `4002` on
+  an unknown one. A hub that predates `leaf` therefore drops the bridge's connection on
+  the first navigation — a PC-side `/tree` included, not just a phone tap — and the phone
+  never re-baselines. This is the case the hub's relay being "opaque to events" does
+  **not** cover: the relay passes the payload through untouched, but the *kind* is a
+  closed set enforced at runtime. The `leafId` field on the `listTree` `command-result`
+  is genuinely safe and needs nothing; only the event kind forces the restart.
 
 ## Notifications
 

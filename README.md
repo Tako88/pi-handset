@@ -135,7 +135,27 @@ when it registers, at which point the phone re-subscribes to it and requests its
 history (empty for New; the branch prefix for Fork). Deploying this needs **an APK
 rebuild AND pi `/reload` AND a hub restart** — the four new command names and the new
 capability are read at import. See [known limits](docs/known-limits.md) for the
-semantics, the 15 s replacement timeout, and why `/tree` and `/resume` are not offered.
+semantics, the 15 s replacement timeout, and why `/resume` is not offered.
+
+**Tree navigation.** The same menu gains **Tree**, beside Fork and behind the same
+`session-control` capability. It opens the session's message tree — user and assistant
+messages only; tool results, compaction entries and bookkeeping rows are not navigation
+targets — with a check on pi's current point. Tapping the marked point answers locally
+with "Already at this point"; tapping any other node moves pi's leaf there, in place, in
+the session's own `pi`, writing nothing. Because a navigation only moves a pointer, a
+replay of the whole session file never changed — so the transcript now follows the
+**branch**: the projection is pi's own `buildContextEntries()`, the path from the root to
+the current leaf. The re-baseline is driven by a **`leaf` event** the bridge emits from
+pi's `session_tree` event, so a `/tree` run on the PC moves the phone too; the app
+deliberately does not request history on the tap's ack (the ack means "accepted", not
+"navigated") and waits for the signal. Tapping a user node prefills an empty composer,
+and only an empty one, with the node's projected text — flattened, so an image-bearing
+message prefills `[image]` markers rather than its parts. Navigating is refused while pi
+is working; pi's own `/tree` aborts the running turn first, where the phone declines
+instead. Deploying this needs **an APK rebuild, a pi `/reload` and a hub restart** — the
+`leaf` event kind is validated by the hub at runtime, so a hub that predates it closes the
+bridge's connection on the first move. See [known limits](docs/known-limits.md) for the
+summary step that is not built and the tree's other edges.
 
 **Tool rendering.** Tool calls render by kind, not as a generic text blob: the bridge
 normalizes each call and result into a typed `tool` payload, and the app paints it by
