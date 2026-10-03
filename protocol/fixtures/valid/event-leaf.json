@@ -1,0 +1,8 @@
+{
+  "protocolVersion": 1,
+  "type": "event",
+  "payload": {
+    "kind": "leaf",
+    "leafId": "e2"
+  }
+}

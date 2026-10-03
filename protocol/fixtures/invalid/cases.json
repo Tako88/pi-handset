@@ -51,6 +51,9 @@
     { "file": "command-result-bad-tree.json", "code": "bad-field" },
     { "file": "command-result-bad-tree-truncated.json", "code": "bad-field" },
     { "file": "command-result-bad-tree-no-parent.json", "code": "bad-field" },
-    { "file": "command-result-bad-tree-no-role.json", "code": "bad-field" }
+    { "file": "command-result-bad-tree-no-role.json", "code": "bad-field" },
+    { "file": "event-bad-leaf.json", "code": "bad-field" },
+    { "file": "event-leaf-missing-leafId.json", "code": "bad-field" },
+    { "file": "command-result-bad-leaf.json", "code": "bad-field" }
   ]
 }

@@ -21,7 +21,7 @@
     "dir-listing"
   ],
   "hubCapabilities": ["list-dirs", "project-session", "session-control", "attachments"],
-  "eventPayloadKinds": ["stream", "message", "agent", "tool", "status", "usage", "settled"],
+  "eventPayloadKinds": ["stream", "message", "agent", "tool", "status", "usage", "settled", "leaf"],
   "streamPhases": ["thinking"],
   "sessionOrigins": ["app", "pc"],
   "toolStatuses": ["running", "done", "error"],
