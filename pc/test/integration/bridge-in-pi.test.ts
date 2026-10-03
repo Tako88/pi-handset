@@ -1229,9 +1229,12 @@ test("sessionTree navigates in place, witnessed by the next turn's parentId", as
   });
   const listed = await collectCommandResult(viewer, 'tree-list-1', STREAM_TIMEOUT_MS);
   assert.equal(listed.ok, true, `listTree was refused: ${String(listed.error)}`);
+  assert.ok('leafId' in listed, 'the listTree result must carry the current leaf');
   const nodes = listed.tree as Array<Record<string, unknown>>;
   const userNode = nodes.find((node) => node.role === 'user');
   assert.ok(userNode, `the tree must contain a user node, got ${JSON.stringify(nodes)}`);
+  const assistantNode = nodes.find((node) => node.role === 'assistant');
+  assert.ok(assistantNode, `the tree must contain the first reply, got ${JSON.stringify(nodes)}`);
 
   viewer.send({
     protocolVersion: PROTOCOL_VERSION,
@@ -1241,8 +1244,31 @@ test("sessionTree navigates in place, witnessed by the next turn's parentId", as
     name: 'sessionTree',
     args: { entryId: userNode.id },
   });
-  const navigated = await collectCommandResult(viewer, 'tree-nav-1', STREAM_TIMEOUT_MS);
+  // The ack and the leaf event race through the hub (both are relayed frames),
+  // so they are read in ONE pass: a sequential wait would discard whichever
+  // landed first.
+  let navigated: Record<string, unknown> | undefined;
+  const leafPayloads: Array<Record<string, unknown>> = [];
+  const navDeadline = Date.now() + STREAM_TIMEOUT_MS;
+  while (Date.now() < navDeadline && (navigated === undefined || leafPayloads.length === 0)) {
+    const message = await viewer.tryNext(
+      Math.min(1000, Math.max(1, navDeadline - Date.now())),
+    );
+    if (message === undefined) continue;
+    if (message.type === 'command-result' && message.id === 'tree-nav-1') navigated = message;
+    if (
+      message.type === 'event' &&
+      (message.payload as Record<string, unknown> | undefined)?.kind === 'leaf'
+    ) {
+      leafPayloads.push(message.payload as Record<string, unknown>);
+    }
+  }
+  assert.ok(navigated, 'sessionTree must be acked');
   assert.equal(navigated.ok, true, `sessionTree was refused: ${String(navigated.error)}`);
+  assert.ok(leafPayloads.length > 0, 'a leaf event must follow the navigation');
+  const leafPayload = leafPayloads[0]!;
+  assert.ok('leafId' in leafPayload, 'the leaf event must carry leafId');
+  const leafId = leafPayload.leafId as string | null;
 
   // In place: the same session id still serves the session, so a second turn
   // travels under it — a replacement would have retired this id instead.
@@ -1281,25 +1307,36 @@ test("sessionTree navigates in place, witnessed by the next turn's parentId", as
         messageText({ message: entry.message }).includes(text),
     );
 
-  const firstEntry = userEntry(firstText);
+  // The replayed history is the ACTIVE BRANCH, not the whole file. Navigating to
+  // the first user message moved the leaf to its PARENT — the system message pi
+  // writes before the first prompt, so `leafId` is an id, not `null` — and the
+  // whole first turn is abandoned.
+  assert.equal(
+    userEntry(firstText),
+    undefined,
+    'branch projection must drop the abandoned first turn',
+  );
+  for (const entry of entries) {
+    const text = messageText({ message: entry.message });
+    assert.ok(
+      !text.includes(firstText),
+      `the abandoned branch must not be replayed, found ${JSON.stringify(text)}`,
+    );
+  }
   const secondEntry = userEntry(secondText);
-  assert.ok(firstEntry, 'the replayed history must contain the first user message');
   assert.ok(secondEntry, 'the replayed history must contain the second user message');
-  // The snapshot is append-only and leaf-independent, so it is NOT itself the
-  // navigation witness — it only delivers the recorded `parentId`. The witness
-  // is that the second turn branches from the navigated user message's parent:
-  // `/tree` moved the leaf there, so the second turn was appended as its
-  // sibling. Without the move it would hang off the previous leaf (the first
-  // turn's assistant reply).
+  // The navigation witness: the second turn hangs off the leaf the event
+  // announced. Without the move it would hang off the abandoned first reply
+  // (the pre-navigation leaf), and `leafId` would be that reply's id.
   assert.equal(
     secondEntry.parentId,
-    firstEntry.parentId,
-    'the second turn must branch from the same parent as the navigated user message',
+    leafId,
+    'the second turn must branch from the leaf the event announced',
   );
   assert.notEqual(
     secondEntry.parentId,
-    firstEntry.id,
-    'the navigated user message must not be the second turn\'s parent',
+    assistantNode.id,
+    'the navigated-away first reply must not be the second turn\'s parent',
   );
 });
 
