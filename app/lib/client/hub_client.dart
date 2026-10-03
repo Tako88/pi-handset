@@ -277,6 +277,11 @@ class CommandResult {
   /// Present only on a `listTree` result: whether older nodes were dropped.
   final bool? treeTruncated;
 
+  /// Present only on a `listTree` result: the current leaf id, or `null` when
+  /// pi has no leaf. An older bridge omits the field entirely, which also reads
+  /// as `null` — an unknown position, never an error.
+  final String? leafId;
+
   const CommandResult({
     required this.ok,
     this.error,
@@ -285,6 +290,7 @@ class CommandResult {
     this.queued,
     this.tree,
     this.treeTruncated,
+    this.leafId,
   });
 }
 
@@ -869,6 +875,28 @@ class HubClient {
         'args': {'entryId': entryId},
       };
     }, followsReplacement: true);
+  }
+
+  /// Asks pi to move [sessionId]'s leaf to [entryId], in place.
+  ///
+  /// A navigation does not replace the session, so this is a plain request: the
+  /// ack settles it. The re-baseline is the bridge's separate `leaf` event, not
+  /// a history request issued here.
+  Future<CommandResult> sessionTree(
+    String sessionId,
+    String entryId, {
+    String? id,
+  }) {
+    return _request(sessionId, id, (commandId) {
+      return <String, Object?>{
+        'protocolVersion': protocolVersion,
+        'type': 'command',
+        'id': commandId,
+        'sessionId': sessionId,
+        'name': 'sessionTree',
+        'args': {'entryId': entryId},
+      };
+    });
   }
 
   /// Fetches [sessionId]'s commands and caches them under the id that asked —
@@ -1590,6 +1618,10 @@ class HubClient {
           sessionId,
           _withEntries(transcript, [...transcript.entries, payload]),
         );
+      case 'leaf':
+        // The bridge moved the leaf (or pi did, on the PC). A signal, not a row:
+        // re-request history so the transcript re-baselines to the new branch.
+        requestHistory(sessionId);
       default:
         // An unknown payload is retained rather than dropped, so a future
         // renderer can consume it; nothing in this build does.
@@ -1711,6 +1743,8 @@ class HubClient {
                   .toList()
             : null,
         treeTruncated: message['treeTruncated'] as bool?,
+        // Absent (an older bridge) and null both mean "unknown position".
+        leafId: message['leafId'] as String?,
       ),
     );
   }
