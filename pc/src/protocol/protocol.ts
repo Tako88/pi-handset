@@ -32,11 +32,14 @@ export const MAX_RELAY_BYTES = 256 * 1024;
 export const TOOL_VIEW_MAX_BYTES = 64 * 1024;
 
 /**
- * The bridge's history window. A `snapshot` answering a `history-request` is a
+ * The bridge's history *page* size: the byte budget for the newest entries a
+ * baseline returns, and likewise for each older page requested with a cursor.
+ * Older entries are not unreachable — the app asks for one page at a time via
+ * `cursor`/`olderCursor`. A `snapshot` answering a `history-request` is a
  * control *response* the viewer asked for, delivered unbudgeted, so its only
  * hard ceiling is the hub's 1 MiB frame cap. Deliberately larger than
- * `MAX_RELAY_BYTES`: that one sizes a single relayed message, this one sizes
- * depth, and sharing one number between the two jobs hid everything but the
+ * `MAX_RELAY_BYTES`: that one sizes a single relayed message, this one sizes a
+ * page, and sharing one number between the two jobs hid everything but the
  * oldest 256 KB of a long session.
  */
 export const HISTORY_MAX_BYTES = 768 * 1024;
@@ -65,13 +68,13 @@ export const HISTORY_MAX_BYTES = 768 * 1024;
  * - `hello`  { ticket XOR token }
  * - `register` { sessionId, sessionFile?, cwd?, name?, model?, thinkingLevel?, mode?, pid?, replaces? }
  * - `event`  { payload: stream | message | agent | tool | status | usage | settled | leaf }
- * - `history` { sessionId, entries: unknown[], truncated: boolean }
+ * - `history` { sessionId, entries: unknown[], truncated: boolean, cursor?, older?, olderCursor? }
  * - `command-result` { id, ok, error?, commands?, models?, queued?, tree?, treeTruncated?, leafId? }
  *
  * viewer -> hub (LAN listener):
  * - `hello`  { ticket XOR token }
  * - `subscribe` / `unsubscribe` { sessionId }
- * - `history-request` { sessionId, sinceSeq? }
+ * - `history-request` { sessionId, sinceSeq?, cursor? }
  * - `command` { id, sessionId, name, args? }
  *
  * hub -> viewer:
@@ -88,7 +91,7 @@ export const HISTORY_MAX_BYTES = 768 * 1024;
  * - `agent-settled` { sessionId, label, text, truncated } — a session settled;
  *   broadcast to every authenticated viewer (not subscriber-scoped), because the
  *   phone must be able to notify for a session it is not viewing.
- * - `snapshot` { sessionId, lastSeq, agentState, entries: unknown[], truncated }
+ * - `snapshot` { sessionId, lastSeq, agentState, entries: unknown[], truncated, cursor?, older?, olderCursor? }
  *   — `lastSeq`/`agentState` are hub-tracked; `entries` are agent-supplied and
  *   may be truncated.
  * - `command-result` { id, ok, error?, commands?, models?, queued?, tree?, treeTruncated?, leafId? }
@@ -97,7 +100,14 @@ export const HISTORY_MAX_BYTES = 768 * 1024;
  *
  * hub -> agent:
  * - `command` (forwarded verbatim, including `id`)
- * - `history-request` { sessionId, sinceSeq? }
+ * - `history-request` { sessionId, sinceSeq?, cursor? }
+ *
+ * `cursor`/`older`/`olderCursor` on a `history` or `snapshot` are split by role.
+ * `cursor` echoes the request's cursor verbatim as a routing token and is
+ * present whenever the request had one, whether or not it was honoured; `older`
+ * is present and `true` only when the bridge genuinely paged, and the app
+ * prepends only then; `olderCursor` is present iff older entries remain. A
+ * request without a cursor (including `fetchHistory`) yields none of the three.
  */
 
 /** Fields shared by both `hello` credential shapes. */
@@ -332,6 +342,23 @@ export interface HistoryMessage {
   sessionId: string;
   entries: unknown[];
   truncated: boolean;
+  /**
+   * The request's cursor echoed verbatim as a routing token, present whenever
+   * the request carried one (honoured or not). Absent when the request had no
+   * cursor, including a `fetchHistory` frame. It is **not** a statement that
+   * older entries were delivered — that is `older`.
+   */
+  cursor?: string;
+  /**
+   * Present and `true` **exactly** when the bridge honoured the cursor and
+   * `entries` are a genuinely older page. Absent is the only other state and
+   * means "newest-page baseline", which the app applies as a REPLACE. The two
+   * fields are split because a routing token is present whether or not the
+   * cursor was honoured, while `older` must be present only when it was.
+   */
+  older?: boolean;
+  /** The cursor for the next older page; present iff older entries remain. */
+  olderCursor?: string;
 }
 
 /** The `{provider, id, name}` projection of a pi model the app needs. */
@@ -400,6 +427,12 @@ export interface HistoryRequestMessage {
   type: 'history-request';
   sessionId: string;
   sinceSeq?: number;
+  /**
+   * An opaque bridge-minted cursor naming the oldest entry already delivered;
+   * absent asks for the newest page. Echoed verbatim on the answering
+   * `history`/`snapshot` as a routing token (see `HistoryMessage.cursor`).
+   */
+  cursor?: string;
 }
 
 export interface CommandMessage {
@@ -523,6 +556,21 @@ export interface SnapshotMessage {
   agentState: AgentState;
   entries: unknown[];
   truncated: boolean;
+  /**
+   * The request's cursor echoed verbatim as a routing token, present whenever
+   * the request carried one (honoured or not). Absent when the request had no
+   * cursor. It is **not** a statement that older entries were delivered — that
+   * is `older`.
+   */
+  cursor?: string;
+  /**
+   * Present and `true` **exactly** when the bridge honoured the cursor and
+   * `entries` are a genuinely older page. Absent is the only other state and
+   * means "newest-page baseline", which the app applies as a REPLACE.
+   */
+  older?: boolean;
+  /** The cursor for the next older page; present iff older entries remain. */
+  olderCursor?: string;
 }
 
 export interface SessionGoneMessage {
@@ -882,6 +930,15 @@ export function decode(text: string): DecodeResult {
       if (typeof message.truncated !== 'boolean') {
         return fail('bad-field', 'history truncated must be a boolean');
       }
+      if (!isOptionalString(message.cursor)) {
+        return fail('bad-field', 'history cursor must be a string');
+      }
+      if (message.older !== undefined && typeof message.older !== 'boolean') {
+        return fail('bad-field', 'history older must be a boolean');
+      }
+      if (!isOptionalString(message.olderCursor)) {
+        return fail('bad-field', 'history olderCursor must be a string');
+      }
       return { ok: true, value: parsed as HistoryMessage };
     }
     case 'command-result': {
@@ -967,6 +1024,9 @@ export function decode(text: string): DecodeResult {
       }
       if (message.sinceSeq !== undefined && !isPositiveSeq(message.sinceSeq)) {
         return fail('bad-seq', 'history-request sinceSeq must be a positive safe integer');
+      }
+      if (!isOptionalString(message.cursor)) {
+        return fail('bad-field', 'history-request cursor must be a string');
       }
       return { ok: true, value: parsed as HistoryRequestMessage };
     }
@@ -1093,6 +1153,15 @@ export function decode(text: string): DecodeResult {
       }
       if (typeof message.truncated !== 'boolean') {
         return fail('bad-field', 'snapshot truncated must be a boolean');
+      }
+      if (!isOptionalString(message.cursor)) {
+        return fail('bad-field', 'snapshot cursor must be a string');
+      }
+      if (message.older !== undefined && typeof message.older !== 'boolean') {
+        return fail('bad-field', 'snapshot older must be a boolean');
+      }
+      if (!isOptionalString(message.olderCursor)) {
+        return fail('bad-field', 'snapshot olderCursor must be a string');
       }
       return { ok: true, value: parsed as SnapshotMessage };
     }

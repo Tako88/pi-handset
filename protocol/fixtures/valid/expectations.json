@@ -230,10 +230,24 @@
     "entries": [{ "type": "user", "text": "hi" }],
     "truncated": false
   },
+  "history-cursor.json": {
+    "type": "history",
+    "sessionId": "sess-1",
+    "entries": [{ "type": "user", "text": "hi" }],
+    "truncated": true,
+    "cursor": "3:1a2b3c4d5e6f7a8b",
+    "older": true,
+    "olderCursor": "1:0f1e2d3c4b5a6978"
+  },
   "history-request.json": {
     "type": "history-request",
     "sessionId": "sess-1",
     "sinceSeq": 3
+  },
+  "history-request-cursor.json": {
+    "type": "history-request",
+    "sessionId": "sess-1",
+    "cursor": "3:1a2b3c4d5e6f7a8b"
   },
   "paired.json": {
     "type": "paired",
@@ -301,6 +315,20 @@
       { "type": "assistant", "text": "hello" }
     ],
     "truncated": false
+  },
+  "snapshot-cursor.json": {
+    "type": "snapshot",
+    "sessionId": "sess-1",
+    "lastSeq": 7,
+    "agentState": "settled",
+    "entries": [
+      { "type": "user", "text": "hi" },
+      { "type": "assistant", "text": "hello" }
+    ],
+    "truncated": true,
+    "cursor": "3:1a2b3c4d5e6f7a8b",
+    "older": true,
+    "olderCursor": "1:0f1e2d3c4b5a6978"
   },
   "subscribe.json": {
     "type": "subscribe",

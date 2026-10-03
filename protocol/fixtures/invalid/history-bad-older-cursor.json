@@ -1,0 +1,13 @@
+{
+  "protocolVersion": 1,
+  "type": "history",
+  "sessionId": "sess-1",
+  "entries": [
+    {
+      "type": "user",
+      "text": "hi"
+    }
+  ],
+  "truncated": true,
+  "olderCursor": 123
+}
