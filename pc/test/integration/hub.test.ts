@@ -1290,6 +1290,79 @@ test('a tokenless history is dropped when only a cursor request is pending', asy
   assert.deepEqual(snapshot.entries, entries);
 });
 
+test('a delivered snapshot copies older and olderCursor from the agent frame', async () => {
+  const hub = await startHub();
+  const agent = await connect(hub.agentPort);
+  const viewer = await connect(hub.viewerPort);
+  await helloTokened(agent);
+  await helloViewer(viewer);
+  agent.send({ protocolVersion: PROTOCOL_VERSION, type: 'register', sessionId: 's1' });
+  await barrier(agent);
+  viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'subscribe', sessionId: 's1' });
+  await barrier(viewer);
+
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'history-request',
+    sessionId: 's1',
+    cursor: 'x:1',
+  });
+  await barrier(viewer);
+
+  // Keyed off the forwarded cursor, as H1 is: a fixed frame would let the fake
+  // agent, not the hub, decide which page lands, making the copies vacuous.
+  const forwarded = await agent.next(2000);
+  assert.equal(forwarded.type, 'history-request');
+  assert.equal(forwarded.cursor, 'x:1');
+
+  const entries = [{ seq: 1, text: 'older page' }];
+  agent.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'history',
+    sessionId: 's1',
+    cursor: forwarded.cursor,
+    older: true,
+    olderCursor: 'y:2',
+    entries,
+    truncated: true,
+  });
+
+  const snapshot = await viewer.next(2000);
+  assert.equal(snapshot.type, 'snapshot');
+  assert.equal(snapshot.cursor, 'x:1');
+  assert.equal(snapshot.older, true);
+  assert.equal(snapshot.olderCursor, 'y:2');
+  assert.deepEqual(snapshot.entries, entries);
+  assert.equal(snapshot.truncated, true);
+
+  // A second page whose frame omits those fields: the hub copies, it does not
+  // invent, so they must stay absent rather than default to anything.
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'history-request',
+    sessionId: 's1',
+    cursor: 'x:2',
+  });
+  await barrier(viewer);
+  const forwarded2 = await agent.next(2000);
+  assert.equal(forwarded2.cursor, 'x:2');
+
+  const newest = [{ seq: 2, text: 'newest page' }];
+  agent.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'history',
+    sessionId: 's1',
+    cursor: forwarded2.cursor,
+    entries: newest,
+    truncated: false,
+  });
+  const snapshot2 = await viewer.next(2000);
+  assert.equal(snapshot2.type, 'snapshot');
+  assert.equal(snapshot2.cursor, 'x:2');
+  assert.equal('older' in snapshot2, false, 'an omitted older stays absent');
+  assert.equal('olderCursor' in snapshot2, false, 'an omitted olderCursor stays absent');
+});
+
 test('a history-request with an invalid cursor is closed as a protocol violation', async () => {
   const hub = await startHub();
   const viewer = await connect(hub.viewerPort);
