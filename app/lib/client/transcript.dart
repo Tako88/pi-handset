@@ -1,9 +1,11 @@
 /// The transcript block model — one ordered list of blocks derived from the raw
 /// relayed entries.
 ///
-/// Pure Dart: no Flutter import, so it tests without a widget binding. The same
-/// [deriveBlocks] serves the live relay and the reconnect snapshot, because the
-/// two paths carry the same pi *message* shape in different *entry* shapes:
+/// Pure Dart: no Flutter import, so it tests without a widget binding. The live
+/// relay appends through a per-session [TranscriptDerivation]; [deriveBlocks]
+/// stays the whole-list entry point a reconnect snapshot, a test or any cold
+/// caller uses. Both share one emission path, and the two paths carry the same
+/// pi *message* shape in different *entry* shapes:
 /// live is a bare `{role, content}`; a snapshot entry is wrapped
 /// `{type: 'message', message: {…}}` and interleaved with bookkeeping rows.
 ///
@@ -72,83 +74,169 @@ class TranscriptBlock {
 }
 
 /// Derives the ordered block list for [entries]. Pure and O(n) in the number of
-/// entries — call it when entries change, never per stream delta.
+/// entries — call it when entries change, never per stream delta. It is the
+/// whole-list entry point: the live relay goes through [TranscriptDerivation]
+/// and this is what a snapshot, a test or any cold caller uses.
 List<TranscriptBlock> deriveBlocks(List<Object?> entries) {
-  // Pass 1 — index tool results by call id (first-wins) and collect the call
-  // ids the assistant issued. A resumed/forked branch can surface the same
-  // call twice; dropping a later duplicate rather than overwriting keeps the
-  // call row showing the first result, not the second. The result may appear
-  // before or after its call, so the index is built before pass 2 emits.
-  final resultsById = <String, Map<Object?, Object?>>{};
-  // A second, SEPARATE index for the bridge's `kind:'tool'` annotation frames,
-  // with the OPPOSITE rule: last-wins, because a call emits `running` then
-  // `done` and the done view must replace the input-only running one. Keeping
-  // the two rules apart is deliberate — reusing `resultsById` would flip the
-  // fork semantics above.
-  final viewsById = <String, Object?>{};
-  final callIds = <String>{};
-  for (final entry in entries) {
-    if (entry is! Map) continue;
+  final derivation = TranscriptDerivation()..rebuild(entries);
+  return List<TranscriptBlock>.of(derivation.blocks);
+}
+
+/// One session's incremental block derivation.
+///
+/// [deriveBlocks] stays the pure, whole-list entry point; this is its stateful
+/// twin. It owns the entry list, the pass-1 indexes, the emitted block list and
+/// one anchor per tool row, so [append] extends the derivation by one entry
+/// instead of re-walking the transcript. [rebuild] is the cold path — a
+/// snapshot, a session replacement, or #5's prepend — and the only place the
+/// whole list is walked.
+///
+/// Not part of the immutable [SessionTranscript]: the client owns one per live
+/// session, keyed by session id, and drops it with the transcript. It never
+/// hands these lists to a consumer — the transcript receives *copies*, so
+/// nothing a retained snapshot exposes can change underneath it.
+class TranscriptDerivation {
+  final List<Object?> _entries = <Object?>[];
+  final List<TranscriptBlock> _blocks = <TranscriptBlock>[];
+
+  final Map<String, Map<Object?, Object?>> _resultsById = {};
+  final Map<String, Object?> _viewsById = {};
+  final Set<String> _callIds = {};
+  final Map<String, int> _toolIdCounts = {};
+
+  /// One anchor per emitted tool row, in emission order, keyed by call id.
+  final Map<String, List<_ToolAnchor>> _anchors = {};
+
+  /// Call ids whose result row was emitted standalone because no call had been
+  /// seen. A later call for one of these would drop that row (pass 1 is
+  /// first-wins by list order), so that append rebuilds instead.
+  final Set<String> _orphanCallIds = {};
+
+  /// Read-only by convention: only [append]/[rebuild] mutate, and the transcript
+  /// gets copies — never these lists.
+  List<Object?> get entries => _entries;
+  List<TranscriptBlock> get blocks => _blocks;
+
+  /// The whole-list baseline: replace the entries and re-derive every block.
+  /// #5's prepend calls this with `[...older, ...entries]` (a fresh list — never
+  /// `_entries` itself).
+  void rebuild(List<Object?> entries) {
+    // Snapshot before clearing: a caller passing this derivation's own
+    // `entries` list would otherwise have it emptied by the `clear()` below
+    // before the copy is taken (a cascade evaluates `addAll`'s argument after
+    // `clear` runs).
+    final source = List<Object?>.of(entries);
+    _entries
+      ..clear()
+      ..addAll(source);
+    _rebuildFromEntries();
+  }
+
+  /// The hot path: extend the derivation by one entry, O(1) plus the one row it
+  /// may patch.
+  void append(Object? entry) {
+    _entries.add(entry);
+    // A call for an id already emitted as a standalone orphan is retroactive
+    // (the orphan row disappears and the result pairs into the new call row);
+    // a paired result carrying decodable images inserts rows mid-list. Both
+    // change the block count, and a patch is count-preserving, so both rebuild
+    // — O(N) once on a rare shape, never per ordinary entry.
+    if (_introducedCallIds(entry).any(_orphanCallIds.contains) ||
+        _pairedResultHasImages(entry)) {
+      _rebuildFromEntries();
+      return;
+    }
+    _indexEntry(entry);
+    _emitEntry(entry, incremental: true);
+  }
+
+  void _rebuildFromEntries() {
+    _blocks.clear();
+    _resultsById.clear();
+    _viewsById.clear();
+    _callIds.clear();
+    _toolIdCounts.clear();
+    _anchors.clear();
+    _orphanCallIds.clear();
+    for (final entry in _entries) {
+      _indexEntry(entry);
+    }
+    for (final entry in _entries) {
+      _emitEntry(entry, incremental: false);
+    }
+  }
+
+  /// Pass 1 for one entry — identical rules to the whole-list index loop. A
+  /// `kind:'tool'` frame's view is indexed **regardless of a truncated marker**,
+  /// matching the whole-list pass-1 order.
+  void _indexEntry(Object? entry) {
+    if (entry is! Map) return;
     if (entry['kind'] == 'tool') {
       final callId = entry['toolCallId'];
       // Last-wins applies to present views only: a done frame may carry no
       // view, and clobbering the running frame's input-only view would drop
       // the structured render for the generic fallback.
       if (callId is String && entry['view'] != null) {
-        viewsById[callId] = entry['view'];
+        _viewsById[callId] = entry['view'];
       }
-      continue;
+      return;
     }
     final source = _unwrap(entry);
-    if (source == null) continue;
+    if (source == null) return;
     final role = source['role'];
     if (role == 'toolResult') {
+      // First-wins by list order: a resumed/forked branch can surface the same
+      // call twice, and the call row must show the first result.
       final callId = source['toolCallId'];
-      if (callId is String && !resultsById.containsKey(callId)) {
-        resultsById[callId] = source;
+      if (callId is String && !_resultsById.containsKey(callId)) {
+        _resultsById[callId] = source;
       }
     } else if (role == 'assistant') {
-      _collectToolCallIds(source['content'], callIds);
+      _collectToolCallIds(source['content'], _callIds);
     }
   }
 
-  final blocks = <TranscriptBlock>[];
-  // Per-derivation counts of emitted tool ids: a fork can surface the same call
-  // id twice, and two blocks sharing an `id` collide the view's `ValueKey`.
-  final toolIdCounts = <String, int>{};
-  for (final entry in entries) {
-    if (entry is! Map) continue;
+  /// Pass 2 for one entry. [incremental] is false only during a rebuild, where
+  /// the indexes are already whole-list and a paired result / view frame needs
+  /// no patch — its target block was emitted with the final value.
+  void _emitEntry(Object? entry, {required bool incremental}) {
+    if (entry is! Map) return;
     final idBase = identityHashCode(entry);
+
+    // A `kind:'tool'` frame is an annotation, never a row of its own. But the
+    // whole-list pass indexes its view in pass 1 *before* the truncated check
+    // below, so a frame carrying both a `view` and a `{truncated:true, bytes}`
+    // marker gets its view attached AND emits the notice. Patch the view first,
+    // then fall through to the notice, so the incremental path matches exactly.
+    if (entry['kind'] == 'tool') {
+      if (incremental) _patchAnchors(entry['toolCallId']);
+      if (!(entry['truncated'] == true && entry['bytes'] is int)) return;
+    }
 
     // A message the bridge could not relay whole: an honest notice, not a gap.
     if (entry['truncated'] == true && entry['bytes'] is int) {
-      blocks.add(
+      _blocks.add(
         TranscriptBlock(
           kind: TranscriptBlockKind.notice,
           id: '$idBase:0',
           text: 'reply too large to display (${entry['bytes']} bytes)',
         ),
       );
-      continue;
+      return;
     }
     // A relayed status payload (e.g. an error) is a notice.
     if (entry['kind'] == 'status' && entry['message'] is String) {
       final message = entry['message'] as String;
-      if (message.isEmpty) continue;
-      blocks.add(
+      if (message.isEmpty) return;
+      _blocks.add(
         TranscriptBlock(
           kind: TranscriptBlockKind.notice,
           id: '$idBase:0',
           text: message,
         ),
       );
-      continue;
+      return;
     }
-
-    // A relayed `kind:'tool'` frame is an annotation on a call or result row,
-    // never a row source of its own: pass 1 indexed its view, and it was
-    // attached in pass 2. Emitting it here would render a duplicate row.
-    if (entry['kind'] == 'tool') continue;
 
     final source = _unwrap(entry);
     if (source == null) {
@@ -156,8 +244,8 @@ List<TranscriptBlock> deriveBlocks(List<Object?> entries) {
       final type = entry['type'];
       if ((type == 'user' || type == 'assistant') && entry['text'] is String) {
         final text = entry['text'] as String;
-        if (text.isEmpty) continue;
-        blocks.add(
+        if (text.isEmpty) return;
+        _blocks.add(
           TranscriptBlock(
             kind: TranscriptBlockKind.text,
             id: '$idBase:0',
@@ -166,30 +254,201 @@ List<TranscriptBlock> deriveBlocks(List<Object?> entries) {
           ),
         );
       }
-      continue;
+      return;
     }
 
     final role = source['role'];
     if (role == 'user') {
-      _emitTextContent(blocks, source['content'], idBase, fromUser: true);
+      _emitTextContent(_blocks, source['content'], idBase, fromUser: true);
     } else if (role == 'assistant') {
       _emitAssistantContent(
-        blocks,
+        _blocks,
         source['content'],
         idBase,
-        resultsById,
-        viewsById,
-        toolIdCounts,
+        _resultsById,
+        _viewsById,
+        _toolIdCounts,
+        onToolBlock: (callId, part, toolId, index) => _recordAnchor(
+          _ToolAnchor(
+            callId: callId,
+            callPart: part,
+            toolId: toolId,
+            index: index,
+          ),
+        ),
       );
     } else if (role == 'toolResult') {
       final callId = source['toolCallId'];
       // Paired: already rendered at its call in the assistant message.
-      if (callId is String && callIds.contains(callId)) continue;
-      _emitToolResult(blocks, source, idBase, viewsById, toolIdCounts);
+      if (callId is String && _callIds.contains(callId)) {
+        if (incremental) _patchAnchors(callId);
+        return;
+      }
+      final index = _blocks.length;
+      final toolId = _emitToolResult(
+        _blocks,
+        source,
+        idBase,
+        _viewsById,
+        _toolIdCounts,
+      );
+      if (callId is String) {
+        _recordAnchor(
+          _ToolAnchor(
+            callId: callId,
+            resultSource: source,
+            toolId: toolId,
+            index: index,
+          ),
+        );
+        // Both modes: a real orphan in either.
+        _orphanCallIds.add(callId);
+      }
     }
     // `system`, `custom` and bookkeeping roles take no block.
   }
-  return blocks;
+
+  void _recordAnchor(_ToolAnchor anchor) =>
+      (_anchors[anchor.callId] ??= <_ToolAnchor>[]).add(anchor);
+
+  /// The call ids [entry] introduces (an assistant message's `toolCall`
+  /// parts), for the orphan-pairing rebuild predicate.
+  Set<String> _introducedCallIds(Object? entry) {
+    final ids = <String>{};
+    if (entry is! Map || entry['kind'] == 'tool') return ids;
+    final source = _unwrap(entry);
+    if (source != null && source['role'] == 'assistant') {
+      _collectToolCallIds(source['content'], ids);
+    }
+    return ids;
+  }
+
+  /// True when [entry] is a paired result whose decodable image parts will
+  /// insert rows mid-list, so [append] must rebuild (the patch is
+  /// count-preserving). Note: this decodes the images once here and
+  /// [_resultImageBlocks] decodes them again on the rebuild — deliberate. It
+  /// runs only for a paired result that carries images (rare), and the rebuild
+  /// it triggers is already O(N), so a memo would add state for no measurable
+  /// gain. Revisit only against a profile.
+  bool _pairedResultHasImages(Object? entry) {
+    if (entry is! Map || entry['kind'] == 'tool') return false;
+    final source = _unwrap(entry);
+    if (source == null || source['role'] != 'toolResult') return false;
+    final callId = source['toolCallId'];
+    return callId is String &&
+        _callIds.contains(callId) &&
+        _resultImageBlocks(source, '').isNotEmpty;
+  }
+
+  void _patchAnchors(Object? rawCallId) {
+    if (rawCallId is! String) return;
+    final anchors = _anchors[rawCallId];
+    if (anchors == null) return;
+    for (final a in anchors) {
+      // Patch in place; the index stays valid because any count-changing
+      // append rebuilt instead (and rebuilt indices with it).
+      _blocks[a.index] = a.callPart != null
+          ? _callToolBlock(
+              callId: a.callId,
+              part: a.callPart!,
+              toolId: a.toolId,
+              resultsById: _resultsById,
+              viewsById: _viewsById,
+            )
+          : _orphanToolBlock(
+              source: a.resultSource!,
+              callId: a.callId,
+              toolId: a.toolId,
+              viewsById: _viewsById,
+            );
+    }
+  }
+}
+
+/// One emitted tool row: enough to re-emit it in place when its result or view
+/// lands. Absolute [index] is safe because patches are count-preserving; any
+/// count-changing append rebuilds.
+class _ToolAnchor {
+  final String callId;
+  final Map<Object?, Object?>? callPart; // null => standalone result row
+  final Map<Object?, Object?>? resultSource; // null => call row
+  final String toolId; // preserves a fork's `#n` suffix
+  final int index;
+
+  const _ToolAnchor({
+    required this.callId,
+    this.callPart,
+    this.resultSource,
+    required this.toolId,
+    required this.index,
+  });
+}
+
+/// The tool row an assistant `toolCall` part contributes. Shared by emission and
+/// in-place patching so the two cannot drift.
+TranscriptBlock _callToolBlock({
+  required String callId,
+  required Map<Object?, Object?> part,
+  required String toolId,
+  required Map<String, Map<Object?, Object?>> resultsById,
+  required Map<String, Object?> viewsById,
+}) {
+  final result = resultsById[callId];
+  return TranscriptBlock(
+    kind: TranscriptBlockKind.tool,
+    id: toolId,
+    toolName: part['name'] is String ? part['name'] as String : null,
+    toolArgs: part['arguments'],
+    text: result == null ? '' : _resultText(result),
+    toolResult: result,
+    toolView: parseToolView(viewsById[callId]),
+    isError: result != null && result['isError'] == true,
+  );
+}
+
+/// The standalone tool row a result with no call contributes.
+TranscriptBlock _orphanToolBlock({
+  required Map<Object?, Object?> source,
+  required Object? callId,
+  required String toolId,
+  required Map<String, Object?> viewsById,
+}) => TranscriptBlock(
+  kind: TranscriptBlockKind.tool,
+  id: toolId,
+  text: _resultText(source),
+  toolName: source['toolName'] is String ? source['toolName'] as String : null,
+  toolResult: source,
+  toolView: callId is String ? parseToolView(viewsById[callId]) : null,
+  isError: source['isError'] == true,
+);
+
+/// The image rows for a result, built (not added) so the pairing predicate can
+/// reuse the same decode logic without duplication. Emits one
+/// [TranscriptBlockKind.image] block per decodable image part; ids are derived
+/// from [toolId] so a fork's duplicate call still yields unique row keys.
+List<TranscriptBlock> _resultImageBlocks(
+  Map<Object?, Object?> source,
+  String toolId,
+) {
+  final content = source['content'];
+  if (content is! List) return const [];
+  final images = <TranscriptBlock>[];
+  var index = 0;
+  for (final part in content) {
+    if (part is! Map || part['type'] != 'image') continue;
+    final bytes = _decodeImageBytes(part);
+    if (bytes != null) {
+      images.add(
+        TranscriptBlock(
+          kind: TranscriptBlockKind.image,
+          id: '$toolId:img$index',
+          imageBytes: bytes,
+        ),
+      );
+    }
+    index++;
+  }
+  return images;
 }
 
 /// A tool-block id, disambiguated when a fork surfaces the same call id twice.
@@ -304,8 +563,10 @@ void _emitAssistantContent(
   int idBase,
   Map<String, Map<Object?, Object?>> resultsById,
   Map<String, Object?> viewsById,
-  Map<String, int> toolIdCounts,
-) {
+  Map<String, int> toolIdCounts, {
+  void Function(String callId, Map<Object?, Object?> part, String toolId, int index)?
+  onToolBlock,
+}) {
   if (content is String) {
     if (content.isEmpty) return;
     blocks.add(
@@ -338,23 +599,29 @@ void _emitAssistantContent(
         if (body != null) _addThinking(blocks, '$idBase:$sub', body);
       } else if (type == 'toolCall') {
         final callId = part['id'] is String ? part['id'] as String : '$idBase:$sub';
-        final result = resultsById[callId];
         // Capture the tool block's own id (which a fork may disambiguate) so
         // its image rows derive from it and stay unique too.
         final toolId = _toolBlockId(callId, toolIdCounts);
+        final index = blocks.length;
         blocks.add(
-          TranscriptBlock(
-            kind: TranscriptBlockKind.tool,
-            id: toolId,
-            toolName: part['name'] is String ? part['name'] as String : null,
-            toolArgs: part['arguments'],
-            text: result == null ? '' : _resultText(result),
-            toolResult: result,
-            toolView: parseToolView(viewsById[callId]),
-            isError: result != null && result['isError'] == true,
+          _callToolBlock(
+            callId: callId,
+            part: part,
+            toolId: toolId,
+            resultsById: resultsById,
+            viewsById: viewsById,
           ),
         );
-        if (result != null) _emitResultImages(blocks, result, toolId);
+        // Record an anchor for EVERY call id, including a synthetic
+        // '$idBase:$sub'. The whole-list path attaches a view for any id, so
+        // gating the anchor on a String id would let a view frame whose
+        // toolCallId equals the synthetic id patch the whole-list row but not
+        // the incremental one. A synthetic id is never consumed by a result
+        // (its result is always an orphan), so the anchor is inert unless such
+        // a view frame exists — in which case recording it is exactly right.
+        onToolBlock?.call(callId, part, toolId, index);
+        final result = resultsById[callId];
+        if (result != null) blocks.addAll(_resultImageBlocks(result, toolId));
       } else if (type == 'image') {
         final bytes = _decodeImageBytes(part);
         if (bytes != null) {
@@ -438,8 +705,9 @@ ToolPreview previewToolResult(
 
 /// A tool result whose assistant call was not in the entries becomes a
 /// standalone row rather than vanishing (a history projection may cut the call
-/// but keep the result).
-void _emitToolResult(
+/// but keep the result). Returns the tool block's id so the caller can anchor
+/// it for a later view frame.
+String _emitToolResult(
   List<TranscriptBlock> blocks,
   Map<Object?, Object?> source,
   int idBase,
@@ -451,47 +719,15 @@ void _emitToolResult(
       ? _toolBlockId(callId, toolIdCounts)
       : '$idBase:0';
   blocks.add(
-    TranscriptBlock(
-      kind: TranscriptBlockKind.tool,
-      id: toolId,
-      text: _resultText(source),
-      toolName: source['toolName'] is String ? source['toolName'] as String : null,
-      toolResult: source,
-      toolView: callId is String ? parseToolView(viewsById[callId]) : null,
-      isError: source['isError'] == true,
+    _orphanToolBlock(
+      source: source,
+      callId: callId,
+      toolId: toolId,
+      viewsById: viewsById,
     ),
   );
-  _emitResultImages(blocks, source, toolId);
-}
-
-/// Emits one [TranscriptBlockKind.image] block per decodable image part in a
-/// tool result, immediately after the tool block it belongs to. Ids are derived
-/// from [toolId] so a fork's duplicate call (whose tool id carries a `#n`
-/// suffix) still yields unique row keys. Undecodable parts — malformed bytes,
-/// or the bridge's part-trimmed `{truncated:true}` marker — are skipped here and
-/// left for [_resultText] to render as its `[image]` placeholder.
-void _emitResultImages(
-  List<TranscriptBlock> blocks,
-  Map<Object?, Object?> source,
-  String toolId,
-) {
-  final content = source['content'];
-  if (content is! List) return;
-  var index = 0;
-  for (final part in content) {
-    if (part is! Map || part['type'] != 'image') continue;
-    final bytes = _decodeImageBytes(part);
-    if (bytes != null) {
-      blocks.add(
-        TranscriptBlock(
-          kind: TranscriptBlockKind.image,
-          id: '$toolId:img$index',
-          imageBytes: bytes,
-        ),
-      );
-    }
-    index++;
-  }
+  blocks.addAll(_resultImageBlocks(source, toolId));
+  return toolId;
 }
 
 /// The result's display text: the text parts joined on a newline, with an
