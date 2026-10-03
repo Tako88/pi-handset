@@ -469,3 +469,26 @@ rather than guess at it.
   The menu item toggles whichever id it was built for, so a `/new`/`/fork` landing between
   build and tap migrates the flag to the successor while the tap writes the old id, and
   one tap may appear not to stick. No crash.
+
+## Navigation
+
+- **The predictive preview is an Android 14+ default; Android 13 needs the developer-option
+  toggle, and API < 33 shows no preview at all.** The transcript route and the manifest
+  opt-in are what make the preview possible on capable OSes; on older ones back still pops
+  the route, just without the peek.
+- **Dialogs and bottom sheets over the transcript are not predictive.** They carry no
+  predictive transition, so back dismisses them through the non-predictive fallback,
+  exactly as before.
+- **A session that disappears while a dialog or sheet is open leaves that overlay over the
+  session list.** The state-driven removal uses `removeRoute`, which cannot pop the overlay,
+  so the dialog survives and any action taken in it is sent for a session that is gone. This
+  is today's behaviour too — the migration preserves it — and it is recorded rather than
+  fixed because dismissing a user's dialog on a background event is its own decision.
+- **The transcript route's presence is tracked by a shell field, not by the Navigator.**
+  Only the transcript route is tracked; the folder browser is a separate route, and any
+  future code that pops the transcript outside `_syncTranscriptRoute` must keep
+  `_transcriptRoute` in sync.
+- **A composer draft is still not per-session.** `_attachment` is cleared on a session
+  change but the draft text is not, so a draft typed in one session is still in the box in
+  another. The navigation migration preserves this deliberately; fixing it is its own
+  decision.

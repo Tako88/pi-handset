@@ -1274,6 +1274,52 @@ void main() {
     );
   });
 
+  testWidgets(
+    'a notification tap while backgrounded opens the transcript on resume',
+    (tester) async {
+      final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+      await tester.pumpWidget(h.app());
+      await pumpBootstrap(tester);
+      h.factory.last.receive(sessionsFrame([sessionS1]));
+      await settle(tester, h.scheduler);
+
+      // The app is backgrounded, then a notification for s1 is tapped.
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      await tester.pump();
+      h.notifications.requestOpen.add('s1');
+      await tester.pump();
+      await settle(tester, h.scheduler);
+
+      // The open completed (the client subscribed) and the route is pushed even
+      // while invisible: the transcript is what the user should see on return.
+      // The 450 ms push animation is frozen while paused — resume is what
+      // actually completes it.
+      expect(h.client.state.activeSessionId, 's1');
+      expect(
+        h.factory.last.sentFrames
+            .where((f) => f['type'] == 'subscribe')
+            .map((f) => f['sessionId'])
+            .where((id) => id == 's1'),
+        hasLength(1),
+      );
+      expect(
+        tester.state<NavigatorState>(find.byType(Navigator)).canPop(),
+        isTrue,
+      );
+
+      // Resume in platform order.
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      await tester.pump();
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      await tester.pump();
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pump();
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('compose-field')), findsOneWidget);
+    },
+  );
+
   testWidgets('a predictive back gesture pops the transcript and unsubscribes', (
     tester,
   ) async {
