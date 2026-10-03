@@ -311,6 +311,16 @@ class FakeScheduler implements HubScheduler {
     }
   }
 
+  List<FakeTimer> get historyPageTimers => _ofKind(HubTimerKind.historyPage);
+
+  /// Fires the bounded older-page wait(s), simulating an agent that never
+  /// answered a page request.
+  void fireHistoryPageTimeouts() {
+    for (final timer in List<FakeTimer>.of(historyPageTimers)) {
+      timer.fire();
+    }
+  }
+
   void clear() => timers.clear();
 }
 
