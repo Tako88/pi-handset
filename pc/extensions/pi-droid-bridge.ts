@@ -858,6 +858,26 @@ function collectToolArgs(entries: readonly unknown[]): Map<string, unknown> {
 }
 
 /**
+ * The unpaired tool calls' arguments: a call whose id already has a
+ * `toolResult` entry cannot still be in flight, so it is never seeded. Only an
+ * unpaired call can still resolve a result — issue #20.
+ */
+function collectUnpairedToolArgs(entries: readonly unknown[]): Map<string, unknown> {
+  const paired = new Set<string>();
+  for (const entry of entries) {
+    const message = entryMessage(entry);
+    if (message === null || message.role !== 'toolResult') continue;
+    const id = asString(message.toolCallId);
+    if (id !== null) paired.add(id);
+  }
+  const unpaired = new Map<string, unknown>();
+  for (const [id, args] of collectToolArgs(entries)) {
+    if (!paired.has(id)) unpaired.set(id, args);
+  }
+  return unpaired;
+}
+
+/**
  * Replays entries with synthesized `tool` frames inserted after each assistant
  * tool call and each tool result, so a snapshot carries the same normalized
  * views as the live relay. Every inserted frame is bounded; non-message entries
@@ -1404,9 +1424,11 @@ class Bridge {
   private seq = 0;
   private lastLabel: string | null = null;
   private state: AgentState = 'idle';
-  /** Tool-call arguments by call id, so a `toolResult` (which carries none) can
-   * resolve its path/command. Seeded from the session entries at start and kept
-   * current as assistant messages land. */
+  /** Tool-call arguments by call id, held only while a call can still resolve
+   * its `toolResult` (which carries none). Filled by the live assistant
+   * `message_end` and, at session start, only for entries calls with no recorded
+   * result; released when the result is emitted and cleared when the turn
+   * settles. A completed call is never held — see issue #20. */
   private readonly toolArgs = new Map<string, unknown>();
   /** The current turn's final assistant snippet, reset at each turn start. */
   private lastSettled: { text: string; truncated: boolean } = { text: '', truncated: false };
@@ -1455,6 +1477,9 @@ class Bridge {
     // Terminal state is `agent_settled`, deliberately not `agent_end`.
     this.pi.on('agent_settled', () =>
       this.guard(() => {
+        // A settled turn has no in-flight calls, so anything still held is an
+        // aborted call no result will ever consume.
+        this.toolArgs.clear();
         this.setAgentState('settled');
         this.sendUsageEvent();
         this.sendSettleEvent();
@@ -1608,11 +1633,13 @@ class Bridge {
     this.state = 'idle';
     this.lastSettled = { text: '', truncated: false };
     this.attempt = 0;
-    // A resumed session's earlier tool calls are already in the entries, so a
-    // result that arrives after this point still resolves its args.
+    // Only calls with no recorded result can still be in flight: a call whose
+    // `toolResult` is already in the entries can never produce another, so
+    // seeding it would retain its arguments for the session. `reload` is the
+    // reason that can strand an unpaired call across an instance boundary.
     this.toolArgs.clear();
     try {
-      for (const [id, args] of collectToolArgs(ctx.sessionManager.getEntries())) {
+      for (const [id, args] of collectUnpairedToolArgs(ctx.sessionManager.getEntries())) {
         this.toolArgs.set(id, args);
       }
     } catch (error) {
@@ -1808,6 +1835,10 @@ class Bridge {
       for (const [id, args] of collectToolArgs([original])) this.toolArgs.set(id, args);
     } else if (originalRole === 'toolResult') {
       const payload = toolResultPayload(original, this.toolArgs);
+      // Delete before the send: the result is the only reader that needs the
+      // arguments, and a throw out of `sendEvent` must not skip the release.
+      const toolCallId = asString((original as { toolCallId?: unknown }).toolCallId);
+      if (toolCallId !== null) this.toolArgs.delete(toolCallId);
       if (payload !== null) this.sendEvent(boundToolPayload(payload));
     }
     // The snippet comes from the ORIGINAL message, never the bounded payload:

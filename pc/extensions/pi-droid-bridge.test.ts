@@ -4314,6 +4314,130 @@ test('a resumed session resolves a toolResult from entries seeded at session_sta
   assert.deepEqual(tool.view, { type: 'file', path: 'seeded.ts', content: 'body' });
 });
 
+test('a completed call in the entries is not seeded (its later result renders without arguments)', () => {
+  const harness = makeHarness();
+  const ctx = makeCtx();
+  ctx.setEntries([
+    {
+      type: 'message',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'toolCall', id: 'call-9', name: 'write',
+            arguments: { path: 'done.ts', content: 'SENTINEL' } },
+        ],
+      },
+    },
+    {
+      type: 'message',
+      message: {
+        role: 'toolResult', toolCallId: 'call-9', toolName: 'write',
+        content: [{ type: 'text', text: 'wrote done.ts' }], isError: false,
+      },
+    },
+  ]);
+  harness.pi.handlers.get('session_start')!({ type: 'session_start', reason: 'reload' }, ctx);
+  const socket = harness.sockets[0]!;
+  socket.open();
+  const before = socket.sent.length;
+  harness.pi.handlers.get('message_end')!(
+    {
+      type: 'message_end',
+      message: {
+        role: 'toolResult', toolCallId: 'call-9', toolName: 'write',
+        content: [{ type: 'text', text: 'wrote done.ts' }], isError: false,
+      },
+    },
+    ctx,
+  );
+  const tool = parsed(socket).slice(before).map((m) => m.payload as ToolPayload)
+    .find((payload) => payload?.kind === 'tool')!;
+  assert.ok(tool);
+  assert.equal(tool.status, 'done');
+  assert.deepEqual(tool.view, { type: 'generic' });
+});
+
+test('a live call’s arguments are released once its result has been emitted', () => {
+  const harness = makeHarness();
+  harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  const handler = harness.pi.handlers.get('message_end')!;
+  handler(
+    {
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'toolCall', id: 'call-1', name: 'read', arguments: { path: 'a.ts' } }],
+      },
+    },
+    harness.startCtx,
+  );
+  handler(
+    {
+      type: 'message_end',
+      message: {
+        role: 'toolResult', toolCallId: 'call-1', toolName: 'read',
+        content: [{ type: 'text', text: 'body' }], isError: false,
+      },
+    },
+    harness.startCtx,
+  );
+  const first = parsed(socket).map((m) => m.payload as ToolPayload)
+    .filter((payload) => payload?.kind === 'tool' && payload.status === 'done').pop()!;
+  assert.deepEqual(first.view, { type: 'file', path: 'a.ts', content: 'body' },
+    'the result is paired while the call is still held');
+  const before = socket.sent.length;
+  // A second result for the same id is the only public observable of the release:
+  // a call whose arguments are gone renders with empty args.
+  handler(
+    {
+      type: 'message_end',
+      message: {
+        role: 'toolResult', toolCallId: 'call-1', toolName: 'read',
+        content: [{ type: 'text', text: 'body' }], isError: false,
+      },
+    },
+    harness.startCtx,
+  );
+  const second = parsed(socket).slice(before).map((m) => m.payload as ToolPayload)
+    .find((payload) => payload?.kind === 'tool')!;
+  assert.deepEqual(second.view, { type: 'file', path: '', content: 'body' });
+});
+
+test('a settled turn releases a call that never produced a result', () => {
+  const harness = makeHarness();
+  harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  const handler = harness.pi.handlers.get('message_end')!;
+  handler(
+    {
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'toolCall', id: 'call-1', name: 'read', arguments: { path: 'a.ts' } }],
+      },
+    },
+    harness.startCtx,
+  );
+  harness.pi.handlers.get('agent_settled')!({ type: 'agent_settled' }, harness.startCtx);
+  const before = socket.sent.length;
+  handler(
+    {
+      type: 'message_end',
+      message: {
+        role: 'toolResult', toolCallId: 'call-1', toolName: 'read',
+        content: [{ type: 'text', text: 'late' }], isError: false,
+      },
+    },
+    harness.startCtx,
+  );
+  const tool = parsed(socket).slice(before).map((m) => m.payload as ToolPayload)
+    .find((payload) => payload?.kind === 'tool')!;
+  assert.deepEqual(tool.view, { type: 'file', path: '', content: 'late' });
+});
+
 test('fetchHistory replays a history whose entries carry the synthesized tool frames', async () => {
   const harness = makeHarness();
   const ctx = harness.start();
