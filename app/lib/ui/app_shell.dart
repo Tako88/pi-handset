@@ -99,6 +99,18 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
   /// The last error the user dismissed, so the banner does not re-show it.
   String? _dismissedError;
 
+  /// The root Navigator, so the transcript route can be pushed and popped from
+  /// the active session rather than from a tap.
+  final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
+
+  /// The installed transcript route, or null when it is not up. Mirrors the
+  /// Navigator stack: non-null iff the transcript route is installed.
+  Route<void>? _transcriptRoute;
+
+  /// The last non-null active session. Kept so the outgoing transcript stays
+  /// rendered during the pop animation, after `_close()` nulls the live id.
+  String? _lastActiveSessionId;
+
   /// The composer draft. The shell owns it because the suggestion panel reads
   /// the text to filter and writes a picked `/name ` back into the field.
   final TextEditingController _composer = TextEditingController();
@@ -254,6 +266,14 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
       unawaited(widget.notifications.startForeground());
     }
     _drainOpen();
+    // Remember the last non-null session, then reconcile the route with the
+    // active id. `_lastActiveSessionId` keeps the outgoing transcript rendered
+    // during the pop animation, after `_close()` nulls the live id. The route
+    // reads `_state` directly; the `setState` above rebuilds the Navigator,
+    // which forces every installed route to rebuild its page.
+    final activeId = state.activeSessionId;
+    if (activeId != null) _lastActiveSessionId = activeId;
+    _syncTranscriptRoute();
   }
 
   /// Flips the active session's mute override and persists it.
@@ -671,6 +691,7 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
     theme: ThemeData(brightness: Brightness.light),
     darkTheme: ThemeData(brightness: Brightness.dark),
     home: Builder(builder: _home),
+    navigatorKey: _navigatorKey,
   );
 
   /// The sessions header. The host is the useful half of the paired address, and
@@ -697,39 +718,44 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
       );
     }
 
-    final activeId = _state.activeSessionId;
-    if (activeId == null) {
-      return Scaffold(
-        appBar: AppBar(
-          // Naming the hub is the only place the paired address is visible once
-          // pairing is done — which is exactly when a wrong host is hardest to
-          // notice, since everything else looks the same.
-          title: Text(_sessionsTitle()),
-          actions: [
-            IconButton(
-              key: const Key('change-hub'),
-              icon: const Icon(Icons.settings_ethernet),
-              tooltip: 'Change hub',
-              onPressed: _changeHub,
-            ),
-          ],
-        ),
-        body: _withStatusBanner(
-          SessionList(
-            sessions: _state.sessions,
-            onOpen: _open,
-            onKill: (session) => _kill(session, context),
+    // The list is always the `home` route. The transcript, when one is open, is
+    // a pushed sibling route above it (see [_syncTranscriptRoute]).
+    return Scaffold(
+      appBar: AppBar(
+        // Naming the hub is the only place the paired address is visible once
+        // pairing is done — which is exactly when a wrong host is hardest to
+        // notice, since everything else looks the same.
+        title: Text(_sessionsTitle()),
+        actions: [
+          IconButton(
+            key: const Key('change-hub'),
+            icon: const Icon(Icons.settings_ethernet),
+            tooltip: 'Change hub',
+            onPressed: _changeHub,
           ),
+        ],
+      ),
+      body: _withStatusBanner(
+        SessionList(
+          sessions: _state.sessions,
+          onOpen: _open,
+          onKill: (session) => _kill(session, context),
         ),
-        floatingActionButton: FloatingActionButton(
-          key: const Key('start-session'),
-          tooltip: 'Start a session',
-          onPressed: () => _start(context),
-          child: const Icon(Icons.add),
-        ),
-      );
-    }
+      ),
+      floatingActionButton: FloatingActionButton(
+        key: const Key('start-session'),
+        tooltip: 'Start a session',
+        onPressed: () => _start(context),
+        child: const Icon(Icons.add),
+      ),
+    );
+  }
 
+  /// The transcript for [activeId], built by the pushed route's builder.
+  ///
+  /// [activeId] is normally `_state.activeSessionId`; during the pop animation
+  /// it is [_lastActiveSessionId], so the outgoing transcript stays rendered.
+  Widget _transcriptScaffold(BuildContext context, String activeId) {
     final transcript =
         _state.transcripts[activeId] ?? const SessionTranscript();
     final usage = transcript.contextUsage;
@@ -890,16 +916,72 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
       ),
     );
 
-    // The transcript is one level in, so the system back button must close it
-    // rather than exit the app. It routes through _close(), the same path as the
-    // AppBar arrow, so the two ways back cannot drift apart.
-    return PopScope(
-      canPop: false,
-      onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) _close();
-      },
-      child: view,
-    );
+    return view;
+  }
+
+  /// Keeps the pushed transcript route in step with [_state.activeSessionId].
+  ///
+  /// A route is pushed when a session becomes active and popped when it goes
+  /// away. It is pushed even while the app is backgrounded: the open already
+  /// happened, and the transcript is what the user should see on return.
+  void _syncTranscriptRoute() {
+    final navigator = _navigatorKey.currentState;
+    if (navigator == null) {
+      // The first state emit can precede the Navigator's first frame. Retry once
+      // the tree is mounted rather than dropping the push until an unrelated
+      // emit.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _syncTranscriptRoute();
+      });
+      return;
+    }
+    final activeId = _state.activeSessionId;
+    if (activeId != null) {
+      if (_transcriptRoute != null) return; // idempotence guard
+      final route = MaterialPageRoute<void>(
+        // Reads `_state` directly. The route rebuilds because the shell's
+        // `setState` rebuilds the Navigator, whose `didUpdateWidget` forces
+        // every installed route to rebuild its page.
+        builder: (context) {
+          final id = _state.activeSessionId ?? _lastActiveSessionId;
+          if (id == null) return const SizedBox.shrink();
+          return PopScope<void>(
+            // canPop TRUE: a real route pops itself, so the predictive preview is
+            // not suppressed. This PopScope is LOAD-BEARING, not decorative:
+            // without its PopEntry a gesture commit would pop the route with
+            // nothing left to call `_close()`, and the next state emit would push
+            // the transcript straight back over the list.
+            canPop: true,
+            onPopInvokedWithResult: (didPop, _) {
+              if (!didPop) return;
+              // Clear the latch BEFORE `_close()`. `_close()` unsubscribes, and
+              // the coalescing emit for that state change lands on a later frame;
+              // if it arrives after this route has been popped and disposed, the
+              // null-id branch would call `removeRoute` on it and trip
+              // `assert(route._isInstalledIn(this))`. Pinned by the predictive
+              // back test, which lands the emit after the pop finishes.
+              _transcriptRoute = null;
+              _close();
+            },
+            child: _transcriptScaffold(context, id),
+          );
+        },
+      );
+      _transcriptRoute = route;
+      navigator.push(route);
+      return;
+    }
+    final route = _transcriptRoute;
+    if (route == null) return;
+    _transcriptRoute = null;
+    // `pop` animates the ordinary case; `removeRoute` is the only safe option
+    // when an overlay (dialog/sheet) is on top — and it leaves that overlay
+    // orphaned over the list, which is today's behaviour too.
+    if (route.isCurrent) {
+      navigator.pop();
+    } else {
+      navigator.removeRoute(route);
+    }
   }
 
   /// A thin banner so a dropped connection, a dead-end resync or a send failure
