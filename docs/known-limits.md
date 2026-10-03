@@ -390,6 +390,12 @@ rather than guess at it.
   "Summarize" and a custom prompt; neither is offered here. Reason: the summary is a
   model call whose result has no phone rendering (below), and v1 is deliberately the
   navigation-only half.
+- **The tree picker caps its indentation at six levels.** pi's terminal tree draws as
+  many branch levels as a branch needs and clips horizontally where it runs out of
+  room; a phone bottom sheet cannot scroll sideways, so past six 16dp steps (96dp) the
+  label would have nothing left on a 360dp sheet. The branch rule above the cap is pi's
+  own — a child steps in only where the history branched, so a straight conversation
+  renders flat however long it is.
 - **The tree is the message skeleton, not the whole session file.** Only `user` and
   `assistant` message entries are offered as navigation targets. Tool results, compaction
   entries, branch summaries, `session_info` and `model_change` are not, because the

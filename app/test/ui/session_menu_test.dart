@@ -52,6 +52,12 @@ Widget triggerHost(Future<void> Function(BuildContext context) open) =>
       ),
     );
 
+/// The left content padding of a rendered tree row, in logical pixels.
+double treeRowLeft(WidgetTester tester, String id) {
+  final tile = tester.widget<ListTile>(find.byKey(Key('tree-node-$id')));
+  return (tile.contentPadding! as EdgeInsets).left;
+}
+
 const List<ModelSummary> catalog = [
   ModelSummary(provider: 'anthropic', id: 'claude-sonnet-4', name: 'Claude Sonnet 4'),
   ModelSummary(provider: 'openai', id: 'gpt-5', name: 'GPT-5'),
@@ -903,6 +909,171 @@ void main() {
       // never-opened picker also satisfies a lone `findsNothing`.
       expect(find.byKey(const Key('tree-node-e1')), findsOneWidget);
       expect(find.byKey(const Key('tree-picker-truncated')), findsNothing);
+    });
+
+    testWidgets('a straight chain keeps every row at the same indent', (
+      tester,
+    ) async {
+      // The regression witness: in an ordinary conversation every message is
+      // the child of the previous one, so a depth-based indent marches right by
+      // one step per row until the label has no room left. A tall viewport so
+      // the whole dozen rows are built and readable in one pass.
+      tester.view.physicalSize = const Size(360 * 3, 2400 * 3);
+      tester.view.devicePixelRatio = 3;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final chain = [
+        for (var i = 0; i < 12; i++)
+          TreeNodeSummary(
+            id: 'c$i',
+            parentId: i == 0 ? null : 'c${i - 1}',
+            role: 'user',
+            text: 'message number $i',
+          ),
+      ];
+      await tester.pumpWidget(
+        triggerHost((context) async {
+          await pickTreeNode(context, chain, userOnly: false);
+        }),
+      );
+      await tester.tap(find.byKey(const Key('trigger')));
+      await tester.pumpAndSettle();
+
+      final first = treeRowLeft(tester, 'c0');
+      for (var i = 1; i < 12; i++) {
+        expect(
+          treeRowLeft(tester, 'c$i'),
+          first,
+          reason: 'row c$i must stay level with the chain, not drift right',
+        );
+      }
+    });
+
+    testWidgets('a fork indents both branches, then each branch stays flat', (
+      tester,
+    ) async {
+      // The rendered counterpart to the branch rule: only the fork steps rows
+      // in. Base padding is 16dp, so indent i renders at 16 + 16 * i.
+      tester.view.physicalSize = const Size(360 * 3, 2400 * 3);
+      tester.view.devicePixelRatio = 3;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      const fork = [
+        TreeNodeSummary(id: 'r', parentId: null, role: 'user', text: 'root'),
+        TreeNodeSummary(id: 'a', parentId: 'r', role: 'assistant', text: 'a'),
+        TreeNodeSummary(id: 'a1', parentId: 'a', role: 'user', text: 'a1'),
+        TreeNodeSummary(id: 'a2', parentId: 'a1', role: 'user', text: 'a2'),
+        TreeNodeSummary(id: 'b', parentId: 'r', role: 'assistant', text: 'b'),
+        TreeNodeSummary(id: 'b1', parentId: 'b', role: 'user', text: 'b1'),
+        TreeNodeSummary(id: 'b2', parentId: 'b1', role: 'user', text: 'b2'),
+      ];
+      await tester.pumpWidget(
+        triggerHost((context) async {
+          await pickTreeNode(context, fork, userOnly: false);
+        }),
+      );
+      await tester.tap(find.byKey(const Key('trigger')));
+      await tester.pumpAndSettle();
+
+      // r branches, so both branches step in (32). Each branch's first child
+      // takes pi's extra "visual grouping" step (48), then stays flat.
+      expect(treeRowLeft(tester, 'r'), 16);
+      expect(treeRowLeft(tester, 'a'), 32);
+      expect(treeRowLeft(tester, 'a1'), 48);
+      expect(treeRowLeft(tester, 'a2'), 48);
+      expect(treeRowLeft(tester, 'b'), 32);
+      expect(treeRowLeft(tester, 'b1'), 48);
+      expect(treeRowLeft(tester, 'b2'), 48);
+    });
+
+    testWidgets('the userOnly Fork path lists only user nodes and marks none', (
+      tester,
+    ) async {
+      // A pin: this is the Fork call exactly as the shell makes it
+      // (`userOnly: true`, no leafId), and neither half may drift.
+      await tester.pumpWidget(
+        triggerHost((context) async {
+          await pickTreeNode(context, treeNodes, userOnly: true);
+        }),
+      );
+      await tester.tap(find.byKey(const Key('trigger')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('tree-node-e1')), findsOneWidget);
+      expect(find.byKey(const Key('tree-node-e3')), findsOneWidget);
+      // e2 is the assistant turn: the Fork list offers user messages only.
+      expect(find.byKey(const Key('tree-node-e2')), findsNothing);
+      expect(find.byKey(const Key('tree-node-current-e1')), findsNothing);
+      expect(find.byKey(const Key('tree-node-current-e3')), findsNothing);
+    });
+  });
+
+  group('treeIndents', () {
+    test('the indent never exceeds treeMaxIndent however deep the history goes', () {
+      // A spine whose every node also sprouts a second child, so each
+      // generation would step in one further. Ten generations is well past the
+      // cap, and the maximum must sit exactly on it, so the clamp is exercised
+      // rather than merely never reached.
+      final nodes = <TreeNodeSummary>[
+        const TreeNodeSummary(
+          id: 'n0',
+          parentId: null,
+          role: 'user',
+          text: 'n0',
+        ),
+      ];
+      for (var i = 1; i <= 10; i++) {
+        nodes.add(
+          TreeNodeSummary(
+            id: 'n$i',
+            parentId: 'n${i - 1}',
+            role: 'user',
+            text: 'n$i',
+          ),
+        );
+        nodes.add(
+          TreeNodeSummary(
+            id: 'leaf$i',
+            parentId: 'n${i - 1}',
+            role: 'assistant',
+            text: 'leaf$i',
+          ),
+        );
+      }
+
+      final indents = treeIndents(nodes);
+      expect(indents.reduce((a, b) => a > b ? a : b), treeMaxIndent);
+      for (final indent in indents) {
+        expect(indent, lessThanOrEqualTo(treeMaxIndent));
+      }
+    });
+
+    test('an orphaned parent reads as a root and several roots branch', () {
+      const nodes = [
+        TreeNodeSummary(id: 'e1', parentId: null, role: 'user', text: 'e1'),
+        TreeNodeSummary(id: 'e2', parentId: 'e1', role: 'user', text: 'e2'),
+        // 'ghost' was dropped by the node cap, so the bridge relinked this node
+        // to the root; it must read as a root, not vanish.
+        TreeNodeSummary(
+          id: 'orphan',
+          parentId: 'ghost',
+          role: 'user',
+          text: 'orphan',
+        ),
+        TreeNodeSummary(
+          id: 'orphanChild',
+          parentId: 'orphan',
+          role: 'user',
+          text: 'orphanChild',
+        ),
+      ];
+
+      // Two roots: pi treats them as children of a virtual root that branches,
+      // so each root starts one step in and its single-child chain takes the
+      // extra step then stays flat.
+      expect(treeIndents(nodes), [1, 2, 1, 2]);
     });
   });
 
