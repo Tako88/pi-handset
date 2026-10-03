@@ -218,4 +218,32 @@ void main() {
     expect(block.toolView, isA<FileView>());
     expect(block.toolResult, isNotNull);
   });
+
+  test(
+    'a second snapshot replaces the transcript entries rather than appending',
+    () async {
+      Map<String, Object?> snapshot(String text) => {
+        'protocolVersion': 1,
+        'type': 'snapshot',
+        'sessionId': 's1',
+        'lastSeq': 1,
+        'agentState': 'settled',
+        'entries': [
+          {'type': 'user', 'text': text},
+        ],
+        'truncated': false,
+      };
+
+      client.subscribe('s1');
+      await pumpEventQueue();
+      factory.last.receive(snapshot('a'));
+      await pumpEventQueue();
+      factory.last.receive(snapshot('b'));
+      await pumpEventQueue();
+
+      final entries = client.transcript('s1')!.entries;
+      expect(entries.length, 1);
+      expect((entries.first as Map)['text'], 'b');
+    },
+  );
 }

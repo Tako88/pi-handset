@@ -425,4 +425,76 @@ void main() {
     expect(forkFrame['sessionId'], 's1');
     expect(forkFrame['args'], {'entryId': 'e9'});
   });
+
+  test('listTree parses the leaf id and a null leaf', () async {
+    Map<String, Object?> reply(String id, Map<String, Object?> extra) => {
+      'protocolVersion': 1,
+      'type': 'command-result',
+      'id': id,
+      'ok': true,
+      'tree': <Object?>[],
+      ...extra,
+    };
+
+    final withLeaf = client.listTree('s1');
+    socket().receive(
+      reply(lastCommand('listTree')['id']! as String, {'leafId': 'e2'}),
+    );
+    expect(
+      (await withLeaf.timeout(const Duration(seconds: 1))).leafId,
+      'e2',
+    );
+
+    final withNull = client.listTree('s1');
+    socket().receive(
+      reply(lastCommand('listTree')['id']! as String, {'leafId': null}),
+    );
+    expect(
+      (await withNull.timeout(const Duration(seconds: 1))).leafId,
+      isNull,
+    );
+
+    // An older bridge omits the field: an unknown position, not an error.
+    final absent = client.listTree('s1');
+    socket().receive(reply(lastCommand('listTree')['id']! as String, {}));
+    expect(
+      (await absent.timeout(const Duration(seconds: 1))).leafId,
+      isNull,
+    );
+  });
+
+  test('a leaf event re-requests history for the active session', () async {
+    await openS1();
+    final requestsBefore = framesOfType('history-request').length;
+    final entriesBefore = client.transcript('s1')!.entries.length;
+
+    socket().receive({
+      'protocolVersion': 1,
+      'type': 'event',
+      'payload': {'kind': 'leaf', 'leafId': 'e9'},
+    });
+    await pumpEventQueue();
+
+    final requests = framesOfType('history-request');
+    expect(requests.length, requestsBefore + 1);
+    expect(requests.last['sessionId'], 's1');
+    expect(
+      client.transcript('s1')!.entries.length,
+      entriesBefore,
+      reason: 'a leaf is a signal, not a transcript row',
+    );
+  });
+
+  test('sessionTree sends the command frame with the entry id', () async {
+    final future = client.sessionTree('s1', 'e9');
+    final frame = lastCommand('sessionTree');
+    expect(frame['sessionId'], 's1');
+    expect(frame['args'], {'entryId': 'e9'});
+
+    // A navigation does not replace the session, so the ack settles it — no
+    // successor-follow machinery is armed.
+    socket().receive(commandResult(frame['id']! as String, ok: true));
+    expect((await future.timeout(const Duration(seconds: 1))).ok, isTrue);
+    expect(scheduler.replacementTimers, isEmpty);
+  });
 }
