@@ -394,7 +394,11 @@ rather than guess at it.
   `assistant` message entries are offered as navigation targets. Tool results, compaction
   entries, branch summaries, `session_info` and `model_change` are not, because the
   bridge's tree projection emits a node only for a `message` entry whose role is user or
-  assistant. pi's own `/tree` can navigate to the omitted entries.
+  assistant. pi's own `/tree` can navigate to the omitted entries. The flip side: an
+  assistant turn that ran tools before writing any prose has no text parts, but it is no
+  longer mislabelled as an empty message — its node is labelled `(tool calls: ls, grep)`
+  (the tool names it called, deduplicated, first-seen order), or `(thinking)` when it only
+  thought, and only a turn with neither stays empty. A turn that has text is unchanged.
 - **A branch summary on the path has no phone rendering.** A summary written by a
   PC-side `/tree` is relayed as the raw `branch_summary` entry it is — it becomes the
   leaf, so it stays on the active branch — but the app's block model emits no row for its

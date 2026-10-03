@@ -55,6 +55,7 @@ import {
   normalizeAssistantEvent,
   normalizeMessageEnd,
   projectHistory,
+  projectTree,
   readEndpoint,
   resetSessionLinkageForTests,
   settleText,
@@ -3179,6 +3180,60 @@ test('listTree projects the real session tree into relinked, role-tagged nodes',
     { id: 'u3', parentId: 'a1', role: 'user', text: 'third' },
   ]);
   assert.equal(result.treeTruncated, false);
+});
+
+/** The projected text of one message node, via the real tree projection. */
+function treeTextFor(role: 'user' | 'assistant', content: unknown): string {
+  const { nodes } = projectTree([
+    { entry: { type: 'message', id: 'n1', message: { role, content } }, children: [] },
+  ]);
+  return nodes[0]?.text ?? '<missing node>';
+}
+
+test('an assistant turn with thinking and tool calls is labelled by its tool names', () => {
+  // A turn that ran tools before writing any prose used to project to an empty
+  // string and read as "(empty message)" in the app. It is labelled by the
+  // tools that ran instead — pi labels such rows the same way.
+  const text = treeTextFor('assistant', [
+    { type: 'thinking', thinking: 'let me look' },
+    { type: 'toolCall', id: 't1', name: 'ls', arguments: {} },
+    { type: 'toolCall', id: 't2', name: 'grep', arguments: {} },
+  ]);
+  assert.equal(text, '(tool calls: ls, grep)');
+});
+
+test('repeated tool names are deduplicated in first-seen order', () => {
+  const text = treeTextFor('assistant', [
+    { type: 'toolCall', id: 't1', name: 'ls' },
+    { type: 'toolCall', id: 't2', name: 'grep' },
+    { type: 'toolCall', id: 't3', name: 'ls' },
+  ]);
+  assert.equal(text, '(tool calls: ls, grep)');
+});
+
+test('a thinking-only assistant turn is labelled (thinking)', () => {
+  const text = treeTextFor('assistant', [{ type: 'thinking', thinking: 'hmm' }]);
+  assert.equal(text, '(thinking)');
+});
+
+test('an assistant turn with text is unchanged by the empty-turn fallback', () => {
+  // The fallback is for the empty case ONLY: a text-bearing turn must not gain
+  // a tool-name suffix and must not lose its text.
+  const text = treeTextFor('assistant', [
+    { type: 'thinking', thinking: 'hmm' },
+    { type: 'text', text: 'done' },
+    { type: 'toolCall', id: 't1', name: 'ls' },
+  ]);
+  assert.equal(text, 'done');
+});
+
+test("a user message's projection is unchanged, image markers and all", () => {
+  const text = treeTextFor('user', [
+    { type: 'text', text: 'look ' },
+    { type: 'image', data: 'AAAA' },
+    { type: 'text', text: ' here' },
+  ]);
+  assert.equal(text, 'look [image] here');
 });
 
 test('listTree keeps the newest 200 nodes and repairs the dangling parent', async () => {
