@@ -162,6 +162,14 @@ class SessionTranscript {
   /// which is exactly what compaction is about to change.
   final bool compacting;
 
+  /// The opaque cursor for the next older page, or null when this transcript is
+  /// already at the beginning of the session (or the bridge does not page).
+  final String? olderCursor;
+
+  /// True while an older-page request is in flight for this session. Disables
+  /// the load-older control without discarding the cursor it resumes from.
+  final bool historyLoading;
+
   const SessionTranscript({
     this.entries = const [],
     this.blocks = const [],
@@ -177,6 +185,8 @@ class SessionTranscript {
     this.thinkingLevel,
     this.currentModel,
     this.compacting = false,
+    this.olderCursor,
+    this.historyLoading = false,
   });
 
   SessionTranscript copyWith({
@@ -194,6 +204,8 @@ class SessionTranscript {
     String? thinkingLevel,
     ModelSummary? currentModel,
     bool? compacting,
+    Object? olderCursor = _unset,
+    bool? historyLoading,
   }) => SessionTranscript(
     entries: entries ?? this.entries,
     blocks: blocks ?? this.blocks,
@@ -209,6 +221,12 @@ class SessionTranscript {
     thinkingLevel: thinkingLevel ?? this.thinkingLevel,
     currentModel: currentModel ?? this.currentModel,
     compacting: compacting ?? this.compacting,
+    // A page reaching the session's beginning clears the cursor, so it must be
+    // settable to null: an `??` default could only ever keep the old value.
+    olderCursor: identical(olderCursor, _unset)
+        ? this.olderCursor
+        : olderCursor as String?,
+    historyLoading: historyLoading ?? this.historyLoading,
   );
 }
 
@@ -439,6 +457,12 @@ const Duration _connectTimeout = Duration(seconds: 10);
 /// Bounded wait for a `command-result` before the caller's future fails.
 const Duration _commandTimeout = Duration(seconds: 30);
 
+/// Bounded wait for an older page. A live socket is not a live agent: the
+/// bridge returns silently when it has no `ctx`, so without this an unanswered
+/// page would leave the control loading (and single-flight blocking a retry)
+/// until some unrelated baseline landed.
+const Duration _historyPageTimeout = Duration(seconds: 30);
+
 /// Bounded wait for a `/new` or `/fork` replacement to register. pi tears the
 /// old session down and registers the successor over two pushes; without this
 /// a bridge that dies in between would leave the client waiting forever.
@@ -506,6 +530,15 @@ class HubClient {
   /// One incremental derivation per live session, put and removed in lockstep
   /// with `_state.transcripts`. See `_withEntries` for the staleness contract.
   final Map<String, TranscriptDerivation> _derivations = {};
+
+  /// The cursor of the one in-flight older page per session, keyed by session.
+  /// Set by [loadOlder] and cleared by an applied snapshot, the page timeout,
+  /// a send failure, `session-gone`, `stop` and `disconnect`.
+  final Map<String, String> _pendingHistoryCursor = {};
+
+  /// The page-timeout handle per session, in lockstep with
+  /// [_pendingHistoryCursor].
+  final Map<String, HubTimer> _historyPageTimers = {};
 
   /// In-flight `list-dirs`, keyed by their `dirs-N` id. Kept separate from
   /// [_pendingCommands] because the two share the wire `id` field: a
@@ -640,6 +673,8 @@ class HubClient {
     // `stop()` closes `changes` for good and never resets `_state`, so nothing
     // else would ever drop the derivations; they die here.
     _derivations.clear();
+    _pendingHistoryCursor.clear();
+    _cancelHistoryPageTimeouts();
     // Every in-flight command fails rather than hanging the caller forever.
     _failPending('client stopped');
     await _dropConnection(reason: 'client stopped');
@@ -676,6 +711,8 @@ class HubClient {
     _sessionGoneCounts.clear();
     _restoredSessions.clear();
     _derivations.clear();
+    _pendingHistoryCursor.clear();
+    _cancelHistoryPageTimeouts();
     _lastErrorFromConnection = false;
     _state = const HubClientState();
     _flushNotify();
@@ -793,7 +830,11 @@ class HubClient {
   }
 
   /// Sends a `history-request`. The hub answers with a `snapshot`.
-  void requestHistory(String sessionId, {int? sinceSeq}) {
+  ///
+  /// Returns the send error (`null` when the frame went out), so [loadOlder]
+  /// can clear its in-flight state when the write failed. [cursor] is the older
+  /// page's opaque token and is placed on the frame only when non-null.
+  Object? requestHistory(String sessionId, {int? sinceSeq, String? cursor}) {
     final message = <String, Object?>{
       'protocolVersion': protocolVersion,
       'type': 'history-request',
@@ -802,7 +843,60 @@ class HubClient {
     // `sinceSeq` must be a positive safe integer; 0 or a negative is a
     // guaranteed hub `4002` self-kick, so clamp to the valid floor.
     if (sinceSeq != null) message['sinceSeq'] = sinceSeq < 1 ? 1 : sinceSeq;
-    _trySend(message);
+    if (cursor != null) message['cursor'] = cursor;
+    return _trySend(message);
+  }
+
+  /// Requests one older page for [sessionId] and prepends it when it arrives.
+  ///
+  /// Does nothing when the transcript is absent, is already at the session's
+  /// beginning ([SessionTranscript.olderCursor] is null), or a page is already
+  /// in flight (single-flight).
+  ///
+  /// The null-socket check runs BEFORE `historyLoading` is set: `_send`
+  /// silently drops on a null socket and `_trySend` reports that as success, so
+  /// setting loading there would disable the control with nothing in flight.
+  /// A non-null socket can still be a dead agent, so a successful send is
+  /// bounded by a page timeout that re-enables the control instead of hanging
+  /// it forever.
+  void loadOlder(String sessionId) {
+    final transcript = _state.transcripts[sessionId];
+    if (transcript == null) return;
+    final cursor = transcript.olderCursor;
+    if (cursor == null) return;
+    if (_pendingHistoryCursor.containsKey(sessionId)) return;
+    if (_socket == null) return;
+
+    _pendingHistoryCursor[sessionId] = cursor;
+    _putTranscript(sessionId, transcript.copyWith(historyLoading: true));
+    _scheduleNotify();
+    final error = requestHistory(sessionId, cursor: cursor);
+    if (error != null) {
+      _pendingHistoryCursor.remove(sessionId);
+      _putTranscript(sessionId, transcript.copyWith(historyLoading: false));
+      _scheduleNotify();
+      return;
+    }
+    _cancelHistoryPageTimeout(sessionId);
+    _historyPageTimers[sessionId] = _scheduler.schedule(_historyPageTimeout, () {
+      _historyPageTimers.remove(sessionId);
+      if (_pendingHistoryCursor.remove(sessionId) == null) return;
+      final current = _state.transcripts[sessionId];
+      if (current == null) return;
+      _putTranscript(sessionId, current.copyWith(historyLoading: false));
+      _scheduleNotify();
+    }, kind: HubTimerKind.historyPage);
+  }
+
+  void _cancelHistoryPageTimeout(String sessionId) {
+    _historyPageTimers.remove(sessionId)?.cancel();
+  }
+
+  void _cancelHistoryPageTimeouts() {
+    for (final timer in _historyPageTimers.values) {
+      timer.cancel();
+    }
+    _historyPageTimers.clear();
   }
 
   /// Sends one allowlisted command and completes when its `command-result`
@@ -1677,6 +1771,53 @@ class HubClient {
 
   void _onSnapshot(Map<String, Object?> message) {
     final sessionId = message['sessionId']! as String;
+    // Routing fields first: a discarded frame must not be decoded (round 2's
+    // missed edge), so `entries` is only touched on an apply path.
+    final token = message['cursor'] as String?;
+    final older = message['older'] == true;
+    final olderCursor = message['olderCursor'] as String?;
+
+    if (older) {
+      final existing = _state.transcripts[sessionId];
+      // Apply only the page this session actually asked for. Anything else — an
+      // absent token, a stale one, or no transcript — is discarded touching
+      // nothing, so a stale page cannot reset the resync livelock streak (R5)
+      // nor fabricate a baseline.
+      if (token == null ||
+          _pendingHistoryCursor[sessionId] != token ||
+          existing == null) {
+        return;
+      }
+      _pendingHistoryCursor.remove(sessionId);
+      _cancelHistoryPageTimeout(sessionId);
+      _resyncCounts.remove(sessionId);
+      _sessionGoneCounts.remove(sessionId);
+      final entries = (message['entries']! as List).cast<Object?>();
+      // Prepend through the session's own derivation. `copyWith` carries the
+      // in-flight stream and every ambient field across (design D + fact 13);
+      // the lists are copied so a retained snapshot is a true value.
+      final derivation = _derivations[sessionId]!;
+      derivation.rebuild([...entries, ...existing.entries]);
+      _putTranscript(
+        sessionId,
+        existing.copyWith(
+          entries: List<Object?>.of(derivation.entries),
+          blocks: List<TranscriptBlock>.of(derivation.blocks),
+          lastSeq: (message['lastSeq']! as num).toInt(),
+          agentState: message['agentState']! as String,
+          truncated: message['truncated']! as bool,
+          olderCursor: olderCursor,
+          historyLoading: false,
+        ),
+      );
+      _scheduleNotify();
+      return;
+    }
+
+    // No `older` flag is the newest-page baseline: a REPLACE that also
+    // invalidates any page in flight for this session.
+    _pendingHistoryCursor.remove(sessionId);
+    _cancelHistoryPageTimeout(sessionId);
     // A delivered baseline breaks any resync or gone streak.
     _resyncCounts.remove(sessionId);
     _sessionGoneCounts.remove(sessionId);
@@ -1692,6 +1833,7 @@ class HubClient {
         agentState: message['agentState']! as String,
         truncated: message['truncated']! as bool,
         historyLoaded: true,
+        olderCursor: olderCursor,
         // A snapshot re-baselines the transcript, so the usage reading has to be
         // carried across explicitly — and from THIS session's transcript, never
         // from whatever is currently active. The thinking level is the same. So
@@ -1864,6 +2006,8 @@ class HubClient {
     if (!keepTranscript) {
       transcripts.remove(sessionId);
       _derivations.remove(sessionId);
+      _pendingHistoryCursor.remove(sessionId);
+      _cancelHistoryPageTimeout(sessionId);
     }
     // Only the genuinely-gone branch drops the cache: under the cap the session
     // may come back (the re-subscribe race), and a kept key avoids a flicker.
