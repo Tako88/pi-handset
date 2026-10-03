@@ -50,8 +50,10 @@ import {
   boundToolPayload,
   buildToolView,
   computeBackoff,
+  entryAnchor,
   installBridge,
   isActiveMode,
+  mintCursor,
   normalizeAssistantEvent,
   normalizeMessageEnd,
   projectHistory,
@@ -3478,6 +3480,7 @@ test('projectHistory collapses a giant even when it is the newest entry', () => 
   assert.deepEqual(alone, {
     entries: [{ truncated: true, bytes: Buffer.byteLength(JSON.stringify(huge)) }],
     truncated: false,
+    start: 0,
   });
 });
 
@@ -3492,7 +3495,221 @@ test('projectHistory truncates at the byte cap and flags it', () => {
 test('projectHistory keeps everything under the cap', () => {
   const entries = [{ id: 1 }, { id: 2 }];
   const projection = projectHistory(entries, 1024);
-  assert.deepEqual(projection, { entries, truncated: false });
+  assert.deepEqual(projection, { entries, truncated: false, start: 0 });
+});
+
+test('projectHistory pages an older window up to the given end', () => {
+  const entries = Array.from({ length: 100 }, (_value, index) => ({ id: index, text: 'x'.repeat(200) }));
+  const page = projectHistory(entries, 1024, 60);
+  assert.ok(page.start > 0, 'the page must start inside the bounded prefix');
+  assert.ok(page.start < 60, 'the page must not reach past the given end');
+  assert.deepEqual(page.entries, entries.slice(page.start, 60));
+  assert.equal(page.truncated, true);
+  assert.ok(page.entries.every((entry) => (entry as { id: number }).id < 60));
+});
+
+test('projectHistory pages from the beginning when end is 0', () => {
+  const entries = [{ id: 1 }, { id: 2 }];
+  assert.deepEqual(projectHistory(entries, 1024, 0), {
+    entries: [],
+    truncated: false,
+    start: 0,
+  });
+});
+
+test('pages concatenated oldest-first reconstruct the whole annotated array', () => {
+  const annotated = Array.from({ length: 50 }, (_value, index) => ({
+    id: index,
+    text: `t${index}`,
+    pad: 'x'.repeat(30),
+  }));
+  const budget = 200;
+  const pages: unknown[][] = [];
+  let end = annotated.length;
+  for (let guard = 0; guard < 64; guard += 1) {
+    const page = projectHistory(annotated, budget, end);
+    pages.unshift(page.entries);
+    if (page.start === 0) break;
+    end = page.start;
+    if (guard === 63) assert.fail('projectHistory never reached the beginning');
+  }
+  assert.deepEqual(pages.flat(), annotated);
+});
+
+/** The newest `history` frame a socket has sent. */
+function lastHistory(socket: FakeSocket): Record<string, unknown> {
+  const history = parsed(socket)
+    .filter((message) => message.type === 'history')
+    .at(-1);
+  assert.ok(history, 'expected a history frame');
+  return history;
+}
+
+/** Plain user-message entries large enough that a page cannot hold them all. */
+function largeEntries(count: number, chars: number): unknown[] {
+  return Array.from({ length: count }, (_value, index) => ({
+    type: 'message',
+    id: `e${index}`,
+    message: { role: 'user', content: `${index}:${'x'.repeat(chars)}` },
+  }));
+}
+
+test('a history-request with a cursor answers an older page, echoes the cursor and marks it older', () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  ctx.setEntries(largeEntries(6, 200_000));
+  const socket = harness.sockets[0]!;
+  socket.open();
+  socket.message({ protocolVersion: PROTOCOL_VERSION, type: 'history-request', sessionId: 'sess-1' });
+  const baseline = lastHistory(socket);
+  const cursor = baseline.olderCursor;
+  assert.equal(typeof cursor, 'string', 'the baseline must offer a next cursor');
+  assert.equal('cursor' in baseline, false);
+  assert.equal('older' in baseline, false);
+  const offset = Number((cursor as string).split(':')[0]);
+  socket.message({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'history-request',
+    sessionId: 'sess-1',
+    cursor,
+  });
+  const page = lastHistory(socket);
+  assert.equal(page.cursor, cursor);
+  assert.equal(page.older, true);
+  assert.deepEqual(page.entries, annotateToolViews(largeEntries(6, 200_000)).slice(0, offset));
+  assert.equal('olderCursor' in page, false, 'the beginning is reached in one more page');
+});
+
+test('a mismatched anchor answers a fresh baseline carrying the routing cursor but no older flag', () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  ctx.setEntries(largeEntries(6, 200_000));
+  const socket = harness.sockets[0]!;
+  socket.open();
+  socket.message({ protocolVersion: PROTOCOL_VERSION, type: 'history-request', sessionId: 'sess-1' });
+  const baseline = lastHistory(socket);
+  const offset = (baseline.olderCursor as string).split(':')[0];
+  const wrong = `${offset}:0000000000000000`;
+  socket.message({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'history-request',
+    sessionId: 'sess-1',
+    cursor: wrong,
+  });
+  const page = lastHistory(socket);
+  assert.equal(page.cursor, wrong, 'the routing token is echoed even when not honoured');
+  assert.equal('older' in page, false);
+  assert.deepEqual(page.entries, baseline.entries, 'a mismatch degrades to a fresh newest page');
+});
+
+test('a history frame carries olderCursor only when older entries remain', () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  ctx.setEntries(largeEntries(10, 200_000));
+  const socket = harness.sockets[0]!;
+  socket.open();
+  let cursor: string | undefined;
+  let sawIntermediate = false;
+  for (let guard = 0; guard < 64; guard += 1) {
+    socket.message({
+      protocolVersion: PROTOCOL_VERSION,
+      type: 'history-request',
+      sessionId: 'sess-1',
+      ...(cursor === undefined ? {} : { cursor }),
+    });
+    const history = lastHistory(socket);
+    if (history.olderCursor === undefined) {
+      assert.ok(sawIntermediate, 'expected at least one intermediate page with an olderCursor');
+      return;
+    }
+    sawIntermediate = true;
+    cursor = history.olderCursor as string;
+  }
+  assert.fail('history paging never reached the beginning in 64 pages');
+});
+
+// PIN: a no-cursor request is byte-identical to today (NC-4 keeps this green).
+test('a history-request without a cursor is byte-identical to today', () => {
+  const harness = makeHarness();
+  harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  socket.message({ protocolVersion: PROTOCOL_VERSION, type: 'history-request', sessionId: 'sess-1' });
+  assert.deepEqual(lastHistory(socket), {
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'history',
+    sessionId: 'sess-1',
+    entries: [{ type: 'message', id: 'e1' }],
+    truncated: false,
+  });
+});
+
+test('a cursor whose boundary entry was collapsed still revalidates and pages the older window', () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  const sizeOf = (value: unknown): number => Buffer.byteLength(JSON.stringify(value) ?? 'null');
+  const huge = {
+    type: 'message',
+    id: 'huge',
+    message: { role: 'user', content: `H${'x'.repeat(900_000)}` },
+  };
+  // Tune the newest entry so the budget is nearly spent by the time the walk
+  // reaches `huge`; its tiny marker is kept, then the next-older entry no
+  // longer fits. The boundary is the collapsed `huge`, not the newest entry.
+  const newestTarget = HISTORY_MAX_BYTES - sizeOf({ truncated: true, bytes: sizeOf(huge) }) - 20;
+  const newestBase = { type: 'message', id: 'new', message: { role: 'user', content: '' } };
+  const newest = {
+    type: 'message',
+    id: 'new',
+    message: { role: 'user', content: 'n'.repeat(newestTarget - sizeOf(newestBase)) },
+  };
+  assert.equal(sizeOf(newest), newestTarget);
+  const older = { type: 'message', id: 'old', message: { role: 'user', content: 'older' } };
+  ctx.setEntries([older, huge, newest]);
+  const socket = harness.sockets[0]!;
+  socket.open();
+  socket.message({ protocolVersion: PROTOCOL_VERSION, type: 'history-request', sessionId: 'sess-1' });
+  const baseline = lastHistory(socket);
+  const cursor = baseline.olderCursor;
+  assert.equal(typeof cursor, 'string', 'the baseline must carry an olderCursor; the fixture is mistuned');
+  // The delivered boundary is the substituted marker, but the anchor digests
+  // the original entry, so the cursor must still revalidate.
+  assert.deepEqual((baseline.entries as unknown[])[0], { truncated: true, bytes: sizeOf(huge) });
+  socket.message({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'history-request',
+    sessionId: 'sess-1',
+    cursor,
+  });
+  const page = lastHistory(socket);
+  assert.equal(page.cursor, cursor);
+  assert.equal(page.older, true);
+  assert.deepEqual(page.entries, [older], 'the page must be the strictly older window');
+  assert.equal('olderCursor' in page, false);
+});
+
+test('the anchor binds the offset, so identical entries at different offsets do not alias', () => {
+  const shared = { type: 'message', id: 'same', message: { role: 'user', content: 'same' } };
+  const annotated = [shared, shared];
+  assert.notEqual(mintCursor(annotated, 0), mintCursor(annotated, 1));
+  // The digest itself, not just mintCursor's index prefix, must bind the offset.
+  assert.notEqual(entryAnchor(0, shared), entryAnchor(1, shared));
+  // The offset was swapped onto the other identical entry's anchor: a
+  // content-only digest would validate it, an offset-bound one must not.
+  const swapped = `0:${mintCursor(annotated, 1).split(':')[1]!}`;
+  const harness = makeHarness();
+  const ctx = harness.start();
+  ctx.setEntries(annotated);
+  const socket = harness.sockets[0]!;
+  socket.open();
+  socket.message({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'history-request',
+    sessionId: 'sess-1',
+    cursor: swapped,
+  });
+  const history = lastHistory(socket);
+  assert.equal('older' in history, false);
 });
 
 // ---------------------------------------------------------------------------
