@@ -344,21 +344,74 @@ String _treeLabel(TreeNodeSummary node) {
   return label.isEmpty ? '(empty message)' : label;
 }
 
-/// Depth of [node] inside [visible], following `parentId` chains. A parent that
-/// is not in [visible] — filtered out, or a root — ends the walk, so an orphaned
-/// parent reads as depth 0. The seen-guard bounds a malformed cycle rather than
-/// looping forever; pi's tree cannot cycle.
-int _treeDepth(TreeNodeSummary node, Map<String, TreeNodeSummary> visible) {
-  var depth = 0;
-  final seen = <String>{node.id};
-  var parentId = node.parentId;
-  while (parentId != null && seen.add(parentId)) {
-    final parent = visible[parentId];
-    if (parent == null) break;
-    depth++;
-    parentId = parent.parentId;
+/// The deepest the tree picker will indent a row, in steps of 16dp.
+///
+/// pi's terminal tree draws as many levels as a branch needs and clips
+/// horizontally; a phone bottom sheet cannot scroll sideways, so past this the
+/// label would have no room left. Six steps (96dp) leaves roughly 230dp of a
+/// 360dp sheet for the text. This cap is the phone-specific deviation — the
+/// branch rule below is pi's.
+const int treeMaxIndent = 6;
+
+/// The indentation for each node of [visible], in the same order, in 16dp
+/// steps.
+///
+/// This is pi's rule (`modes/interactive/components/tree-selector.js`, "single
+/// child chains don't drift right"): a child steps in only where the history
+/// actually branched. A node's children get `indent + 1` when the node has more
+/// than one child, and also when the node is the first generation after a
+/// branch — its own parent had more than one child — and it is already
+/// indented; that extra step is pi's "visual grouping". Otherwise they stay
+/// level, so a straight conversation renders flat however long it is. Several
+/// roots are treated as children of a virtual root that branches, so each root
+/// starts one step in. A parent absent from [visible] — an orphan relinked by
+/// the bridge's node cap — reads as a root.
+///
+/// Indents are clamped to [treeMaxIndent].
+List<int> treeIndents(List<TreeNodeSummary> visible) {
+  final byId = {for (final node in visible) node.id: node};
+  // Only a parent present in [visible] can have children there; an orphaned
+  // parent is a root and never gains a child count from a missing node.
+  final childCount = <String, int>{};
+  for (final node in visible) {
+    final parentId = node.parentId;
+    if (parentId != null && byId.containsKey(parentId)) {
+      childCount[parentId] = (childCount[parentId] ?? 0) + 1;
+    }
   }
-  return depth;
+  final roots = visible.where(
+    (node) => node.parentId == null || !byId.containsKey(node.parentId),
+  );
+  final multipleRoots = roots.length > 1;
+
+  final indentOf = <String, int>{};
+  // Whether the node's own parent had more than one child, i.e. whether the
+  // node is the first generation after a branch.
+  final firstAfterBranch = <String, bool>{};
+  final indents = <int>[];
+  for (final node in visible) {
+    final parentId = node.parentId;
+    int indent;
+    bool justBranched;
+    if (parentId == null || !byId.containsKey(parentId)) {
+      indent = multipleRoots ? 1 : 0;
+      justBranched = multipleRoots;
+    } else {
+      final parentIndent = indentOf[parentId]!;
+      final parentMultiple = (childCount[parentId] ?? 0) > 1;
+      if (parentMultiple || (firstAfterBranch[parentId]! && parentIndent > 0)) {
+        indent = parentIndent + 1;
+      } else {
+        indent = parentIndent;
+      }
+      justBranched = parentMultiple;
+    }
+    if (indent > treeMaxIndent) indent = treeMaxIndent;
+    indentOf[node.id] = indent;
+    firstAfterBranch[node.id] = justBranched;
+    indents.add(indent);
+  }
+  return indents;
 }
 
 /// Shows the session-tree picker, keeping only user nodes when [userOnly] is
@@ -384,7 +437,7 @@ Future<TreeNodeSummary?> pickTreeNode(
             if (node.role == 'user') node,
         ]
       : List<TreeNodeSummary>.of(nodes);
-  final byId = {for (final node in visible) node.id: node};
+  final indents = treeIndents(visible);
   return showModalBottomSheet<TreeNodeSummary>(
     context: context,
     builder: (sheetContext) => SafeArea(
@@ -403,15 +456,15 @@ Future<TreeNodeSummary?> pickTreeNode(
               title: Text('No messages to fork from'),
             )
           else
-            for (final node in visible)
+            for (var i = 0; i < visible.length; i++)
               ListTile(
-                key: Key('tree-node-${node.id}'),
+                key: Key('tree-node-${visible[i].id}'),
                 contentPadding: EdgeInsets.only(
-                  left: 16 + 16.0 * _treeDepth(node, byId),
+                  left: 16 + 16.0 * indents[i],
                   right: 16,
                 ),
                 title: Text(
-                  _treeLabel(node),
+                  _treeLabel(visible[i]),
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                 ),
@@ -419,13 +472,13 @@ Future<TreeNodeSummary?> pickTreeNode(
                 // place to go to, and a tap on the current point is a no-op pi
                 // reports, so the marker is the only thing that says "you are
                 // here". No `leafId` (the Fork path) marks nothing.
-                trailing: node.id == leafId
+                trailing: visible[i].id == leafId
                     ? Icon(
                         Icons.check,
-                        key: Key('tree-node-current-${node.id}'),
+                        key: Key('tree-node-current-${visible[i].id}'),
                       )
                     : null,
-                onTap: () => Navigator.pop(sheetContext, node),
+                onTap: () => Navigator.pop(sheetContext, visible[i]),
               ),
         ],
       ),
