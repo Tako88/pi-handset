@@ -354,6 +354,15 @@ DecodeResult decode(String text) {
       if (message['truncated'] is! bool) {
         return const DecodeResult.fail('bad-field', 'history truncated must be a boolean');
       }
+      if (!_isOptionalString(message, 'cursor')) {
+        return const DecodeResult.fail('bad-field', 'history cursor must be a string');
+      }
+      if (message.containsKey('older') && message['older'] is! bool) {
+        return const DecodeResult.fail('bad-field', 'history older must be a boolean');
+      }
+      if (!_isOptionalString(message, 'olderCursor')) {
+        return const DecodeResult.fail('bad-field', 'history olderCursor must be a string');
+      }
       return DecodeResult.ok(message);
     case 'command-result':
       if (_nonEmptyString(message['id']) == null) {
@@ -482,6 +491,9 @@ DecodeResult decode(String text) {
           'bad-seq',
           'history-request sinceSeq must be a positive safe integer',
         );
+      }
+      if (!_isOptionalString(message, 'cursor')) {
+        return const DecodeResult.fail('bad-field', 'history-request cursor must be a string');
       }
       return DecodeResult.ok(message);
     case 'command':
@@ -665,6 +677,15 @@ DecodeResult decode(String text) {
       }
       if (message['truncated'] is! bool) {
         return const DecodeResult.fail('bad-field', 'snapshot truncated must be a boolean');
+      }
+      if (!_isOptionalString(message, 'cursor')) {
+        return const DecodeResult.fail('bad-field', 'snapshot cursor must be a string');
+      }
+      if (message.containsKey('older') && message['older'] is! bool) {
+        return const DecodeResult.fail('bad-field', 'snapshot older must be a boolean');
+      }
+      if (!_isOptionalString(message, 'olderCursor')) {
+        return const DecodeResult.fail('bad-field', 'snapshot olderCursor must be a string');
       }
       return DecodeResult.ok(message);
     case 'resync-required':
