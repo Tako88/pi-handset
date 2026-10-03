@@ -1,5 +1,5 @@
 // The remembered hub endpoint value type. Persistence lives in
-// `SecureTokenStore` (one store, two keys — the endpoint is not a secret), so
+// `SecureTokenStore` (one store, three keys — the endpoint is not a secret), so
 // this file is the pure value type only.
 
 import 'package:flutter_test/flutter_test.dart';

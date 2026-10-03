@@ -1,7 +1,7 @@
 /// The remembered hub endpoint value type.
 ///
 /// Persistence is not owned here: `SecureTokenStore` keeps the endpoint under
-/// its own key (one store, two keys) — the address is not a secret, but it does
+/// its own key (one store, three keys) — the address is not a secret, but it does
 /// not deserve a second `flutter_secure_storage` wrapper.
 library;
 
