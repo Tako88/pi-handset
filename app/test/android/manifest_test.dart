@@ -74,6 +74,19 @@ void main() {
     }
   });
 
+  test('main manifest opts into predictive back', () {
+    final xml = File('android/app/src/main/AndroidManifest.xml').readAsStringSync();
+    expect(
+      RegExp(
+        r'<application\s+[^>]*android:enableOnBackInvokedCallback="true"',
+        dotAll: true,
+      ).hasMatch(xml),
+      isTrue,
+      reason: 'without the OS opt-in Android never delivers startBackGesture/'
+          'commitBackGesture, so the transcript route cannot preview the list',
+    );
+  });
+
   test('main manifest declares the specialUse foreground service', () {
     final xml = File('android/app/src/main/AndroidManifest.xml').readAsStringSync();
 
