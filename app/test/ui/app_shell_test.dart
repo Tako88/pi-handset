@@ -1319,6 +1319,54 @@ void main() {
     expect(sentUnsubscribe(h, 's1'), isFalse);
   });
 
+  testWidgets(
+    'back with the compact dialog open dismisses the dialog, not the transcript',
+    (tester) async {
+      final h = await openFirstSession(tester);
+
+      await tester.tap(find.byKey(const Key('session-menu')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('session-menu-compact')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('compact-confirm')), findsOneWidget);
+
+      // A dialog has no predictive transition, so the transcript route — not
+      // current under the dialog — declines the gesture.
+      expect(await startBackGesture(tester), isFalse);
+      await commitBackGesture(tester);
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('compact-confirm')), findsNothing);
+      expect(find.byKey(const Key('compose-field')), findsOneWidget);
+      expect(sentUnsubscribe(h, 's1'), isFalse);
+    },
+  );
+
+  testWidgets(
+    'back with the model picker open dismisses the sheet, not the transcript',
+    (tester) async {
+      final h = await openFirstSession(tester);
+
+      final listFrame = await tapModelItem(tester, h);
+      h.factory.last.receive(
+        modelsReply(listFrame['id']! as String, [
+          {'provider': 'openai', 'id': 'gpt-5', 'name': 'GPT-5'},
+        ]),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('model-picker')), findsOneWidget);
+
+      // A bottom sheet carries no predictive transition either.
+      expect(await startBackGesture(tester), isFalse);
+      await commitBackGesture(tester);
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('model-picker')), findsNothing);
+      expect(find.byKey(const Key('compose-field')), findsOneWidget);
+      expect(sentUnsubscribe(h, 's1'), isFalse);
+    },
+  );
+
   testWidgets('repeated sessions pushes do not push a second transcript', (
     tester,
   ) async {
@@ -2042,6 +2090,35 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 500));
     await tester.pump(const Duration(milliseconds: 500));
+
+    expect(find.byType(FolderBrowserScreen), findsNothing);
+    expect(find.text('pi sessions · 10.0.0.5:8787'), findsOneWidget);
+  });
+
+  testWidgets('the folder browser still pops on a predictive back gesture', (
+    tester,
+  ) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+    h.factory.last.receive(capableSessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+
+    await tester.tap(find.byKey(const Key('start-session')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('open-project')));
+    // The browser shows a spinner until its listing arrives, so settle no
+    // further than the route transition — but the transition must complete
+    // before the route's predictive detector will claim a gesture.
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(find.byType(FolderBrowserScreen), findsOneWidget);
+
+    // Unlike a dialog, the browser is a MaterialPageRoute with a predictive
+    // detector, so it claims the gesture (S4).
+    expect(await startBackGesture(tester), isTrue);
+    await commitBackGesture(tester);
+    await tester.pumpAndSettle();
 
     expect(find.byType(FolderBrowserScreen), findsNothing);
     expect(find.text('pi sessions · 10.0.0.5:8787'), findsOneWidget);
