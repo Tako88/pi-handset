@@ -503,6 +503,10 @@ class HubClient {
   HubClientState _state = const HubClientState();
   final Map<String, _PendingCommand> _pendingCommands = {};
 
+  /// One incremental derivation per live session, put and removed in lockstep
+  /// with `_state.transcripts`. See `_withEntries` for the staleness contract.
+  final Map<String, TranscriptDerivation> _derivations = {};
+
   /// In-flight `list-dirs`, keyed by their `dirs-N` id. Kept separate from
   /// [_pendingCommands] because the two share the wire `id` field: a
   /// `command-result` for a listing id must not complete a command.
@@ -633,6 +637,9 @@ class HubClient {
     _cancelConnectDeadline();
     _dialSeq++;
     _clearReplacementFollow();
+    // `stop()` closes `changes` for good and never resets `_state`, so nothing
+    // else would ever drop the derivations; they die here.
+    _derivations.clear();
     // Every in-flight command fails rather than hanging the caller forever.
     _failPending('client stopped');
     await _dropConnection(reason: 'client stopped');
@@ -668,6 +675,7 @@ class HubClient {
     _resyncCounts.clear();
     _sessionGoneCounts.clear();
     _restoredSessions.clear();
+    _derivations.clear();
     _lastErrorFromConnection = false;
     _state = const HubClientState();
     _flushNotify();
@@ -1481,6 +1489,10 @@ class HubClient {
         _settleReplacementPendings(awaited);
         _clearReplacementFollow();
         _resubscribed = true;
+        // Adoption puts/removes no predecessor transcript, so it must not touch
+        // the predecessor derivation: the predecessor's own `session-gone`
+        // classifies it (drop or keep) and the derivation follows its
+        // transcript there.
         _subscribe(successor.sessionId, restoring: true);
       }
     } else {
@@ -1599,7 +1611,7 @@ class HubClient {
             message is Map && (message['role'] == 'assistant' || isTruncated);
         _putTranscript(
           sessionId,
-          _withEntries(transcript, [...transcript.entries, message]).copyWith(
+          _withEntries(sessionId, transcript, message).copyWith(
             streamingText: fromAssistant ? '' : transcript.streamingText,
             // Cleared in the SAME update that commits the message: the commit
             // carries the reasoning block itself, so a later clear would render
@@ -1626,7 +1638,7 @@ class HubClient {
         final isErrorStatus = payload['event'] == 'error';
         _putTranscript(
           sessionId,
-          _withEntries(transcript, [...transcript.entries, payload]).copyWith(
+          _withEntries(sessionId, transcript, payload).copyWith(
             thinking: isErrorStatus ? false : transcript.thinking,
             streamingThinking: isErrorStatus ? '' : transcript.streamingThinking,
           ),
@@ -1637,7 +1649,7 @@ class HubClient {
         // in arrival order, like any other entry.
         _putTranscript(
           sessionId,
-          _withEntries(transcript, [...transcript.entries, payload]),
+          _withEntries(sessionId, transcript, payload),
         );
       case 'leaf':
         // The bridge moved the leaf (or pi did, on the PC). A signal, not a row:
@@ -1657,7 +1669,7 @@ class HubClient {
         // renderer can consume it; nothing in this build does.
         _putTranscript(
           sessionId,
-          _withEntries(transcript, [...transcript.entries, payload]),
+          _withEntries(sessionId, transcript, payload),
         );
     }
     _scheduleNotify();
@@ -1669,11 +1681,13 @@ class HubClient {
     _resyncCounts.remove(sessionId);
     _sessionGoneCounts.remove(sessionId);
     final entries = (message['entries']! as List).cast<Object?>();
+    final derivation = TranscriptDerivation()..rebuild(entries);
+    _derivations[sessionId] = derivation;
     _putTranscript(
       sessionId,
       SessionTranscript(
-        entries: entries,
-        blocks: deriveBlocks(entries),
+        entries: List<Object?>.of(derivation.entries),
+        blocks: List<TranscriptBlock>.of(derivation.blocks),
         lastSeq: (message['lastSeq']! as num).toInt(),
         agentState: message['agentState']! as String,
         truncated: message['truncated']! as bool,
@@ -1847,7 +1861,10 @@ class HubClient {
         .where((summary) => summary.sessionId != sessionId)
         .toList();
     final transcripts = {..._state.transcripts};
-    if (!keepTranscript) transcripts.remove(sessionId);
+    if (!keepTranscript) {
+      transcripts.remove(sessionId);
+      _derivations.remove(sessionId);
+    }
     // Only the genuinely-gone branch drops the cache: under the cap the session
     // may come back (the re-subscribe race), and a kept key avoids a flicker.
     final commands = gaveUp
@@ -1936,12 +1953,42 @@ class HubClient {
     _putTranscript(sessionId, const SessionTranscript());
   }
 
-  /// Replaces [transcript]'s entries and re-derives its blocks in one place, so
-  /// a new entry site cannot forget the block model.
+  /// Extends [transcript]'s session by [entry] through that session's
+  /// derivation instead of re-deriving the whole list. Returns a transcript
+  /// holding *copies* of the derivation's lists, so a retained old transcript
+  /// can never observe a later append. `transcript.entries` is consulted only
+  /// when the derivation is missing or does not match the incoming baseline.
   SessionTranscript _withEntries(
+    String sessionId,
     SessionTranscript transcript,
-    List<Object?> entries,
-  ) => transcript.copyWith(entries: entries, blocks: deriveBlocks(entries));
+    Object? entry,
+  ) {
+    var derivation = _derivations[sessionId];
+    if (derivation == null ||
+        !_matchesDerivation(derivation, transcript.entries)) {
+      derivation = TranscriptDerivation()..rebuild(transcript.entries);
+      _derivations[sessionId] = derivation;
+    }
+    derivation.append(entry);
+    return transcript.copyWith(
+      entries: List<Object?>.of(derivation.entries),
+      blocks: List<TranscriptBlock>.of(derivation.blocks),
+    );
+  }
+
+  /// Cheap staleness net. Under design D the transcript always holds a fresh
+  /// copy, so `identical(entries)` is useless; the copy preserves element
+  /// *objects*, so tail identity plus length detects a replaced baseline. The
+  /// primary mechanism is explicit invalidation at every replacement point
+  /// (snapshot, the `session-gone` drop branch, `disconnect`, `stop`); this
+  /// catches a path that did not. It cannot see a same-length, same-tail
+  /// interior change — no current path produces one, and any future one must
+  /// invalidate explicitly.
+  bool _matchesDerivation(TranscriptDerivation d, List<Object?> entries) {
+    if (d.entries.length != entries.length) return false;
+    if (entries.isEmpty) return true;
+    return identical(d.entries.last, entries.last);
+  }
 
   void _putTranscript(String sessionId, SessionTranscript transcript) {
     _state = _state.copyWith(
