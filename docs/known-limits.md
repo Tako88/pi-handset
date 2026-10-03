@@ -447,3 +447,25 @@ rather than guess at it.
   `/reload` (or a restart); and the menu items and follow logic ship in the app. An old
   app ignores the new `replacesSessionId` field and the capability, so it is never
   offered the items.
+
+## Notifications
+
+- **The transcript ⋮ menu offers only Default and Muted, never Force-on.** The toggle
+  lives in the transcript, so reaching it already engages the session — a force-on switch
+  would answer a question the open transcript has already answered.
+- **A muted session keeps its mute through a `/new`/`/fork` successor.** The flag is
+  migrated to the new session id along with the engagement, so the successor inherits it;
+  intended, because the successor is the same conversation continued.
+- **An app-started session counts as engaged from the moment it starts**, so it can notify
+  even before its transcript is opened. Deliberate: `origin == 'app'` is treated as
+  engagement because starting a session takes you into it, and a quick session that
+  settles before the transcript finishes opening would otherwise be silent.
+- **Changing hubs does not clear the stored notify preference.** Session ids come from
+  pi's session-file header, so a session file synced to two machines could in principle
+  carry a mute across; leaving it is deliberate, because pruning on a hub change would
+  forget the override for a session resumed later. The LRU cap eventually evicts the
+  oldest entries after a change of hubs.
+- **Muting at the instant a session is replaced can write the mute to the predecessor.**
+  The menu item toggles whichever id it was built for, so a `/new`/`/fork` landing between
+  build and tap migrates the flag to the successor while the tap writes the old id, and
+  one tap may appear not to stick. No crash.
