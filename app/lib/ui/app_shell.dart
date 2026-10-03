@@ -67,6 +67,7 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
   StreamSubscription<HubClientState>? _subscription;
   StreamSubscription<String>? _openRequests;
   StreamSubscription<AgentSettledEvent>? _settlesSub;
+  StreamSubscription<LeafEvent>? _leafSub;
   bool _loading = true;
   bool _authenticated = false;
   HubEndpoint? _endpoint;
@@ -124,6 +125,12 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
   /// message.
   PickedImage? _attachment;
 
+  /// The tree node the user tapped, waiting for the `leaf` event that proves pi
+  /// navigated to it. Single-slot: a newer tap, a session switch, or a refusal
+  /// clears it. The prefill runs from the leaf signal, never the ack, because
+  /// the ack means accepted — not navigated.
+  _PendingTreeTap? _pendingTreeTap;
+
   /// Whether the composer currently holds a command draft (a leading `/` with
   /// no whitespace). The shell refetches the command list on the transition
   /// into this state, so the `/` overlay is fresh at the point of use.
@@ -136,6 +143,7 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
     _subscription = widget.client.changes.listen(_onState);
     _openRequests = widget.notifications.openSessionRequests.listen(_queueOpen);
     _settlesSub = widget.client.settles.listen(_onSettle);
+    _leafSub = widget.client.leafEvents.listen(_onLeaf);
     _composer.addListener(_onComposerChanged);
     WidgetsBinding.instance.addObserver(this);
     unawaited(widget.notifications.requestPermission());
@@ -148,6 +156,7 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
     _subscription?.cancel();
     _openRequests?.cancel();
     _settlesSub?.cancel();
+    _leafSub?.cancel();
     _composer.removeListener(_onComposerChanged);
     _composer.dispose();
     _composerFocus.dispose();
@@ -225,6 +234,28 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
     );
   }
 
+  /// A leaf move: the navigation a pending tree tap asked for actually ran.
+  ///
+  /// Prefill happens here, not on the `sessionTree` ack, because the bridge
+  /// acks before it navigates: a cancel, a throw or a stale same-leaf tap all
+  /// land after the ack. The single-slot tap is consumed whether or not it
+  /// prefilled, and only when it belongs to the moved session.
+  void _onLeaf(LeafEvent event) {
+    if (!mounted) return;
+    final pending = _pendingTreeTap;
+    if (pending == null || pending.sessionId != event.sessionId) return;
+    _pendingTreeTap = null;
+    // pi restores the text only into an empty editor, and only for a user
+    // message; an assistant node moves the leaf without prefilling.
+    if (pending.node.role != 'user') return;
+    if (_composer.text.trim().isNotEmpty) return;
+    _composer.value = TextEditingValue(
+      text: pending.node.text,
+      selection: TextSelection.collapsed(offset: pending.node.text.length),
+    );
+    _composerFocus.requestFocus();
+  }
+
   void _onState(HubClientState state) {
     if (!mounted) return;
     // A `/new`//`/fork` successor carries the id it replaced: inherit the
@@ -243,7 +274,12 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
       _state = state;
       // Open/close/switch/replacement: a picked image belongs to the session it
       // was picked in, and the pre-existing draft text is deliberately global.
-      if (state.activeSessionId != previous) _attachment = null;
+      if (state.activeSessionId != previous) {
+        _attachment = null;
+        // A pending tree tap belongs to the session it was made in; a switch
+        // abandons it rather than letting a later leaf prefill it.
+        _pendingTreeTap = null;
+      }
       // A hub that loses the capability must not resurrect a stale pick if the
       // capability later returns.
       if (!state.capabilities.contains(capabilityAttachments)) _attachment = null;
@@ -553,6 +589,56 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
     );
   }
 
+  /// Lists the whole session tree, marks pi's current leaf, and moves the leaf
+  /// to the picked node. `context.mounted` after the list await, because the
+  /// picker needs the descendant context alive — the same check `_fork` makes.
+  ///
+  /// The `sessionTree` ack means accepted, not navigated, so this never
+  /// prefills and never re-requests history here: [_onLeaf] does both when pi's
+  /// `leaf` event arrives. A request issued now would race the move and could
+  /// return the old branch.
+  Future<void> _navigateTree(String activeId, BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final listed = await widget.client.listTree(activeId);
+    if (!context.mounted) return;
+    if (!listed.ok) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(listed.error ?? 'could not read the session tree'),
+        ),
+      );
+      return;
+    }
+    final picked = await pickTreeNode(
+      context,
+      listed.tree ?? const <TreeNodeSummary>[],
+      userOnly: false,
+      truncated: listed.treeTruncated ?? false,
+      leafId: listed.leafId,
+    );
+    if (!mounted || picked == null) return;
+    // pi returns early for a same-leaf target before it emits, so a tap sent
+    // for the current point would produce no `leaf` event and look like a
+    // failure. Answer it locally instead.
+    if (picked.id == listed.leafId) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Already at this point')),
+      );
+      return;
+    }
+    _pendingTreeTap = _PendingTreeTap(sessionId: activeId, node: picked);
+    final result = await widget.client.sessionTree(activeId, picked.id);
+    if (!mounted) return;
+    if (!result.ok) {
+      // A dispatch-time refusal never navigates, so drop the armed tap rather
+      // than let a later, unrelated leaf prefill it.
+      _pendingTreeTap = null;
+      messenger.showSnackBar(
+        SnackBar(content: Text(result.error ?? 'could not navigate the tree')),
+      );
+    }
+  }
+
   /// Renames the session. The display updates when pi reports the new label.
   Future<void> _rename(String activeId, BuildContext context) async {
     final messenger = ScaffoldMessenger.of(context);
@@ -837,6 +923,9 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
             onFork: _state.capabilities.contains(capabilitySessionControl)
                 ? () => _fork(activeId, context)
                 : null,
+            onTree: _state.capabilities.contains(capabilitySessionControl)
+                ? () => _navigateTree(activeId, context)
+                : null,
           ),
         ],
       ),
@@ -1028,4 +1117,14 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
     }
     return 'session';
   }
+}
+
+/// A tree node the user tapped, waiting for the `leaf` event that proves pi
+/// navigated to it. Carries its session so a leaf for another session cannot
+/// consume it.
+class _PendingTreeTap {
+  final String sessionId;
+  final TreeNodeSummary node;
+
+  const _PendingTreeTap({required this.sessionId, required this.node});
 }

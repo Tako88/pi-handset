@@ -497,4 +497,33 @@ void main() {
     expect((await future.timeout(const Duration(seconds: 1))).ok, isTrue);
     expect(scheduler.replacementTimers, isEmpty);
   });
+
+  test('a leaf event reaches the leaf stream with the session and leaf', () async {
+    await openS1();
+    final events = <LeafEvent>[];
+    final subscription = client.leafEvents.listen(events.add);
+    addTearDown(subscription.cancel);
+
+    socket().receive({
+      'protocolVersion': 1,
+      'type': 'event',
+      'payload': {'kind': 'leaf', 'leafId': 'e9'},
+    });
+    await pumpEventQueue();
+
+    expect(events, hasLength(1));
+    expect(events.single.sessionId, 's1');
+    expect(events.single.leafId, 'e9');
+  });
+
+  test('the leaf stream closes when the client stops', () async {
+    await openS1();
+    var done = false;
+    client.leafEvents.listen((_) {}, onDone: () => done = true);
+
+    await client.stop();
+    await pumpEventQueue();
+
+    expect(done, isTrue);
+  });
 }

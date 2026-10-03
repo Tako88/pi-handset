@@ -95,6 +95,17 @@ class AgentSettledEvent {
   });
 }
 
+/// One `leaf` event: the bridge moved a session's leaf, or pi did on the PC.
+/// Carries the session it is attributed to (relay frames name none, so the
+/// client uses the active one) and the new leaf id, which is `null` when the
+/// leaf moved to the root. A signal, not a transcript row.
+class LeafEvent {
+  final String sessionId;
+  final String? leafId;
+
+  const LeafEvent({required this.sessionId, required this.leafId});
+}
+
 /// The renderer-agnostic transcript for one session.
 ///
 /// [entries] hold raw relayed values exactly as they arrived (history/snapshot
@@ -486,6 +497,9 @@ class HubClient {
   final StreamController<AgentSettledEvent> _settlesController =
       StreamController<AgentSettledEvent>.broadcast(sync: true);
 
+  final StreamController<LeafEvent> _leafEventsController =
+      StreamController<LeafEvent>.broadcast(sync: true);
+
   HubClientState _state = const HubClientState();
   final Map<String, _PendingCommand> _pendingCommands = {};
 
@@ -558,6 +572,12 @@ class HubClient {
   /// possible; it closes with [stop], never with [disconnect].
   Stream<AgentSettledEvent> get settles => _settlesController.stream;
 
+  /// Leaf moves: one event per `leaf` frame, carrying the session it is
+  /// attributed to and the new leaf id (`null` for the root). Broadcast, so
+  /// several listeners are possible; it closes with [stop], never with
+  /// [disconnect].
+  Stream<LeafEvent> get leafEvents => _leafEventsController.stream;
+
   /// The number of consecutive resyncs a session is allowed before the client
   /// gives up. Exposed for the tests that drive the cap.
   static const int maxConsecutiveResyncs = _maxConsecutiveResyncs;
@@ -622,6 +642,7 @@ class HubClient {
     _flushNotify();
     if (!_changesController.isClosed) await _changesController.close();
     if (!_settlesController.isClosed) await _settlesController.close();
+    if (!_leafEventsController.isClosed) await _leafEventsController.close();
   }
 
   /// Like [stop], but leaves [changes] open so the app can point at a different
@@ -1620,7 +1641,16 @@ class HubClient {
         );
       case 'leaf':
         // The bridge moved the leaf (or pi did, on the PC). A signal, not a row:
-        // re-request history so the transcript re-baselines to the new branch.
+        // re-request history so the transcript re-baselines to the new branch,
+        // and announce the move so the shell can settle a pending tree tap.
+        if (!_leafEventsController.isClosed) {
+          _leafEventsController.add(
+            LeafEvent(
+              sessionId: sessionId,
+              leafId: payload['leafId'] as String?,
+            ),
+          );
+        }
         requestHistory(sessionId);
       default:
         // An unknown payload is retained rather than dropped, so a future
