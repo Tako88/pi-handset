@@ -76,6 +76,14 @@ export interface BridgeSessionManager {
   getEntry(id: string): unknown;
   /** pi's session tree, for `/tree`. Optional: absent on an older pi. */
   getTree?(): unknown;
+  /**
+   * The active branch's context entries — branch plus compaction projection.
+   * Optional: absent on an older pi, where whole-file `getEntries()` is the
+   * fallback. `sendHistory` prefers this so the transcript follows the leaf.
+   */
+  buildContextEntries?(): unknown[];
+  /** The tree's current leaf, or `null` for the root. Optional, like `getTree`. */
+  getLeafId?(): string | null;
 }
 
 /**
@@ -1354,6 +1362,8 @@ interface CommandOutcome {
   queued?: boolean;
   tree?: TreeNodeSummary[];
   treeTruncated?: boolean;
+  /** The current leaf, on a `listTree` result; `null` is the root. */
+  leafId?: string | null;
 }
 
 class Bridge {
@@ -1449,6 +1459,11 @@ class Bridge {
     // also re-baselines directly, because `_emitModelSelect` early-returns for
     // an equal-model switch and the direct emit is then the only frame.
     this.pi.on('model_select', () => this.guard(() => this.sendUsageEvent()));
+    // A leaf move — the app's own tap or a PC-side `/tree` — is the one signal
+    // that the branch changed. pi emits it after `branch()`/`resetLeaf()`, so a
+    // re-requesting viewer re-baselines on the new branch. Guarded like every
+    // other subscription so a mapping failure cannot escape into pi.
+    this.pi.on('session_tree', (event) => this.guard(() => this.onSessionTree(event)));
     // `ctx.compact()` is fire-and-forget and passes no `onError`, so a failed
     // compaction is otherwise invisible. Surface every reason (manual, overflow,
     // threshold) — an auto-compaction failure is more consequential, not less.
@@ -1840,6 +1855,7 @@ class Bridge {
         outcome.models,
         outcome.tree,
         outcome.treeTruncated,
+        outcome.leafId,
       );
     } catch (error) {
       this.sendCommandResult(
@@ -1977,7 +1993,13 @@ class Bridge {
           return { ok: false, error: 'tree unavailable' };
         }
         const projection = projectTree(manager.getTree(), TREE_MAX_NODES);
-        return { ok: true, tree: projection.nodes, treeTruncated: projection.truncated };
+        const leafId = typeof manager.getLeafId === 'function' ? manager.getLeafId() : null;
+        return {
+          ok: true,
+          tree: projection.nodes,
+          treeTruncated: projection.truncated,
+          leafId,
+        };
       }
       case 'setSessionName': {
         const sessionName = asString(fields.name);
@@ -1998,6 +2020,14 @@ class Bridge {
         }
         const entryId = asString(fields.entryId);
         if (entryId === null) return { ok: false, error: 'missing entry' };
+        // Validate the target here, at dispatch, exactly as `sessionFork` does:
+        // `triggerSessionAction` only acks that pi accepted the request, and a
+        // stale id would then surface as a `status/error` long after the app
+        // moved on. pi resolves non-message entries too (the leaf becomes the
+        // entry), so only resolution is required, not a role.
+        if (asObject(ctx.sessionManager.getEntry(entryId)) === null) {
+          return { ok: false, error: 'unknown entry' };
+        }
         return this.triggerSessionAction('tree', entryId);
       }
       case 'sessionFork': {
@@ -2040,10 +2070,15 @@ class Bridge {
     if (ctx === null) return;
     // The snapshot carries the same normalized tool views as the live relay, so
     // a reconnecting or history-loading viewer does not need to re-derive them.
-    const projection = projectHistory(
-      annotateToolViews(ctx.sessionManager.getEntries()),
-      HISTORY_MAX_BYTES,
-    );
+    // The projection is the ACTIVE BRANCH (`buildContextEntries`), not the whole
+    // file: navigating the tree only moves a leaf, so a whole-file replay would
+    // never change. Fall back to `getEntries()` on an older pi that lacks it.
+    const manager = ctx.sessionManager;
+    const entries =
+      typeof manager.buildContextEntries === 'function'
+        ? manager.buildContextEntries()
+        : manager.getEntries();
+    const projection = projectHistory(annotateToolViews(entries), HISTORY_MAX_BYTES);
     const message: HistoryMessage = {
       protocolVersion: PROTOCOL_VERSION,
       type: 'history',
@@ -2133,6 +2168,17 @@ class Bridge {
     });
   }
 
+  /**
+   * Maps pi's `session_tree` event to the `leaf` payload. A `null` `newLeafId`
+   * (navigated to the root) is preserved, not omitted: absent means "an older
+   * bridge", which the app cannot tell from "at the root".
+   */
+  private onSessionTree(event: unknown): void {
+    const raw = (event as { newLeafId?: unknown } | null)?.newLeafId;
+    const leafId = typeof raw === 'string' && raw.length > 0 ? raw : null;
+    this.sendEvent({ kind: 'leaf', leafId });
+  }
+
   private sendCommandResult(
     id: string,
     ok: boolean,
@@ -2142,6 +2188,7 @@ class Bridge {
     models?: ModelSummary[],
     tree?: TreeNodeSummary[],
     treeTruncated?: boolean,
+    leafId?: string | null,
   ): void {
     const message: CommandResultMessage = {
       protocolVersion: PROTOCOL_VERSION,
@@ -2155,6 +2202,7 @@ class Bridge {
     if (models !== undefined) message.models = models;
     if (tree !== undefined) message.tree = tree;
     if (treeTruncated !== undefined) message.treeTruncated = treeTruncated;
+    if (leafId !== undefined) message.leafId = leafId;
     this.send(message);
   }
 }

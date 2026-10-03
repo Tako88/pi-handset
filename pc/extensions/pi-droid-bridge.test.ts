@@ -248,10 +248,18 @@ interface TestCtx extends BridgeCtx {
   removeRegistry(): void;
   /** Replace the session entries (history/annotation tests). */
   setEntries(entries: unknown[]): void;
+  /**
+   * Give the fake manager a `buildContextEntries` closure. Absent by default on
+   * purpose, so every existing history test keeps exercising the whole-file
+   * `getEntries()` fallback an older pi takes.
+   */
+  setBranchEntries(entries: unknown[]): void;
   /** Point the manager at another hub session id, as a replacement does. */
   setSessionId(id: string): void;
   /** Replace pi's session tree (listTree tests). */
   setTree(nodes: unknown[]): void;
+  /** Set the tree's current leaf (`getLeafId()`; `null` is the root). */
+  setLeafId(id: string | null): void;
 }
 
 function makeCtx(mode = 'tui', sessionId = 'sess-1'): TestCtx {
@@ -263,6 +271,7 @@ function makeCtx(mode = 'tui', sessionId = 'sess-1'): TestCtx {
   let currentSessionId = sessionId;
   let available: unknown[] = [{ provider: 'test-provider', id: 'test-model', name: 'Test Model' }];
   let entries: unknown[] = [{ type: 'message', id: 'e1' }];
+  let leaf: string | null = null;
   // A small real-shaped tree: `{entry, children, label?}`, exactly what pi's
   // `sessionManager.getTree()` returns. Tests replace it wholesale.
   let tree: unknown[] = [
@@ -296,6 +305,7 @@ function makeCtx(mode = 'tui', sessionId = 'sess-1'): TestCtx {
       getEntry: (id: string) =>
         entries.find((entry) => (entry as { id?: unknown }).id === id),
       getTree: () => tree,
+      getLeafId: () => leaf,
     },
     abort: () => {
       aborts += 1;
@@ -332,11 +342,19 @@ function makeCtx(mode = 'tui', sessionId = 'sess-1'): TestCtx {
     setEntries: (next) => {
       entries = next;
     },
+    setBranchEntries: (next) => {
+      // The manager omits `buildContextEntries` until this is called, so every
+      // existing history test keeps exercising the `getEntries()` fallback.
+      ctx.sessionManager.buildContextEntries = () => next;
+    },
     setSessionId: (next) => {
       currentSessionId = next;
     },
     setTree: (next) => {
       tree = next;
+    },
+    setLeafId: (next) => {
+      leaf = next;
     },
   };
   return ctx;
@@ -1971,6 +1989,32 @@ test('a history-request from the hub is answered with a history message', () => 
   assert.deepEqual(history.entries, [{ type: 'message', id: 'e1' }]);
 });
 
+test('history-request projects the active branch, not the whole file', () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  // a1 is on an abandoned branch; only b1/b2 are on the active one.
+  ctx.setEntries([
+    { type: 'message', id: 'a1', message: { role: 'user', content: 'abandoned' } },
+    { type: 'message', id: 'b1', message: { role: 'user', content: 'kept' } },
+    { type: 'message', id: 'b2', message: { role: 'assistant', content: 'reply' } },
+  ]);
+  ctx.setBranchEntries([
+    { type: 'message', id: 'b1', message: { role: 'user', content: 'kept' } },
+    { type: 'message', id: 'b2', message: { role: 'assistant', content: 'reply' } },
+  ]);
+  const socket = harness.sockets[0]!;
+  socket.open();
+  socket.message({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'history-request',
+    sessionId: 'sess-1',
+  });
+  const history = parsed(socket).find((m) => m.type === 'history');
+  assert.ok(history, 'a history frame must be sent');
+  const entries = history.entries as Array<{ id: string }>;
+  assert.deepEqual(entries.map((entry) => entry.id), ['b1', 'b2']);
+});
+
 test('a throwing getEntries on the history-request path does not escape and writes nothing', () => {
   const harness = makeHarness();
   const ctx = harness.start();
@@ -2969,6 +3013,48 @@ test('sessionTree refuses while pi is working', async () => {
   assert.deepEqual(harness.pi.userMessages, []);
 });
 
+test('a session_tree event emits a leaf event with the new leaf', () => {
+  const harness = makeHarness();
+  harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  const before = socket.sent.length;
+  const handler = harness.pi.handlers.get('session_tree');
+  assert.ok(handler, 'the bridge must subscribe to pi\'s session_tree event');
+  handler!({ type: 'session_tree', newLeafId: 'e9', oldLeafId: 'e1' }, harness.startCtx);
+  const emitted = parsed(socket).slice(before);
+  assert.deepEqual(emitted.at(-1)?.payload, { kind: 'leaf', leafId: 'e9' });
+});
+
+test('a session_tree to the root emits leafId null', () => {
+  const harness = makeHarness();
+  harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  const before = socket.sent.length;
+  const handler = harness.pi.handlers.get('session_tree');
+  assert.ok(handler, 'the bridge must subscribe to pi\'s session_tree event');
+  handler!({ type: 'session_tree', newLeafId: null, oldLeafId: 'e1' }, harness.startCtx);
+  const emitted = parsed(socket).slice(before);
+  assert.deepEqual(emitted.at(-1)?.payload, { kind: 'leaf', leafId: null });
+});
+
+test('sessionTree refuses an entry id pi does not know', async () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  // The id was listed earlier but the entry is gone now: pi's navigateTree
+  // would throw after the ack, so the refusal must happen at dispatch.
+  ctx.setEntries([{ type: 'message', id: 'e1', message: { role: 'user', content: 'hi' } }]);
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'sessionTree', { entryId: 'gone' });
+  const result = parsed(socket).at(-1) as { ok: boolean; error?: string };
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'unknown entry');
+  // Refused before the command is ever triggered.
+  assert.deepEqual(harness.pi.userMessages, []);
+});
+
 test('sessionFork rejects a non-user entry', async () => {
   const harness = makeHarness();
   const ctx = harness.start();
@@ -3152,6 +3238,32 @@ test('listTree projects an empty tree as no nodes and not truncated', async () =
   assert.equal(result.ok, true);
   assert.deepEqual(result.tree, []);
   assert.equal(result.treeTruncated, false);
+});
+
+test('listTree carries the current leaf id', async () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  ctx.setLeafId('t1');
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'listTree');
+  const result = parsed(socket).at(-1)!;
+  assert.ok('leafId' in result, 'the listTree result must carry leafId');
+  assert.equal(result.leafId, 't1');
+});
+
+test('listTree reports a null leaf when there is none', async () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  ctx.setLeafId(null);
+  const socket = harness.sockets[0]!;
+  socket.open();
+  await sendCommand(harness.pi, socket, 'listTree');
+  const result = parsed(socket).at(-1)!;
+  // The key must be present and explicitly null: absent means "an older
+  // bridge", which the app cannot tell from "at the root".
+  assert.ok('leafId' in result, 'the listTree result must carry leafId');
+  assert.equal(result.leafId, null);
 });
 
 test("listCommands omits the bridge's own session command", async () => {
