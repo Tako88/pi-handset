@@ -42,9 +42,15 @@ class CountingBlocks extends ListBase<TranscriptBlock> {
   void operator []=(int index, TranscriptBlock value) => _inner[index] = value;
 }
 
-Widget wrap(SessionTranscript transcript) => MaterialApp(
-  home: Scaffold(body: TranscriptView(transcript: transcript)),
-);
+Widget wrap(SessionTranscript transcript, {VoidCallback? onLoadOlder}) =>
+    MaterialApp(
+      home: Scaffold(
+        body: TranscriptView(
+          transcript: transcript,
+          onLoadOlder: onLoadOlder ?? () {},
+        ),
+      ),
+    );
 
 TranscriptBlock textBlock(
   String id,
@@ -466,6 +472,79 @@ void main() {
     expect(notice.dy, lessThan(kept.dy));
     expect(kept.dy, lessThan(stream.dy));
   });
+
+  testWidgets(
+    'a truncated history with an older cursor shows the load-older control',
+    (tester) async {
+      await tester.pumpWidget(
+        wrap(
+          SessionTranscript(
+            truncated: true,
+            olderCursor: '2:x',
+            blocks: [textBlock('a1', 'the oldest row kept')],
+          ),
+        ),
+      );
+
+      expect(find.byKey(TranscriptView.loadOlderKey), findsOneWidget);
+      expect(find.text(TranscriptView.truncatedNotice), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'truncated with no older cursor keeps the static notice and no control',
+    (tester) async {
+      await tester.pumpWidget(
+        wrap(
+          SessionTranscript(
+            truncated: true,
+            blocks: [textBlock('a1', 'the oldest row kept')],
+          ),
+        ),
+      );
+
+      expect(find.text(TranscriptView.truncatedNotice), findsOneWidget);
+      expect(find.byType(TextButton), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'tapping load-older calls onLoadOlder once, and a loading control ignores taps',
+    (tester) async {
+      var taps = 0;
+      await tester.pumpWidget(
+        wrap(
+          SessionTranscript(
+            truncated: true,
+            olderCursor: '2:x',
+            blocks: [textBlock('a1', 'the oldest row kept')],
+          ),
+          onLoadOlder: () => taps++,
+        ),
+      );
+
+      await tester.tap(find.byKey(TranscriptView.loadOlderKey));
+      await tester.pump();
+      expect(taps, 1);
+
+      await tester.pumpWidget(
+        wrap(
+          SessionTranscript(
+            truncated: true,
+            olderCursor: '2:x',
+            historyLoading: true,
+            blocks: [textBlock('a1', 'the oldest row kept')],
+          ),
+          onLoadOlder: () => taps++,
+        ),
+      );
+
+      expect(find.text(TranscriptView.loadingOlderLabel), findsOneWidget);
+      await tester.tap(find.byKey(TranscriptView.loadOlderKey));
+      await tester.pump();
+      expect(taps, 1, reason: 'a loading control must ignore taps');
+    },
+  );
 
   testWidgets('a live reasoning row renders above the in-flight reply', (
     tester,
