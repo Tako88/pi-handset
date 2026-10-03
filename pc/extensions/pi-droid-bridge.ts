@@ -27,6 +27,8 @@
  * explicit ignore rather than a silent `undefined`.
  */
 
+import { createHash } from 'node:crypto';
+
 import { loadOrCreateToken, resolveConfigDir } from '../src/hub/auth.ts';
 import { readDiscovery, resolveRuntimeDir } from '../src/hub/discovery.ts';
 import {
@@ -998,6 +1000,8 @@ export function computeBackoff(attempt: number, options: BackoffOptions = {}): n
 export interface HistoryProjection {
   entries: unknown[];
   truncated: boolean;
+  /** Absolute index in the passed array of the oldest kept entry. */
+  start: number;
 }
 
 /** The image-part trim for one history entry, rebuilding whatever shape was
@@ -1024,13 +1028,21 @@ function trimHistoryEntry(entry: unknown, maxBytes: number): unknown | null {
  * though live events keep arriving. Walking backwards and reversing keeps the
  * kept run contiguous and chronological. `truncated` means the *older* entries
  * were omitted.
+ *
+ * `end` bounds the walk at an older cursor's offset, so the same function mints
+ * both the newest baseline (`end = entries.length`) and every older page. A
+ * 2-argument call is unchanged.
  */
-export function projectHistory(entries: readonly unknown[], maxBytes: number): HistoryProjection {
+export function projectHistory(
+  entries: readonly unknown[],
+  maxBytes: number,
+  end: number = entries.length,
+): HistoryProjection {
   const kept: unknown[] = [];
   let bytes = 2; // the enclosing `[]`
   const sized = (value: unknown): number =>
     Buffer.byteLength(JSON.stringify(value) ?? 'null') + (kept.length > 0 ? 1 : 0);
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
+  for (let index = end - 1; index >= 0; index -= 1) {
     const entry = entries[index];
     const serialized = JSON.stringify(entry) ?? 'null';
     let value = entry;
@@ -1061,7 +1073,40 @@ export function projectHistory(entries: readonly unknown[], maxBytes: number): H
     kept.push(value);
   }
   kept.reverse();
-  return { entries: kept, truncated: kept.length < entries.length };
+  return {
+    entries: kept,
+    truncated: kept.length < end,
+    start: end - kept.length,
+  };
+}
+
+/**
+ * A short digest of one entry **bound to its offset**, so two identical entries
+ * at different positions cannot alias: a stale offset cannot validate against
+ * the wrong entry. One hash per page.
+ */
+export function entryAnchor(offset: number, value: unknown): string {
+  return createHash('sha256')
+    .update(`${offset}:${JSON.stringify(value) ?? 'null'}`)
+    .digest('hex')
+    .slice(0, 16);
+}
+
+/** The opaque cursor naming the oldest entry already delivered at `index`. */
+export function mintCursor(annotated: readonly unknown[], index: number): string {
+  return `${index}:${entryAnchor(index, annotated[index])}`;
+}
+
+/** Split a minted cursor on its first `:`, validating the offset only. A null
+ * return (unparseable) degrades to a newest-page baseline, never an error. */
+export function parseHistoryCursor(raw: string): { offset: number; anchor: string } | null {
+  const separator = raw.indexOf(':');
+  if (separator < 0) return null;
+  const offsetText = raw.slice(0, separator);
+  if (!/^\d+$/.test(offsetText)) return null;
+  const offset = Number(offsetText);
+  if (!Number.isSafeInteger(offset)) return null;
+  return { offset, anchor: raw.slice(separator + 1) };
 }
 
 /**
@@ -1870,7 +1915,7 @@ class Bridge {
     const message = parsed as Record<string, unknown>;
     if (message.protocolVersion !== PROTOCOL_VERSION) return;
     if (message.type === 'command') this.onCommand(message);
-    else if (message.type === 'history-request') this.sendHistory();
+    else if (message.type === 'history-request') this.sendHistory(asString(message.cursor) ?? undefined);
   }
 
   private onCommand(message: Record<string, unknown>): void {
@@ -2125,7 +2170,7 @@ class Bridge {
     return { ok: true };
   }
 
-  private sendHistory(): void {
+  private sendHistory(cursor?: string): void {
     const ctx = this.ctx;
     if (ctx === null) return;
     // The snapshot carries the same normalized tool views as the live relay, so
@@ -2138,13 +2183,31 @@ class Bridge {
       typeof manager.buildContextEntries === 'function'
         ? manager.buildContextEntries()
         : manager.getEntries();
-    const projection = projectHistory(annotateToolViews(entries), HISTORY_MAX_BYTES);
+    const annotated = annotateToolViews(entries);
+    const requested = cursor ?? null;
+    // Honour the cursor only when the anchor digests the ORIGINAL entry at the
+    // offset (never a collapsed marker) and the offset is in range; anything
+    // else degrades to a fresh newest page, never an error.
+    const parsed = requested === null ? null : parseHistoryCursor(requested);
+    const honoured =
+      parsed !== null &&
+      parsed.offset < annotated.length &&
+      entryAnchor(parsed.offset, annotated[parsed.offset]) === parsed.anchor;
+    const page = honoured
+      ? projectHistory(annotated, HISTORY_MAX_BYTES, parsed!.offset)
+      : projectHistory(annotated, HISTORY_MAX_BYTES);
     const message: HistoryMessage = {
       protocolVersion: PROTOCOL_VERSION,
       type: 'history',
       sessionId: ctx.sessionManager.getSessionId(),
-      entries: projection.entries,
-      truncated: projection.truncated,
+      entries: page.entries,
+      truncated: page.truncated,
+      // The routing token is echoed whenever the request had one, honoured or
+      // not; `older` is present only when the page is genuinely older, and the
+      // next cursor only while older entries remain.
+      ...(requested !== null ? { cursor: requested } : {}),
+      ...(honoured ? { older: true } : {}),
+      ...(page.start > 0 ? { olderCursor: mintCursor(annotated, page.start) } : {}),
     };
     this.send(message);
     // After the history frame, so a viewer that re-baselines on the snapshot

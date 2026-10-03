@@ -108,6 +108,8 @@ export const HISTORY_MAX_BYTES = 768 * 1024;
  * is present and `true` only when the bridge genuinely paged, and the app
  * prepends only then; `olderCursor` is present iff older entries remain. A
  * request without a cursor (including `fetchHistory`) yields none of the three.
+ * Both decoders ignore unknown fields, so a peer that predates these fields
+ * decodes the frame as if they were absent.
  */
 
 /** Fields shared by both `hello` credential shapes. */
