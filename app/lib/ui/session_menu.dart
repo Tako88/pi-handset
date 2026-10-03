@@ -1,12 +1,12 @@
-/// The transcript app bar's overflow menu: new, fork, mute, compact, rename,
-/// thinking level and model.
+/// The transcript app bar's overflow menu: new, fork, tree, mute, compact,
+/// rename, thinking level and model.
 ///
 /// The menu is the reachable path to commands the bridge already implements and
 /// both allowlists already permit; the pieces of state it displays from the hub
 /// are the active thinking level and the current model, both of which ride the
-/// existing `usage` event payload. New and fork replace the session, which only
-/// a hub advertising the `session-control` capability can do, so the shell
-/// passes their callbacks as null without it and the items are omitted.
+/// existing `usage` event payload. New, fork and tree live behind the
+/// `session-control` capability, so the shell passes their callbacks as null
+/// without it and the items are omitted.
 library;
 
 import 'package:flutter/material.dart';
@@ -46,6 +46,7 @@ class SessionMenuButton extends StatelessWidget {
     required this.onToggleNotify,
     this.onNewSession,
     this.onFork,
+    this.onTree,
   });
 
   /// The level pi currently reports, or null when no `usage` event has arrived
@@ -75,6 +76,10 @@ class SessionMenuButton extends StatelessWidget {
   /// Replaces the session with a fork of it. Null hides the item.
   final VoidCallback? onFork;
 
+  /// Moves the session's leaf to a picked node. Null (no `session-control`
+  /// capability) hides the item, so an old hub answers no `unknown command`.
+  final VoidCallback? onTree;
+
   @override
   Widget build(BuildContext context) {
     return PopupMenuButton<String>(
@@ -87,6 +92,8 @@ class SessionMenuButton extends StatelessWidget {
             onNewSession?.call();
           case 'fork':
             onFork?.call();
+          case 'tree':
+            onTree?.call();
           case 'notify':
             onToggleNotify();
           case 'compact':
@@ -111,6 +118,12 @@ class SessionMenuButton extends StatelessWidget {
             key: Key('session-menu-fork'),
             value: 'fork',
             child: Text('Fork'),
+          ),
+        if (onTree != null)
+          const PopupMenuItem<String>(
+            key: Key('session-menu-tree'),
+            value: 'tree',
+            child: Text('Tree'),
           ),
         PopupMenuItem<String>(
           key: const Key('session-menu-notify'),
@@ -351,6 +364,9 @@ int _treeDepth(TreeNodeSummary node, Map<String, TreeNodeSummary> visible) {
 /// Shows the session-tree picker, keeping only user nodes when [userOnly] is
 /// set. Returns the tapped node, or null if dismissed.
 ///
+/// [leafId] marks the node pi currently has as the leaf with a check; the
+/// [userOnly] Fork path passes none and marks nothing.
+///
 /// [truncated] adds a note when older entries were dropped, so a capped list
 /// never looks like the whole tree. The list scrolls under the sheet's height
 /// (the thinking picker's pattern), so a long tree stays usable at a large text
@@ -360,6 +376,7 @@ Future<TreeNodeSummary?> pickTreeNode(
   List<TreeNodeSummary> nodes, {
   required bool userOnly,
   bool truncated = false,
+  String? leafId,
 }) {
   final visible = userOnly
       ? [
@@ -398,6 +415,16 @@ Future<TreeNodeSummary?> pickTreeNode(
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                 ),
+                // The current leaf is marked rather than hidden: the tree is a
+                // place to go to, and a tap on the current point is a no-op pi
+                // reports, so the marker is the only thing that says "you are
+                // here". No `leafId` (the Fork path) marks nothing.
+                trailing: node.id == leafId
+                    ? Icon(
+                        Icons.check,
+                        key: Key('tree-node-current-${node.id}'),
+                      )
+                    : null,
                 onTap: () => Navigator.pop(sheetContext, node),
               ),
         ],

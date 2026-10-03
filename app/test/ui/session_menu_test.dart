@@ -752,6 +752,43 @@ void main() {
       expect(find.byKey(const Key('tree-node-e3')), findsOneWidget);
     });
 
+    testWidgets('marks the current leaf and leaves other rows unmarked', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        triggerHost((context) async {
+          await pickTreeNode(
+            context,
+            treeNodes,
+            userOnly: false,
+            leafId: 'e2',
+          );
+        }),
+      );
+      await tester.tap(find.byKey(const Key('trigger')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const Key('tree-node-current-e2')), findsOneWidget);
+      expect(find.byKey(const Key('tree-node-current-e1')), findsNothing);
+      expect(find.byKey(const Key('tree-node-current-e3')), findsNothing);
+    });
+
+    testWidgets('marks nothing when no leaf is given', (tester) async {
+      await tester.pumpWidget(
+        triggerHost((context) async {
+          await pickTreeNode(context, treeNodes, userOnly: true);
+        }),
+      );
+      await tester.tap(find.byKey(const Key('trigger')));
+      await tester.pumpAndSettle();
+
+      // Prove the picker rendered before asserting no row is marked: a
+      // never-opened picker also satisfies a lone `findsNothing`.
+      expect(find.byKey(const Key('tree-node-e1')), findsOneWidget);
+      expect(find.byKey(const Key('tree-node-current-e1')), findsNothing);
+      expect(find.byKey(const Key('tree-node-current-e3')), findsNothing);
+    });
+
     testWidgets('shows the empty state when nothing qualifies', (tester) async {
       await tester.pumpWidget(
         triggerHost((context) async {

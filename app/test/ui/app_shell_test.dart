@@ -115,6 +115,12 @@ bool sentUnsubscribe(Harness h, String sessionId) => h.factory.last.sentFrames
     .map((f) => f['sessionId'])
     .contains(sessionId);
 
+/// The composer's current text.
+String composeText(WidgetTester tester) => tester
+    .widget<TextField>(find.byKey(const Key('compose-field')))
+    .controller!
+    .text;
+
 /// Pumps the app with the phone reporting [brightness] as its dark-mode setting.
 ///
 /// The ambient `MediaQuery` is supplied explicitly rather than by setting
@@ -248,13 +254,15 @@ final Uint8List onePixelPng = base64Decode(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
 );
 
-/// A `command-result` carrying a `listTree` projection.
+/// A `command-result` carrying a `listTree` projection. [leafId] is the current
+/// leaf (or `null`), which the picker marks.
 Map<String, Object?> treeReply(
   String id,
   List<Map<String, Object?>> nodes, {
   bool ok = true,
   bool truncated = false,
   String? error,
+  String? leafId,
 }) => {
   'protocolVersion': 1,
   'type': 'command-result',
@@ -263,6 +271,14 @@ Map<String, Object?> treeReply(
   'tree': nodes,
   'treeTruncated': truncated,
   'error': ?error,
+  'leafId': leafId,
+};
+
+/// A relayed `leaf` event: the bridge (or pi on the PC) moved the leaf.
+Map<String, Object?> leafFrame(String leafId) => {
+  'protocolVersion': 1,
+  'type': 'event',
+  'payload': {'kind': 'leaf', 'leafId': leafId},
 };
 
 Map<String, Object?> settledFrame({
@@ -390,6 +406,30 @@ Future<Map<String, Object?>> tapModelItem(WidgetTester tester, Harness h) async 
   await tester.tap(find.byKey(const Key('session-menu-model')));
   await tester.pumpAndSettle();
   return h.factory.last.sentFrames.lastWhere((f) => f['name'] == 'listModels');
+}
+
+/// Opens the session menu and taps its Tree item, returning the `listTree`
+/// command frame `_navigateTree` issues before showing its sheet.
+Future<Map<String, Object?>> tapTreeItem(WidgetTester tester, Harness h) async {
+  await tester.tap(find.byKey(const Key('session-menu')));
+  await tester.pumpAndSettle();
+  await tester.tap(find.byKey(const Key('session-menu-tree')));
+  await tester.pumpAndSettle();
+  return h.factory.last.sentFrames.lastWhere((f) => f['name'] == 'listTree');
+}
+
+/// Feeds [h] an `ok:true` ack for the last `sessionTree` frame and settles.
+Future<void> ackSessionTree(WidgetTester tester, Harness h) async {
+  final frame = h.factory.last.sentFrames.lastWhere(
+    (f) => f['name'] == 'sessionTree',
+  );
+  h.factory.last.receive({
+    'protocolVersion': 1,
+    'type': 'command-result',
+    'id': frame['id'],
+    'ok': true,
+  });
+  await settle(tester, h.scheduler);
 }
 
 /// Boots a harness whose hub advertises `attachments`, optionally with a fake
@@ -1039,6 +1079,344 @@ void main() {
 
     expect(find.byKey(const Key('tree-picker')), findsNothing);
     expect(find.text('cannot read the tree'), findsOneWidget);
+  });
+
+  testWidgets('the menu hides Tree on a hub without session-control', (
+    tester,
+  ) async {
+    await openFirstSession(tester);
+    await tester.tap(find.byKey(const Key('session-menu')));
+    await tester.pumpAndSettle();
+    // Prove the menu is open before asserting absence.
+    expect(find.byKey(const Key('session-menu-compact')), findsOneWidget);
+    expect(find.byKey(const Key('session-menu-tree')), findsNothing);
+  });
+
+  testWidgets('the menu shows and routes Tree with session-control', (
+    tester,
+  ) async {
+    final h = await openSessionControlSession(tester);
+    await tester.tap(find.byKey(const Key('session-menu')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('session-menu-tree')), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('session-menu-tree')));
+    await tester.pumpAndSettle();
+    // Routing proof: the item issues a listTree.
+    expect(
+      h.factory.last.sentFrames.where((f) => f['name'] == 'listTree'),
+      hasLength(1),
+    );
+  });
+
+  testWidgets('Tree lists all nodes and marks the current leaf', (tester) async {
+    final h = await openSessionControlSession(tester);
+    final listFrame = await tapTreeItem(tester, h);
+    expect(listFrame['sessionId'], 's1');
+
+    h.factory.last.receive(
+      treeReply(listFrame['id']! as String, [
+        {'id': 'e1', 'parentId': null, 'role': 'user', 'text': 'hello'},
+        {'id': 'e2', 'parentId': 'e1', 'role': 'assistant', 'text': 'hi'},
+        {'id': 'e3', 'parentId': 'e2', 'role': 'user', 'text': 'again'},
+      ], leafId: 'e2'),
+    );
+    await tester.pumpAndSettle();
+
+    // The Tree picker offers assistant nodes too (Fork keeps them out).
+    expect(find.byKey(const Key('tree-node-e1')), findsOneWidget);
+    expect(find.byKey(const Key('tree-node-e2')), findsOneWidget);
+    expect(find.byKey(const Key('tree-node-e3')), findsOneWidget);
+    expect(find.byKey(const Key('tree-node-current-e2')), findsOneWidget);
+    expect(find.byKey(const Key('tree-node-current-e1')), findsNothing);
+  });
+
+  testWidgets(
+    'tapping the current leaf sends no command and says already there',
+    (tester) async {
+      final h = await openSessionControlSession(tester);
+      final listFrame = await tapTreeItem(tester, h);
+      h.factory.last.receive(
+        treeReply(listFrame['id']! as String, [
+          {'id': 'e1', 'parentId': null, 'role': 'user', 'text': 'hello'},
+          {'id': 'e3', 'parentId': 'e1', 'role': 'user', 'text': 'again'},
+        ], leafId: 'e1'),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('tree-node-e1')));
+      await settle(tester, h.scheduler);
+
+      // pi emits nothing for a same-leaf target, so a frame here would look
+      // like a failure: the guard is local and sends nothing.
+      expect(
+        h.factory.last.sentFrames.where((f) => f['name'] == 'sessionTree'),
+        isEmpty,
+      );
+      expect(find.text('Already at this point'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'tapping another node sends sessionTree, requests no history and shows no error',
+    (tester) async {
+      final h = await openSessionControlSession(tester);
+      final listFrame = await tapTreeItem(tester, h);
+      h.factory.last.receive(
+        treeReply(listFrame['id']! as String, [
+          {'id': 'e1', 'parentId': null, 'role': 'user', 'text': 'hello'},
+          {'id': 'e3', 'parentId': 'e1', 'role': 'user', 'text': 'again'},
+        ], leafId: 'e1'),
+      );
+      await tester.pumpAndSettle();
+
+      final requestsBefore = h.factory.last.sentFrames
+          .where((f) => f['type'] == 'history-request')
+          .length;
+
+      await tester.tap(find.byKey(const Key('tree-node-e3')));
+      await settle(tester, h.scheduler);
+
+      final treeFrame = h.factory.last.sentFrames.lastWhere(
+        (f) => f['name'] == 'sessionTree',
+      );
+      expect((treeFrame['args']! as Map)['entryId'], 'e3');
+
+      h.factory.last.receive({
+        'protocolVersion': 1,
+        'type': 'command-result',
+        'id': treeFrame['id'],
+        'ok': true,
+      });
+      await settle(tester, h.scheduler);
+      await tester.pump();
+
+      // Checked after the ack: a request issued either right after the send or
+      // on the ack both have to fail. The leaf event is the sole trigger.
+      expect(
+        h.factory.last.sentFrames
+            .where((f) => f['type'] == 'history-request')
+            .length,
+        requestsBefore,
+        reason: 'the leaf event is the sole re-baseline trigger',
+      );
+
+      // A successful navigation is silent: an unconditional SnackBar would
+      // otherwise pass this and the refusal test together.
+      expect(find.byType(SnackBar), findsNothing);
+    },
+  );
+
+  testWidgets('a leaf event after a navigation re-requests history', (
+    tester,
+  ) async {
+    final h = await openSessionControlSession(tester);
+    final listFrame = await tapTreeItem(tester, h);
+    h.factory.last.receive(
+      treeReply(listFrame['id']! as String, [
+        {'id': 'e1', 'parentId': null, 'role': 'user', 'text': 'hello'},
+        {'id': 'e3', 'parentId': 'e1', 'role': 'user', 'text': 'again'},
+      ], leafId: 'e1'),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('tree-node-e3')));
+    await settle(tester, h.scheduler);
+    await ackSessionTree(tester, h);
+
+    final requestsBefore = h.factory.last.sentFrames
+        .where((f) => f['type'] == 'history-request')
+        .length;
+
+    h.factory.last.receive(leafFrame('e1'));
+    await settle(tester, h.scheduler);
+
+    final requests = h.factory.last.sentFrames
+        .where((f) => f['type'] == 'history-request')
+        .toList();
+    expect(requests.length, requestsBefore + 1);
+    expect(requests.last['sessionId'], 's1');
+  });
+
+  testWidgets('a user node prefills the composer when empty', (tester) async {
+    final h = await openSessionControlSession(tester);
+    final listFrame = await tapTreeItem(tester, h);
+    h.factory.last.receive(
+      treeReply(listFrame['id']! as String, [
+        {'id': 'e1', 'parentId': null, 'role': 'user', 'text': 'hello'},
+      ], leafId: 'e3'),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('tree-node-e1')));
+    await settle(tester, h.scheduler);
+    await ackSessionTree(tester, h);
+
+    // The ack is "accepted", not "navigated": prefill waits for the leaf.
+    h.factory.last.receive(leafFrame('e3'));
+    await settle(tester, h.scheduler);
+
+    expect(composeText(tester), 'hello');
+  });
+
+  testWidgets('a non-empty composer is not overwritten', (tester) async {
+    final h = await openSessionControlSession(tester);
+    await tester.enterText(find.byKey(const Key('compose-field')), 'draft');
+
+    final listFrame = await tapTreeItem(tester, h);
+    h.factory.last.receive(
+      treeReply(listFrame['id']! as String, [
+        {'id': 'e1', 'parentId': null, 'role': 'user', 'text': 'hello'},
+      ], leafId: 'e3'),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('tree-node-e1')));
+    await settle(tester, h.scheduler);
+    await ackSessionTree(tester, h);
+    h.factory.last.receive(leafFrame('e3'));
+    await settle(tester, h.scheduler);
+
+    // pi restores the text only into an empty editor; a draft wins.
+    expect(composeText(tester), 'draft');
+  });
+
+  testWidgets('an assistant node does not prefill the composer', (tester) async {
+    final h = await openSessionControlSession(tester);
+    final listFrame = await tapTreeItem(tester, h);
+    h.factory.last.receive(
+      treeReply(listFrame['id']! as String, [
+        {'id': 'e1', 'parentId': null, 'role': 'user', 'text': 'hello'},
+        {'id': 'e2', 'parentId': 'e1', 'role': 'assistant', 'text': 'hi'},
+      ], leafId: 'e1'),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('tree-node-e2')));
+    await settle(tester, h.scheduler);
+    await ackSessionTree(tester, h);
+    h.factory.last.receive(leafFrame('e1'));
+    await settle(tester, h.scheduler);
+
+    expect(composeText(tester), isEmpty);
+  });
+
+  testWidgets('a refused sessionTree shows the error and prefills nothing', (
+    tester,
+  ) async {
+    final h = await openSessionControlSession(tester);
+    final listFrame = await tapTreeItem(tester, h);
+    h.factory.last.receive(
+      treeReply(listFrame['id']! as String, [
+        {'id': 'e1', 'parentId': null, 'role': 'user', 'text': 'hello'},
+      ], leafId: 'e3'),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('tree-node-e1')));
+    await settle(tester, h.scheduler);
+
+    final treeFrame = h.factory.last.sentFrames.lastWhere(
+      (f) => f['name'] == 'sessionTree',
+    );
+    h.factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'command-result',
+      'id': treeFrame['id'],
+      'ok': false,
+      'error': 'cannot navigate the tree while pi is working',
+    });
+    await settle(tester, h.scheduler);
+    await tester.pump();
+
+    expect(
+      find.text('cannot navigate the tree while pi is working'),
+      findsOneWidget,
+    );
+    // A refusal clears the pending tap: a later leaf must not prefill it.
+    h.factory.last.receive(leafFrame('e3'));
+    await settle(tester, h.scheduler);
+    expect(composeText(tester), isEmpty);
+  });
+
+  testWidgets('an ack alone does not prefill', (tester) async {
+    final h = await openSessionControlSession(tester);
+    final listFrame = await tapTreeItem(tester, h);
+    h.factory.last.receive(
+      treeReply(listFrame['id']! as String, [
+        {'id': 'e1', 'parentId': null, 'role': 'user', 'text': 'hello'},
+      ], leafId: 'e3'),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('tree-node-e1')));
+    await settle(tester, h.scheduler);
+    await ackSessionTree(tester, h);
+
+    // No leaf event: the navigation is not known to have happened.
+    expect(composeText(tester), isEmpty);
+  });
+
+  testWidgets('a post-ack failure reports the error and does not prefill', (
+    tester,
+  ) async {
+    final h = await openSessionControlSession(tester);
+    final listFrame = await tapTreeItem(tester, h);
+    h.factory.last.receive(
+      treeReply(listFrame['id']! as String, [
+        {'id': 'e1', 'parentId': null, 'role': 'user', 'text': 'hello'},
+      ], leafId: 'e3'),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('tree-node-e1')));
+    await settle(tester, h.scheduler);
+    await ackSessionTree(tester, h);
+
+    // The navigation fails after the ack, as a status error, with no leaf.
+    h.factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'event',
+      'payload': {
+        'kind': 'status',
+        'event': 'error',
+        'message': 'cannot navigate the tree',
+      },
+    });
+    await settle(tester, h.scheduler);
+    await tester.pump();
+
+    expect(find.text('cannot navigate the tree'), findsOneWidget);
+    expect(composeText(tester), isEmpty);
+  });
+
+  testWidgets('a stale same-leaf tap is silent and prefills nothing', (
+    tester,
+  ) async {
+    final h = await openSessionControlSession(tester);
+    final listFrame = await tapTreeItem(tester, h);
+    // listTree says the leaf is e1, but pi's leaf has since moved to e2.
+    h.factory.last.receive(
+      treeReply(listFrame['id']! as String, [
+        {'id': 'e1', 'parentId': null, 'role': 'user', 'text': 'hello'},
+        {'id': 'e2', 'parentId': 'e1', 'role': 'user', 'text': 'again'},
+      ], leafId: 'e1'),
+    );
+    await tester.pumpAndSettle();
+
+    // The tap is not the listed leaf (e1), so the local guard cannot catch it;
+    // at pi it really is the current leaf, which early-returns with no event.
+    await tester.tap(find.byKey(const Key('tree-node-e2')));
+    await settle(tester, h.scheduler);
+    expect(
+      h.factory.last.sentFrames.where((f) => f['name'] == 'sessionTree'),
+      hasLength(1),
+    );
+    await ackSessionTree(tester, h);
+
+    await tester.pump();
+    expect(composeText(tester), isEmpty);
+    expect(find.byType(SnackBar), findsNothing);
   });
 
   testWidgets('the menu shows the model from a usage frame', (tester) async {
