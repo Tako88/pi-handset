@@ -3712,6 +3712,137 @@ test('the anchor binds the offset, so identical entries at different offsets do 
   assert.equal('older' in history, false);
 });
 
+test('a history-request with an unparseable cursor answers a baseline without throwing', () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  ctx.setEntries(largeEntries(6, 200_000));
+  const socket = harness.sockets[0]!;
+  socket.open();
+  socket.message({ protocolVersion: PROTOCOL_VERSION, type: 'history-request', sessionId: 'sess-1' });
+  const baseline = lastHistory(socket);
+  assert.doesNotThrow(() => {
+    socket.message({
+      protocolVersion: PROTOCOL_VERSION,
+      type: 'history-request',
+      sessionId: 'sess-1',
+      cursor: 'not-a-cursor',
+    });
+  });
+  const page = lastHistory(socket);
+  assert.equal(page.cursor, 'not-a-cursor', 'the routing token is echoed even when unparseable');
+  assert.equal('older' in page, false);
+  assert.deepEqual(page.entries, baseline.entries, 'an unparseable cursor degrades to the newest page');
+});
+
+test('a history-request with an out-of-range offset degrades to a baseline', () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  const entries = largeEntries(6, 200_000);
+  ctx.setEntries(entries);
+  const socket = harness.sockets[0]!;
+  socket.open();
+  socket.message({ protocolVersion: PROTOCOL_VERSION, type: 'history-request', sessionId: 'sess-1' });
+  const baseline = lastHistory(socket);
+  const annotated = annotateToolViews(entries);
+  const offset = 999;
+  assert.ok(offset >= annotated.length, 'the fixture must place the offset past the annotated array');
+  // The anchor is the digest production computes at that out-of-range offset, so
+  // the range check -- not the anchor comparison -- is the only thing that can
+  // reject this cursor. Without the range check the walk emits `undefined`.
+  const cursor = `${offset}:${entryAnchor(offset, annotated[offset])}`;
+  socket.message({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'history-request',
+    sessionId: 'sess-1',
+    cursor,
+  });
+  const page = lastHistory(socket);
+  assert.equal(page.cursor, cursor, 'the routing token is echoed even when out of range');
+  assert.equal('older' in page, false);
+  assert.deepEqual(page.entries, baseline.entries, 'an out-of-range offset degrades to the newest page');
+});
+
+/** A user entry whose serialized JSON is exactly `target` bytes, so a paging
+ * fixture can be tuned to the byte. */
+function paddedEntry(id: string, target: number): Record<string, unknown> {
+  const entry: Record<string, unknown> = { type: 'message', id, message: { role: 'user', content: '' } };
+  let content = '';
+  for (let guard = 0; guard < 6; guard += 1) {
+    (entry.message as { content: string }).content = content;
+    const delta = target - Buffer.byteLength(JSON.stringify(entry));
+    if (delta === 0) return entry;
+    assert.ok(delta > 0, 'paddedEntry must grow toward its target');
+    content += 'x'.repeat(delta);
+  }
+  throw new Error('paddedEntry did not converge');
+}
+
+test('the anchor revalidates over tool-annotated entries', () => {
+  const harness = makeHarness();
+  const ctx = harness.start();
+  const call = {
+    type: 'message',
+    id: 'a1',
+    message: {
+      role: 'assistant',
+      content: [{ type: 'toolCall', id: 'call-1', name: 'customtool', arguments: {} }],
+    },
+  };
+  const result = {
+    type: 'message',
+    id: 'r1',
+    message: {
+      role: 'toolResult',
+      toolCallId: 'call-1',
+      toolName: 'customtool',
+      content: 'done',
+      isError: false,
+    },
+  };
+  const prefix = annotateToolViews([call, result]);
+  assert.equal(prefix.length, 4, 'the fixture must synthesize one payload per tool frame');
+  const sizeOf = (value: unknown): number => Buffer.byteLength(JSON.stringify(value) ?? 'null');
+  const sizeDone = sizeOf(prefix[3]);
+  const sizeResult = sizeOf(prefix[2]);
+  // Tune the two fillers so the newest page holds the tool-result's synthetic
+  // payload (index 3) and stops at the tool result (index 2): the cursor's
+  // anchor then points at a SYNTHETIC payload, and the whole older prefix fits,
+  // so the honoured page is an exact slice of the annotated array.
+  const margin = 60;
+  assert.ok(sizeResult + 3 > margin, 'the tool result must be large enough to stop the walk');
+  const fillerTotal = HISTORY_MAX_BYTES - margin - 5 - sizeDone;
+  const newer = paddedEntry('f1', Math.floor(fillerTotal / 2));
+  const older = paddedEntry('f0', fillerTotal - Math.floor(fillerTotal / 2));
+  const entries = [call, result, older, newer];
+  ctx.setEntries(entries);
+  const annotated = annotateToolViews(entries);
+  assert.equal(annotated.length, 6);
+  const socket = harness.sockets[0]!;
+  socket.open();
+  socket.message({ protocolVersion: PROTOCOL_VERSION, type: 'history-request', sessionId: 'sess-1' });
+  const baseline = lastHistory(socket);
+  const cursor = baseline.olderCursor;
+  assert.equal(typeof cursor, 'string', 'the baseline must offer an older cursor; the fixture is mistuned');
+  const offset = Number((cursor as string).split(':')[0]);
+  assert.equal(offset, 3, 'the baseline boundary must be the tool-result index');
+  assert.equal(
+    (annotated[offset] as { kind?: string }).kind,
+    'tool',
+    'the anchor must point at a synthetic tool payload',
+  );
+  socket.message({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'history-request',
+    sessionId: 'sess-1',
+    cursor,
+  });
+  const page = lastHistory(socket);
+  assert.equal(page.cursor, cursor);
+  assert.equal(page.older, true, 'a valid anchor over synthetic payloads must be honoured');
+  assert.deepEqual(page.entries, annotated.slice(0, offset), 'the page must be the strictly older window');
+  assert.equal('olderCursor' in page, false, 'the beginning is reached in one more page');
+});
+
 // ---------------------------------------------------------------------------
 // Endpoint discovery
 // ---------------------------------------------------------------------------
