@@ -63,6 +63,13 @@ re-pairing — the phone reconnects to the stable viewer port while the bridge f
 the new ephemeral agent port through the discovery file — and the reasoning
 streaming live above the reply.
 
+**Predictive back.** The transcript is a real route over the session list, and the
+manifest opts into Android's predictive back, so a back gesture peeks the list under the
+finger and can be cancelled; a completed gesture pops the transcript and unsubscribes, as
+before. The preview is Android 14+ (or the developer-option toggle on 13; API < 33 still
+pops, just without the peek). Deploying this needs **an APK rebuild only** — nothing on
+the PC changes, so no hub restart and no pi `/reload`.
+
 **Browse and start a project session.** The phone can open a folder browser over the
 PC's home directory and start an app session whose `pi` child runs *in the chosen
 folder* rather than in a fresh temp dir, and because it runs in a real folder its
