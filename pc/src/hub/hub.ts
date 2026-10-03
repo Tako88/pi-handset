@@ -180,7 +180,15 @@ interface Session {
   /** The hub session id this one replaced, when its register named one. */
   replacesSessionId?: string;
   readonly subscribers: Set<Connection>;
-  readonly pendingHistory: Set<Connection>;
+  /**
+   * Viewers awaiting a `history` reply, keyed by the request's cursor (`''` for
+   * a request that carried none). Coalescing is per key: N viewers asking for
+   * the same page produce one forwarded `history-request`, while different
+   * cursors are forwarded separately. A group is deleted once its reply lands
+   * or its last member disconnects, so the map holds one entry per outstanding
+   * page, not per session.
+   */
+  readonly pendingHistory: Map<string, Set<Connection>>;
   /** `id` -> viewers awaiting its result, in issue order. */
   readonly pendingCommands: Map<string, Connection[]>;
 }
@@ -526,7 +534,7 @@ function handleRegister(
     origin,
     ...(replacesSessionId === null ? {} : { replacesSessionId }),
     subscribers: new Set(),
-    pendingHistory: new Set(),
+    pendingHistory: new Map(),
     pendingCommands: new Map(),
   });
   broadcastSessions(state);
@@ -902,30 +910,48 @@ function handleHistory(
   if (session === undefined || session.agent !== connection) return;
   const entries = Array.isArray(message.entries) ? message.entries : [];
   const truncated = message.truncated === true;
-  for (const viewer of session.pendingHistory) {
-    // A snapshot answering a `history-request` is a control *response*, not
-    // bulk relay: the viewer asked for it, so it cannot be used to push
-    // unsolicited bytes, and it must not be dropped. Budgeting it caused a
-    // livelock — a snapshot larger than the viewer cap was dropped, the viewer
-    // was told to resync, its next request produced the same oversized
-    // snapshot, and so on. Like `resync-required`, deliver it unbudgeted.
-    send(viewer, {
-      protocolVersion: PROTOCOL_VERSION,
-      type: 'snapshot',
-      sessionId,
-      lastSeq: session.lastSeq,
-      agentState: session.agentState,
-      entries,
-      truncated,
-    });
-  }
-  session.pendingHistory.clear();
+  // Route by the request token only, never by guesswork. `asString` is null for
+  // both an absent cursor and an empty string, which is exactly the request key
+  // the matching `history-request` used. There is deliberately no FIFO
+  // fallback: `fetchHistory` (a second `sendHistory` call site on the bridge)
+  // can emit a `history` that answers no pending request, and delivering it to
+  // whichever group happens to be oldest would discard a viewer's loaded pages
+  // or duplicate a page.
+  const token = asString(message.cursor);
+  const key = token ?? '';
+  const group = session.pendingHistory.get(key);
+  if (group === undefined) return; // answers nothing: drop it
+  session.pendingHistory.delete(key);
+  const snapshot: Record<string, unknown> = {
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'snapshot',
+    sessionId,
+    lastSeq: session.lastSeq,
+    agentState: session.agentState,
+    entries,
+    truncated,
+  };
+  // The routing token is echoed whenever the request had one; `older` only when
+  // the bridge honoured the cursor, `olderCursor` only when older entries remain.
+  if (token !== null) snapshot.cursor = token;
+  if (message.older === true) snapshot.older = true;
+  const olderCursor = asString(message.olderCursor);
+  if (olderCursor !== null) snapshot.olderCursor = olderCursor;
+  // A snapshot answering a `history-request` is a control *response*, not bulk
+  // relay: the viewer asked for it, so it cannot be used to push unsolicited
+  // bytes, and it must not be dropped. Budgeting it caused a livelock — a
+  // snapshot larger than the viewer cap was dropped, the viewer was told to
+  // resync, its next request produced the same oversized snapshot, and so on.
+  // Like `resync-required`, deliver it unbudgeted.
+  for (const viewer of group) send(viewer, snapshot);
 }
 
 /**
- * Concurrent requests for one session are coalesced: the first is forwarded to
- * the agent, later ones just join the reply list, so N viewers cannot stampede
- * one agent. The session's tracked `lastSeq`/`agentState` are authoritative.
+ * Concurrent requests for one session are coalesced *per cursor*: the first
+ * request for a given page is forwarded to the agent, later ones join its reply
+ * list, so N viewers asking for the same page cannot stampede one agent. Two
+ * different cursors are different pages and are forwarded separately. The
+ * session's tracked `lastSeq`/`agentState` are authoritative.
  */
 function handleHistoryRequest(
   state: State,
@@ -947,6 +973,13 @@ function handleHistoryRequest(
     closeWith(connection, CLOSE_PROTOCOL);
     return;
   }
+  // `cursor` is viewer-supplied and forwarded, so a present non-string is a
+  // protocol violation — the hub does not run the codec on viewer frames, so it
+  // is validated by hand like `sinceSeq` above.
+  if (message.cursor !== undefined && typeof message.cursor !== 'string') {
+    closeWith(connection, CLOSE_PROTOCOL);
+    return;
+  }
   const session = state.sessions.get(sessionId);
   if (session === undefined) {
     sendToViewer(connection, {
@@ -956,16 +989,24 @@ function handleHistoryRequest(
     }, null);
     return;
   }
+  // An empty string is treated as no cursor (`asString('')` is null): it keys
+  // the no-cursor group and is not forwarded, so it degrades to a baseline.
+  const cursor = asString(message.cursor);
+  const key = cursor ?? '';
   connection.resyncAnnounced.delete(sessionId);
-  const firstRequest = session.pendingHistory.size === 0;
-  session.pendingHistory.add(connection);
-  if (!firstRequest) return;
+  const group = session.pendingHistory.get(key);
+  if (group !== undefined) {
+    group.add(connection);
+    return;
+  }
+  session.pendingHistory.set(key, new Set([connection]));
   const forwarded: Record<string, unknown> = {
     protocolVersion: PROTOCOL_VERSION,
     type: 'history-request',
     sessionId,
   };
   if (sinceSeq !== undefined) forwarded.sinceSeq = sinceSeq;
+  if (cursor !== null) forwarded.cursor = cursor;
   send(session.agent, forwarded);
 }
 
@@ -1076,7 +1117,10 @@ export async function createHub(options: HubOptions): Promise<Hub> {
             retired = true;
           }
           session.subscribers.delete(connection);
-          session.pendingHistory.delete(connection);
+          for (const [key, group] of [...session.pendingHistory]) {
+            group.delete(connection);
+            if (group.size === 0) session.pendingHistory.delete(key);
+          }
           for (const [id, queue] of [...session.pendingCommands]) {
             const remaining = queue.filter((viewer) => viewer !== connection);
             if (remaining.length === 0) session.pendingCommands.delete(id);
