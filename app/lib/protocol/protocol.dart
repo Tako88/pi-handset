@@ -34,6 +34,7 @@ const List<String> eventPayloadKinds = [
   'status',
   'usage',
   'settled',
+  'leaf',
 ];
 
 /// Lifecycle phases a `stream` frame may signal, and the tag that marks one.
@@ -271,6 +272,16 @@ DecodeResult decode(String text) {
         }
         return DecodeResult.ok(message);
       }
+      if (kind == 'leaf') {
+        if (!body.containsKey('leafId') ||
+            (body['leafId'] != null && _nonEmptyString(body['leafId']) == null)) {
+          return const DecodeResult.fail(
+            'bad-field',
+            'leaf leafId must be a string or null',
+          );
+        }
+        return DecodeResult.ok(message);
+      }
       if (kind == 'tool') {
         if (_nonEmptyString(body['toolCallId']) == null ||
             _nonEmptyString(body['name']) == null) {
@@ -426,6 +437,14 @@ DecodeResult decode(String text) {
             );
           }
         }
+      }
+      if (message.containsKey('leafId') &&
+          message['leafId'] != null &&
+          _nonEmptyString(message['leafId']) == null) {
+        return const DecodeResult.fail(
+          'bad-field',
+          'command-result leafId must be a string or null',
+        );
       }
       if (message.containsKey('treeTruncated') &&
           message['treeTruncated'] is! bool) {

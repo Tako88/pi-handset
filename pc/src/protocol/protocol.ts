@@ -64,9 +64,9 @@ export const HISTORY_MAX_BYTES = 768 * 1024;
  * agent -> hub (loopback listener):
  * - `hello`  { ticket XOR token }
  * - `register` { sessionId, sessionFile?, cwd?, name?, model?, thinkingLevel?, mode?, pid?, replaces? }
- * - `event`  { payload: stream | message | agent | tool | status }
+ * - `event`  { payload: stream | message | agent | tool | status | usage | settled | leaf }
  * - `history` { sessionId, entries: unknown[], truncated: boolean }
- * - `command-result` { id, ok, error?, commands?, models?, queued?, tree?, treeTruncated? }
+ * - `command-result` { id, ok, error?, commands?, models?, queued?, tree?, treeTruncated?, leafId? }
  *
  * viewer -> hub (LAN listener):
  * - `hello`  { ticket XOR token }
@@ -91,7 +91,7 @@ export const HISTORY_MAX_BYTES = 768 * 1024;
  * - `snapshot` { sessionId, lastSeq, agentState, entries: unknown[], truncated }
  *   — `lastSeq`/`agentState` are hub-tracked; `entries` are agent-supplied and
  *   may be truncated.
- * - `command-result` { id, ok, error?, commands?, models?, queued?, tree?, treeTruncated? }
+ * - `command-result` { id, ok, error?, commands?, models?, queued?, tree?, treeTruncated?, leafId? }
  * - `resync-required` { sessionId, reason }
  * - `session-gone` { sessionId }
  *
@@ -123,7 +123,7 @@ export const SESSION_ORIGINS = ['app', 'pc'] as const;
 export type SessionOrigin = (typeof SESSION_ORIGINS)[number];
 
 /** The normalized payload kinds an `event` may carry. */
-export const EVENT_PAYLOAD_KINDS = ['stream', 'message', 'agent', 'tool', 'status', 'usage', 'settled'] as const;
+export const EVENT_PAYLOAD_KINDS = ['stream', 'message', 'agent', 'tool', 'status', 'usage', 'settled', 'leaf'] as const;
 export type EventPayloadKind = (typeof EVENT_PAYLOAD_KINDS)[number];
 
 /** A token-stream delta, ordered by `seq`. Carried inside an `event`. A frame
@@ -183,6 +183,16 @@ export interface SettledPayload {
   kind: 'settled';
   text: string;
   truncated: boolean;
+}
+
+/**
+ * The session tree's current leaf moved. `leafId` is the new leaf, or `null`
+ * when the tree was navigated back to the root. Emitted by the bridge from its
+ * `session_tree` subscription; the app re-requests history on it.
+ */
+export interface LeafPayload {
+  kind: 'leaf';
+  leafId: string | null;
 }
 
 /**
@@ -290,6 +300,7 @@ export type EventPayload =
   | AgentPayload
   | ContextUsagePayload
   | SettledPayload
+  | LeafPayload
   | ToolPayload
   | PassthroughPayload;
 
@@ -358,6 +369,11 @@ export interface CommandResultMessage {
   tree?: TreeNodeSummary[];
   /** True when `tree` dropped older nodes; validated if present. */
   treeTruncated?: boolean;
+  /**
+   * Present only on a `listTree` result: the current leaf, or `null` when the
+   * tree has none. Validated if present; absent means an older bridge.
+   */
+  leafId?: string | null;
   /**
    * Tri-state: absent = the bridge did not queue this (unknown / not-queued);
    * `true` = accepted and dispatched as a mid-turn `steer`; `false` = never sent.
@@ -795,6 +811,12 @@ export function decode(text: string): DecodeResult {
         }
         return { ok: true, value: parsed as EventMessage };
       }
+      if (kind === 'leaf') {
+        if (body.leafId !== null && asString(body.leafId) === null) {
+          return fail('bad-field', 'leaf leafId must be a string or null');
+        }
+        return { ok: true, value: parsed as EventMessage };
+      }
       // `message`/`status` are M6-owned shapes the hub only relays, so their
       // fields are accepted as-is once `kind` is recognized. `tool` is
       // validated on its identity fields only (`toolCallId`/`name`/`status`);
@@ -914,6 +936,13 @@ export function decode(text: string): DecodeResult {
             );
           }
         }
+      }
+      if (
+        message.leafId !== undefined &&
+        message.leafId !== null &&
+        asString(message.leafId) === null
+      ) {
+        return fail('bad-field', 'command-result leafId must be a string or null');
       }
       if (message.treeTruncated !== undefined && typeof message.treeTruncated !== 'boolean') {
         return fail('bad-field', 'command-result treeTruncated must be a boolean');

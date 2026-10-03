@@ -57,6 +57,10 @@
     "type": "event",
     "payload": { "kind": "status", "event": "error", "message": "model overloaded" }
   },
+  "event-leaf.json": {
+    "type": "event",
+    "payload": { "kind": "leaf", "leafId": "e2" }
+  },
   "event-stream.json": {
     "type": "event",
     "payload": { "kind": "stream", "seq": 1, "text": "hello " }
@@ -362,6 +366,7 @@
         "text": "hi"
       }
     ],
-    "treeTruncated": false
+    "treeTruncated": false,
+    "leafId": "e2"
   }
 }

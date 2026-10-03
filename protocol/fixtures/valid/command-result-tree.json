@@ -7,5 +7,6 @@
     { "id": "e1", "parentId": null, "role": "user", "text": "hello" },
     { "id": "e2", "parentId": "e1", "role": "assistant", "label": "answer", "text": "hi" }
   ],
-  "treeTruncated": false
+  "treeTruncated": false,
+  "leafId": "e2"
 }
