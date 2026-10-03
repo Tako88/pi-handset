@@ -6,9 +6,10 @@
 /// the plugin behind it, is what lets the client stay Flutter-free, and keeps a
 /// test double out of the shipped tree.
 ///
-/// One store, two keys: the token (`pi_droid_token`) and the endpoint
-/// (`pi_droid_endpoint`). The endpoint is not a secret, but folding it in avoids
-/// a second plugin wrapper for a value that is a host:port string.
+/// One store, three keys: the token (`pi_droid_token`), the endpoint
+/// (`pi_droid_endpoint`) and the notify policy (`pi_droid_notify_state`). The
+/// latter two are not secrets, but folding them in avoids a second plugin
+/// wrapper for values that are a host:port string and a JSON blob.
 library;
 
 import 'endpoint_store.dart';
@@ -24,4 +25,10 @@ abstract class TokenStore {
   Future<HubEndpoint?> readEndpoint();
   Future<void> writeEndpoint(HubEndpoint endpoint);
   Future<void> clearEndpoint();
+
+  /// The persisted notification policy blob, or null when nothing has been
+  /// stored. Not a secret; it is the escape hatch that keeps the per-session
+  /// engaged/muted flags across a restart.
+  Future<String?> readNotifyState();
+  Future<void> writeNotifyState(String state);
 }

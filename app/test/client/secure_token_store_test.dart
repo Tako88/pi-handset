@@ -133,4 +133,17 @@ void main() {
     expect(await store.readEndpoint(), isNull);
     expect(await store.read(), 'tok');
   });
+
+  // The notify policy is not a secret either, but it must survive a restart;
+  // it lives under its own key in the same store.
+  test('the notify state round-trips under its own key', () async {
+    final store = SecureTokenStore();
+
+    await store.writeNotifyState('blob');
+
+    expect(calls.last.method, 'write');
+    expect((calls.last.arguments as Map)['key'], 'pi_droid_notify_state');
+    expect((calls.last.arguments as Map)['value'], 'blob');
+    expect(await store.readNotifyState(), 'blob');
+  });
 }

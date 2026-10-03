@@ -15,6 +15,7 @@ Widget menuHost({
   String? thinkingLevel,
   String? model,
   bool sessionControl = false,
+  bool muted = false,
   List<String>? fired,
 }) => MaterialApp(
   home: Scaffold(
@@ -23,12 +24,14 @@ Widget menuHost({
         SessionMenuButton(
           thinkingLevel: thinkingLevel,
           model: model,
+          muted: muted,
           onCompact: () => fired?.add('compact'),
           onRename: () => fired?.add('rename'),
           onThinkingLevel: () => fired?.add('thinking'),
           onModel: () => fired?.add('model'),
           onNewSession: sessionControl ? () => fired?.add('new') : null,
           onFork: sessionControl ? () => fired?.add('fork') : null,
+          onToggleNotify: () => fired?.add('notify'),
         ),
       ],
     ),
@@ -203,6 +206,38 @@ void main() {
     await tester.tap(find.byKey(const Key('session-menu-fork')));
     await tester.pumpAndSettle();
     expect(fired, ['new', 'fork']);
+  });
+
+  testWidgets('the menu shows a Mute item', (tester) async {
+    await tester.pumpWidget(menuHost());
+    await tester.tap(find.byKey(const Key('session-menu')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('session-menu-notify')), findsOneWidget);
+    expect(find.text('Mute'), findsOneWidget);
+  });
+
+  testWidgets('the mute item reads Unmute when the session is muted', (
+    tester,
+  ) async {
+    await tester.pumpWidget(menuHost(muted: true));
+    await tester.tap(find.byKey(const Key('session-menu')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Unmute'), findsOneWidget);
+    expect(find.text('Mute'), findsNothing);
+  });
+
+  testWidgets('tapping the mute item fires onToggleNotify', (tester) async {
+    final fired = <String>[];
+    await tester.pumpWidget(menuHost(fired: fired));
+
+    await tester.tap(find.byKey(const Key('session-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('session-menu-notify')));
+    await tester.pumpAndSettle();
+
+    expect(fired, ['notify']);
   });
 
   testWidgets('the menu does not overflow at a large text scale with new and fork', (

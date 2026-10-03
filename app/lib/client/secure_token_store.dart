@@ -4,7 +4,8 @@
 /// depends on the [TokenStore] interface only, so it (and its unit tests) stay
 /// Flutter-free; this implementation is injected at the composition root.
 ///
-/// Two keys: the pairing token and the remembered endpoint.
+/// Three keys: the pairing token, the remembered endpoint and the notification
+/// policy blob.
 library;
 
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -17,6 +18,7 @@ class SecureTokenStore implements TokenStore {
     FlutterSecureStorage? storage,
     this.key = defaultKey,
     this.endpointKey = defaultEndpointKey,
+    this.notifyKey = defaultNotifyKey,
   }) : _storage = storage ?? const FlutterSecureStorage();
 
   /// The token key. Stable across app versions so a stored token survives an
@@ -26,9 +28,13 @@ class SecureTokenStore implements TokenStore {
   /// The endpoint key.
   static const String defaultEndpointKey = 'pi_droid_endpoint';
 
+  /// The notification policy key.
+  static const String defaultNotifyKey = 'pi_droid_notify_state';
+
   final FlutterSecureStorage _storage;
   final String key;
   final String endpointKey;
+  final String notifyKey;
 
   @override
   Future<String?> read() => _storage.read(key: key);
@@ -49,4 +55,11 @@ class SecureTokenStore implements TokenStore {
 
   @override
   Future<void> clearEndpoint() => _storage.delete(key: endpointKey);
+
+  @override
+  Future<String?> readNotifyState() => _storage.read(key: notifyKey);
+
+  @override
+  Future<void> writeNotifyState(String state) =>
+      _storage.write(key: notifyKey, value: state);
 }
