@@ -650,6 +650,22 @@ export function buildToolView(input: ToolViewInput): ToolView {
 }
 
 /**
+ * The `id` and `name` of one already-objectified tool-call part, or null when
+ * either is missing. The single defensive reading of a `toolCall` part, shared
+ * by the tool view and the tree label so the two cannot disagree. `type` is
+ * checked rather than trusted; a malformed part is skipped, never thrown.
+ */
+function toolCallIdentity(
+  call: Record<string, unknown> | null,
+): { id: string; name: string } | null {
+  if (call === null || call.type !== 'toolCall') return null;
+  const id = asString(call.id);
+  const name = asString(call.name);
+  if (id === null || name === null) return null;
+  return { id, name };
+}
+
+/**
  * The running payload(s) an assistant message's tool calls produce. A running
  * frame carries an input-only view: `write` can show its all-addition diff
  * before the result lands; everything else shows its target only.
@@ -663,10 +679,10 @@ export function toolCallPayloads(
   const payloads: ToolPayload[] = [];
   for (const part of msg.content) {
     const call = asObject(part);
-    if (call === null || call.type !== 'toolCall') continue;
-    const id = asString(call.id);
-    const name = asString(call.name);
-    if (id === null || name === null) continue;
+    if (call === null) continue;
+    const identity = toolCallIdentity(call);
+    if (identity === null) continue;
+    const { id, name } = identity;
     const rawArgs = argsById.has(id) ? argsById.get(id) : call.arguments;
     const args = asObject(rawArgs) ?? {};
     payloads.push({
@@ -1095,9 +1111,11 @@ export function projectTree(
 
 /**
  * The text of one emitted node. A user message's content may be a string or
- * parts; an image part is marked rather than dropped. Only assistant text parts
- * count — thinking and tool calls contribute nothing, so a pure tool-call turn
- * legitimately has empty text.
+ * parts; an image part is marked rather than dropped. Assistant text parts are
+ * joined; when a turn has no text at all — a tool/thinking-only turn — it is
+ * labelled by what it actually contained instead of being left empty: its tool
+ * names (deduplicated, first-seen order) if it called any, otherwise
+ * `(thinking)`. A turn that has text is never altered by this fallback.
  */
 function projectedMessageText(
   role: 'user' | 'assistant',
@@ -1107,6 +1125,8 @@ function projectedMessageText(
   if (role === 'user' && typeof content === 'string') return content;
   if (!Array.isArray(content)) return '';
   let text = '';
+  let hasThinking = false;
+  const toolNames: string[] = [];
   for (const part of content) {
     const obj = asObject(part);
     if (obj === null) continue;
@@ -1115,7 +1135,16 @@ function projectedMessageText(
       else text += '[image]';
     } else if (obj.type === 'text' && typeof obj.text === 'string') {
       text += obj.text;
+    } else if (obj.type === 'thinking') {
+      hasThinking = true;
+    } else {
+      const call = toolCallIdentity(obj);
+      if (call !== null && !toolNames.includes(call.name)) toolNames.push(call.name);
     }
+  }
+  if (role === 'assistant' && text === '') {
+    if (toolNames.length > 0) return `(tool calls: ${toolNames.join(', ')})`;
+    if (hasThinking) return '(thinking)';
   }
   return text;
 }
