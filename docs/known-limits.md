@@ -185,6 +185,15 @@ rather than guess at it.
   2× text scale it collapses toward the transcript area and scrolls. Below roughly two
   rows it is a scroll window rather than a browseable list; the alternative is an
   overflow or a panel that steals the transcript's space.
+- **A protocol mismatch stops the bridge, and the only notice is debug-gated.** The hub
+  closes a version mismatch — and any other protocol violation — with `4002`, and the
+  bridge now treats that close as terminal rather than reconnecting forever. The single
+  line naming the reason (`pi-droid bridge: protocol close 4002; not reconnecting`) is
+  written only when `PI_DROID_DEBUG=1`, because the bridge's silence guarantee — it must
+  never write to pi's stderr unprompted — is deliberate. Retrying would only reach the
+  same rejection, and a mismatched pair is a deploy-time error the operator fixes with
+  `pi /reload`, not a transient failure. Upgrade path if a default-visible signal is ever
+  wanted: a status frame surfaced in the app, not an unconditional stderr write.
 
 ## Images
 
