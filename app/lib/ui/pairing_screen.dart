@@ -7,6 +7,9 @@ library;
 
 import 'package:flutter/material.dart';
 
+import '../client/endpoint_store.dart';
+import '../platform/qr_scanner.dart';
+import '../protocol/pairing_uri.dart';
 import '../protocol/ticket.dart';
 
 class PairingScreen extends StatefulWidget {
@@ -18,6 +21,10 @@ class PairingScreen extends StatefulWidget {
     this.initialCode = '',
     this.lastError,
     this.busy = false,
+    this.scanQr,
+    this.candidates = const [],
+    this.onCandidate,
+    this.onScanned,
   });
 
   /// Called with the validated host, port and normalized code.
@@ -35,10 +42,35 @@ class PairingScreen extends StatefulWidget {
   /// dead-end the pairing form. Submitting during an attempt is a restart.
   final bool busy;
 
+  /// Opens the camera and resolves the raw scanned string, or null when the
+  /// user backs out. Null hides the Scan QR affordance entirely.
+  final QrScanner? scanQr;
+
+  /// The addresses the client is racing (or last raced). Non-empty renders the
+  /// one-tap picker so a forced candidate can be retried without retyping.
+  final List<HubEndpoint> candidates;
+
+  /// Called when the user taps a candidate row.
+  final void Function(HubEndpoint candidate)? onCandidate;
+
+  /// Called with the hub-minted candidate list and code after a scan that
+  /// carried at least one address. A code-only (`--no-lan`) scan reports
+  /// nothing here — there is no address to race.
+  final void Function(List<HubEndpoint> candidates, String code)? onScanned;
+
   static const String missingHostError = 'Enter the hub address.';
   static const String invalidPortError = 'Enter a port between 1 and 65535.';
   static const String invalidCodeError =
       "That pairing code isn't valid. Copy the 8 characters the hub printed.";
+  static const String scanNotPairingError =
+      "That QR isn't a pi pairing code.";
+  static const String scanUnsupportedVersionError =
+      'This QR needs a newer app. Update the app and try again.';
+  static const String scanInvalidError =
+      'That pairing QR is not valid. Print a fresh one from the hub.';
+  static const String scanFailedError = 'Could not scan the QR code. Try again.';
+  static const String noAddressHint =
+      'No hub address in this QR. Enter the host and port by hand.';
 
   @override
   State<PairingScreen> createState() => _PairingScreenState();
@@ -55,6 +87,13 @@ class _PairingScreenState extends State<PairingScreen> {
     text: widget.initialCode,
   );
   String? _error;
+
+  /// A scan that failed to yield a usable pairing URI, shown like [_error].
+  String? _scanError;
+
+  /// True when a scanned QR carried no address (`--no-lan`), so the manual form
+  /// is the only path.
+  bool _noAddress = false;
 
   @override
   void dispose() {
@@ -100,6 +139,61 @@ class _PairingScreenState extends State<PairingScreen> {
     _code.clear();
   }
 
+  Future<void> _scan() async {
+    final scanQr = widget.scanQr;
+    if (scanQr == null) return;
+    String? raw;
+    try {
+      raw = await scanQr(context);
+    } catch (_) {
+      // A denied camera or a plugin failure must be visible, never an unhandled
+      // async throw that blanks the route.
+      if (!mounted) return;
+      setState(() => _scanError = PairingScreen.scanFailedError);
+      return;
+    }
+    if (!mounted || raw == null) return;
+    switch (parsePairingUri(raw)) {
+      case PairingFailure(:final error):
+        setState(() {
+          // A failure replaces any previous scan outcome: a stale no-address
+          // hint must not sit beside the error.
+          _noAddress = false;
+          _scanError = switch (error) {
+            pairingErrorUnsupportedVersion =>
+              PairingScreen.scanUnsupportedVersionError,
+            pairingErrorNotAUri => PairingScreen.scanNotPairingError,
+            _ => PairingScreen.scanInvalidError,
+          };
+        });
+      case PairingOk(:final pairing):
+        final addresses = pairing.addresses;
+        final port = pairing.viewerPort;
+        if (addresses.isEmpty || port == null) {
+          setState(() {
+            _scanError = null;
+            _code.text = pairing.code;
+            _noAddress = true;
+          });
+          return;
+        }
+        setState(() {
+          _scanError = null;
+          _noAddress = false;
+          _code.text = pairing.code;
+          _host.text = addresses.first.host;
+          _port.text = port.toString();
+        });
+        widget.onScanned?.call(
+          [
+            for (final address in addresses)
+              HubEndpoint(host: address.host, port: port),
+          ],
+          pairing.code,
+        );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -141,6 +235,48 @@ class _PairingScreenState extends State<PairingScreen> {
                   textCapitalization: TextCapitalization.characters,
                   decoration: const InputDecoration(labelText: 'Pairing code'),
                 ),
+                if (widget.scanQr != null) ...[
+                  const SizedBox(height: 12),
+                  OutlinedButton.icon(
+                    key: const Key('pairing-scan'),
+                    onPressed: _scan,
+                    icon: const Icon(Icons.qr_code_scanner),
+                    label: const Text('Scan QR'),
+                  ),
+                ],
+                if (widget.candidates.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  for (final candidate in widget.candidates)
+                    ListTile(
+                      key: Key('pairing-candidate-${candidate.encode()}'),
+                      dense: true,
+                      leading: const Icon(Icons.lan_outlined),
+                      title: Text(candidateLabel(candidate.host)),
+                      subtitle: Text(candidate.encode()),
+                      onTap: () => widget.onCandidate?.call(candidate),
+                    ),
+                ],
+                if (_noAddress) ...[
+                  const SizedBox(height: 12),
+                  Semantics(
+                    key: const Key('pairing-no-address'),
+                    liveRegion: true,
+                    child: const Text(PairingScreen.noAddressHint),
+                  ),
+                ],
+                if (_scanError != null) ...[
+                  const SizedBox(height: 12),
+                  Semantics(
+                    key: const Key('pairing-scan-error'),
+                    liveRegion: true,
+                    child: Text(
+                      _scanError!,
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.error,
+                      ),
+                    ),
+                  ),
+                ],
                 if (_error != null) ...[
                   const SizedBox(height: 12),
                   Semantics(

@@ -23,6 +23,7 @@ import '../client/notification_presenter.dart';
 import '../client/settle_notification.dart';
 import '../client/token_store.dart';
 import '../platform/gallery_picker.dart';
+import '../platform/qr_scanner.dart';
 import '../protocol/protocol.dart';
 import 'command_suggestions.dart';
 import 'compose_bar.dart';
@@ -41,6 +42,7 @@ class PiDroidApp extends StatefulWidget {
     required this.notifications,
     this.initialSessionId,
     this.pickImage,
+    this.scanQr = scanPairingQr,
   });
 
   final HubClient client;
@@ -58,6 +60,10 @@ class PiDroidApp extends StatefulWidget {
   /// fake so no test opens a real picker.
   final Future<PickedImage?> Function()? pickImage;
 
+  /// Opens the camera and resolves a scanned pairing string. Defaults to the
+  /// real plugin; tests inject a fake so no test opens a camera.
+  final QrScanner scanQr;
+
   @override
   State<PiDroidApp> createState() => _PiDroidAppState();
 }
@@ -70,7 +76,10 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
   StreamSubscription<LeafEvent>? _leafSub;
   bool _loading = true;
   bool _authenticated = false;
-  HubEndpoint? _endpoint;
+
+  /// The candidate addresses the client is racing (or last raced). The header
+  /// names the first; the pairing picker renders them all.
+  List<HubEndpoint> _candidates = const [];
 
   /// A session requested by a tap (cold `initialSessionId` or a warm
   /// `openSessionRequests` event) that must wait for authentication before it
@@ -90,9 +99,18 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
   /// endpoint read so a `sessions` push cannot migrate against an empty policy.
   NotificationPolicy _notifyPolicy = NotificationPolicy();
 
-  /// The endpoint of an in-flight pairing. Persisted only once authentication
-  /// succeeds, so a typo'd host is never saved and auto-dialled.
-  HubEndpoint? _pendingEndpoint;
+  /// The addresses of an in-flight typed pairing. Persisted only once
+  /// authentication succeeds, so a typo'd host is never saved and auto-dialled.
+  /// A hub-minted scanned list is persisted at scan time instead.
+  List<HubEndpoint> _pendingEndpoints = const [];
+
+  /// The ticket accompanying the pending attempt, reused when the user forces a
+  /// candidate from the picker.
+  String? _pendingTicket;
+
+  /// Whether a successful authentication should persist [_pendingEndpoints].
+  /// True for typed input; false for a scanned list, which is already stored.
+  bool _persistOnConnect = false;
 
   /// A bootstrap failure that is not a client error.
   String? _bootstrapError;
@@ -268,8 +286,9 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
       if (_notifyPolicy.migrate(from: from, to: s.sessionId)) changed = true;
     }
     final previous = _state.activeSessionId;
-    final pending =
-        state.status == HubConnectionStatus.connected ? _pendingEndpoint : null;
+    final persist =
+        state.status == HubConnectionStatus.connected && _persistOnConnect;
+    final pendingEndpoints = persist ? _pendingEndpoints : const <HubEndpoint>[];
     setState(() {
       _state = state;
       // Open/close/switch/replacement: a picked image belongs to the session it
@@ -287,10 +306,18 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
         // Sticky: once paired, a later drop shows the main UI with a banner
         // rather than throwing the user back to pairing.
         _authenticated = true;
-        if (pending != null) _pendingEndpoint = null;
+        // The (single-use) ticket has been redeemed; a later forced candidate
+        // must never re-present a spent one.
+        _pendingTicket = null;
+        if (persist) {
+          _pendingEndpoints = const [];
+          _persistOnConnect = false;
+        }
       }
     });
-    if (pending != null) unawaited(widget.tokenStore.writeEndpoints([pending]));
+    if (pendingEndpoints.isNotEmpty) {
+      unawaited(widget.tokenStore.writeEndpoints(pendingEndpoints));
+    }
     // Only a real migration writes: an ordinary push must not churn the store.
     if (changed) {
       unawaited(widget.tokenStore.writeNotifyState(_notifyPolicy.encode()));
@@ -348,10 +375,9 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
     } catch (_) {
       // A broken store yields an empty policy rather than blocking boot.
     }
-    HubEndpoint? endpoint;
+    List<HubEndpoint> endpoints;
     try {
-      final endpoints = await widget.tokenStore.readEndpoints();
-      endpoint = endpoints.isEmpty ? null : endpoints.first;
+      endpoints = await widget.tokenStore.readEndpoints();
     } catch (error) {
       if (!mounted) return;
       setState(() {
@@ -361,10 +387,10 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
       return;
     }
     if (!mounted) return;
-    if (endpoint != null) {
-      _endpoint = endpoint;
+    if (endpoints.isNotEmpty) {
+      _candidates = endpoints;
       try {
-        await widget.client.start(endpoint.host, port: endpoint.port);
+        await widget.client.startCandidates(endpoints);
       } on StateError {
         // A remembered address with no stored token: pairing is still required.
       } catch (error) {
@@ -385,9 +411,50 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
 
   Future<void> _pair(String host, int port, String code) async {
     final endpoint = HubEndpoint(host: host, port: port);
-    _pendingEndpoint = endpoint;
-    setState(() => _endpoint = endpoint);
-    await widget.client.start(host, port: port, ticket: code);
+    _pendingEndpoints = [endpoint];
+    _pendingTicket = code;
+    _persistOnConnect = true;
+    setState(() => _candidates = [endpoint]);
+    await widget.client.startCandidates([endpoint], ticket: code);
+  }
+
+  /// A scanned pairing: the hub minted this list, so it is persisted before the
+  /// race — a typo is not a concern, and a total-failure race must not lose the
+  /// tailnet address.
+  Future<void> _pairScanned(List<HubEndpoint> candidates, String code) async {
+    if (candidates.isEmpty) return;
+    setState(() {
+      _candidates = List.of(candidates);
+      _pendingTicket = code;
+      _persistOnConnect = false;
+      // A typed attempt's prospective list is superseded by this one; it must
+      // not be written as if it belonged to the scan.
+      _pendingEndpoints = const [];
+    });
+    await widget.tokenStore.writeEndpoints(candidates);
+    if (!mounted) return;
+    await widget.client.startCandidates(candidates, ticket: code);
+  }
+
+  /// Re-races the candidate list, preferring the tapped one.
+  Future<void> _connectCandidate(HubEndpoint candidate) async {
+    try {
+      await widget.client.startCandidates(
+        _candidates,
+        ticket: _pendingTicket,
+        prefer: candidate,
+      );
+    } on StateError {
+      // The scan persisted the list but the race never paired, so after a
+      // restart there are candidates and neither a ticket nor a stored token.
+      // Forcing one cannot connect; surface it rather than letting the
+      // fire-and-forget callback throw into the void.
+      if (!mounted) return;
+      setState(() {
+        _bootstrapError =
+            'could not connect: no pairing code or saved token for this hub';
+      });
+    }
   }
 
   /// Forgets the hub, its token and the open transcript, and returns to pairing.
@@ -402,8 +469,10 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
     if (!mounted) return;
     setState(() {
       _authenticated = false;
-      _endpoint = null;
-      _pendingEndpoint = null;
+      _candidates = const [];
+      _pendingEndpoints = const [];
+      _pendingTicket = null;
+      _persistOnConnect = false;
       _bootstrapError = null;
       _dismissedError = null;
       _attachment = null;
@@ -784,9 +853,10 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
   /// The sessions header. The host is the useful half of the paired address, and
   /// the port is included because pairing accepts a non-default one.
   String _sessionsTitle() {
-    final endpoint = _endpoint;
-    if (endpoint == null) return 'pi sessions';
-    return 'pi sessions · ${endpoint.encode()}';
+    if (_candidates.isEmpty) return 'pi sessions';
+    final first = _candidates.first.encode();
+    if (_candidates.length == 1) return 'pi sessions · $first';
+    return 'pi sessions · $first +${_candidates.length - 1}';
   }
 
   Widget _home(BuildContext context) {
@@ -796,12 +866,18 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
     if (!_authenticated) {
       return PairingScreen(
         onSubmit: _pair,
+        onScanned: _pairScanned,
+        onCandidate: _connectCandidate,
+        candidates: _candidates,
+        scanQr: widget.scanQr,
         lastError: _state.lastError ?? _bootstrapError,
         busy:
             _state.status == HubConnectionStatus.connecting ||
             _state.status == HubConnectionStatus.authenticating,
-        initialHost: _endpoint?.host ?? '',
-        initialPort: _endpoint?.port.toString() ?? '8787',
+        initialHost: _candidates.isEmpty ? '' : _candidates.first.host,
+        initialPort: _candidates.isEmpty
+            ? '8787'
+            : _candidates.first.port.toString(),
       );
     }
 
