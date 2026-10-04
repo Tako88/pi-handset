@@ -711,7 +711,11 @@ was measured rather than assumed.
   the seven level names are printed in words (`Thinking · high`) rather than coloured by
   it. It also never colours a *rule* on a thinking row: `thinkingHigh` is the same violet
   as the accent, so a ramp-coloured rule made a thinking row and the user's row read
-  alike. Thinking rules are neutral; violet means "you".
+  alike. Thinking rules are neutral; violet means "you". The ramp does colour the
+  **composer band's** two rules, because that is what pi itself does with its editor
+  border — so at `off` or `minimal` the band is grey, which may read as disabled rather
+  than quiet. Accepted rather than fixed: pi's editor is always what you are looking at,
+  and the app's composer is not.
 - **`dim` is never used for text.** It is rules, dividers and handles only — it sits
   under 4.5:1 on both themes. `muted` is the lowest role fit for words.
 - **Roboto is the body face.** Type is platform fonts only: the platform mono face for
