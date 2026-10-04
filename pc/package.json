@@ -1,6 +1,7 @@
 {
   "name": "pi-droid-pc",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "keywords": [
     "pi-package"
