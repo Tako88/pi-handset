@@ -8,8 +8,8 @@ import 'package:pi_droid/ui/app_shell.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  // One store, three keys: the pairing token, the remembered endpoint and the
-  // notification policy blob.
+  // One store, four keys: the pairing token, the candidate endpoint list, the
+  // legacy single endpoint and the notification policy blob.
   final store = SecureTokenStore();
   final notifications = AndroidNotificationPresenter();
   // A notification tap that cold-started the app carries its session id. It is

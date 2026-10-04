@@ -6,10 +6,11 @@
 /// the plugin behind it, is what lets the client stay Flutter-free, and keeps a
 /// test double out of the shipped tree.
 ///
-/// One store, three keys: the token (`pi_droid_token`), the endpoint
+/// One store, four keys: the token (`pi_droid_token`), the candidate endpoint
+/// list (`pi_droid_endpoints`), the legacy single endpoint
 /// (`pi_droid_endpoint`) and the notify policy (`pi_droid_notify_state`). The
-/// latter two are not secrets, but folding them in avoids a second plugin
-/// wrapper for values that are a host:port string and a JSON blob.
+/// latter three are not secrets, but folding them in avoids a second plugin
+/// wrapper for values that are an address list and a JSON blob.
 library;
 
 import 'endpoint_store.dart';
@@ -22,9 +23,17 @@ abstract class TokenStore {
   /// must never be offered to a new one.
   Future<void> clear();
 
-  Future<HubEndpoint?> readEndpoint();
-  Future<void> writeEndpoint(HubEndpoint endpoint);
-  Future<void> clearEndpoint();
+  /// The remembered candidate addresses, empty when none are stored. The list
+  /// is newline-joined under `pi_droid_endpoints`; a legacy single value under
+  /// `pi_droid_endpoint` is read back as a one-element list for migration.
+  Future<List<HubEndpoint>> readEndpoints();
+
+  /// Persists the candidate list and keeps the first candidate under the legacy
+  /// single-value key.
+  Future<void> writeEndpoints(List<HubEndpoint> endpoints);
+
+  /// Removes both the list and the legacy single value.
+  Future<void> clearEndpoints();
 
   /// The persisted notification policy blob, or null when nothing has been
   /// stored. Not a secret; it is the escape hatch that keeps the per-session
