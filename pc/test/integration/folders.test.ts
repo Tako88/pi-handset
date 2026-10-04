@@ -190,6 +190,60 @@ test('listDirectories treats a non-finite cap as the default, not as no cap', ()
   assert.equal(nan.truncated, true);
 });
 
+test('a listing scan stops at maxScanEntries and reports truncated', () => {
+  const home = scratch();
+  for (let i = 0; i < 20; i += 1) mkdirSync(join(home, `d${String(i).padStart(2, '0')}`));
+
+  const listing = listDirectories(undefined, home, { maxEntries: 500, maxScanEntries: 5 });
+
+  assert.ok(listing.entries.length <= 5, 'the scan examines at most the cap');
+  assert.equal(listing.truncated, true);
+  assert.deepEqual(
+    listing.entries,
+    [...listing.entries].sort(),
+    'the returned window is sorted',
+  );
+});
+
+test('the scan cap bounds work even when the scanned window holds no directories', () => {
+  const home = scratch();
+  for (let i = 0; i < 20; i += 1) writeFileSync(join(home, `f${i}`), 'x');
+
+  const listing = listDirectories(undefined, home, { maxEntries: 500, maxScanEntries: 5 });
+
+  assert.equal(listing.entries.length, 0);
+  assert.equal(listing.truncated, true, 'only the scan cap can flip the flag here');
+});
+
+test('an exact fit under the scan cap is not a truncation', () => {
+  const home = scratch();
+  for (let i = 0; i < 5; i += 1) mkdirSync(join(home, `d${i}`));
+
+  const listing = listDirectories(undefined, home, { maxEntries: 5, maxScanEntries: 5 });
+
+  assert.equal(listing.entries.length, 5);
+  assert.equal(listing.truncated, false, 'an exact fit is not a truncation');
+});
+
+test('a zero scan cap truncates a directory of files without listing anything', () => {
+  const home = scratch();
+  for (let i = 0; i < 20; i += 1) writeFileSync(join(home, `f${i}`), 'x');
+
+  const listing = listDirectories(undefined, home, { maxEntries: 500, maxScanEntries: 0 });
+
+  assert.equal(listing.entries.length, 0);
+  assert.equal(listing.truncated, true);
+});
+
+test('a zero scan cap does not mark an empty directory as truncated', () => {
+  const home = scratch();
+
+  const listing = listDirectories(undefined, home, { maxEntries: 500, maxScanEntries: 0 });
+
+  assert.equal(listing.entries.length, 0);
+  assert.equal(listing.truncated, false, 'an empty directory finds nothing to cut');
+});
+
 test('listDirectories throws FolderError for outside, relative and nonexistent targets', () => {
   const home = scratch();
   const outside = scratch();

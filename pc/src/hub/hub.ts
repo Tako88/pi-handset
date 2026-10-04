@@ -54,6 +54,7 @@ import { ByteBudget } from './backpressure.ts';
 import {
   DEFAULT_MAX_DIR_BYTES,
   DEFAULT_MAX_DIR_ENTRIES,
+  DEFAULT_MAX_DIR_SCAN_ENTRIES,
   FolderError,
   TrustStoreError,
   canonicalizePath,
@@ -159,6 +160,8 @@ export interface HubOptions {
   trustPath?: string;
   /** Max entries returned by one `list-dirs`. Defaults to 500. */
   maxDirEntries?: number;
+  /** Max raw directory entries one `list-dirs` will scan. Defaults to 10 000. */
+  maxDirScanEntries?: number;
   /** Max encoded bytes for one `list-dirs`. Defaults to 256 KiB. */
   maxDirBytes?: number;
   /** Most outstanding commands one session may have queued. Defaults to 128. */
@@ -234,6 +237,7 @@ interface State {
     agentDir: string;
     trustPath: string;
     maxDirEntries: number;
+    maxDirScanEntries: number;
     maxDirBytes: number;
     maxPendingCommands: number;
     spawner?: Spawner;
@@ -792,6 +796,7 @@ function handleListDirs(
   try {
     listing = listDirectories(target, state.config.homeDir, {
       maxEntries: state.config.maxDirEntries,
+      maxScanEntries: state.config.maxDirScanEntries,
       maxBytes: state.config.maxDirBytes,
     });
     trustRequired = hasTrustRequiringResources(listing.path, state.config.homeDir);
@@ -1105,6 +1110,7 @@ export async function createHub(options: HubOptions): Promise<Hub> {
   const agentDir = options.agentDir ?? getAgentDir(process.env, homedir());
   const trustPath = options.trustPath ?? join(agentDir, 'trust.json');
   const maxDirEntries = options.maxDirEntries ?? DEFAULT_MAX_DIR_ENTRIES;
+  const maxDirScanEntries = options.maxDirScanEntries ?? DEFAULT_MAX_DIR_SCAN_ENTRIES;
   const maxDirBytes = options.maxDirBytes ?? DEFAULT_MAX_DIR_BYTES;
   const maxPendingCommands = options.maxPendingCommands ?? DEFAULT_MAX_PENDING_COMMANDS;
   const agent = new WebSocketServer({ host: '127.0.0.1', port: 0, maxPayload });
@@ -1140,6 +1146,7 @@ export async function createHub(options: HubOptions): Promise<Hub> {
       agentDir,
       trustPath,
       maxDirEntries,
+      maxDirScanEntries,
       maxDirBytes,
       maxPendingCommands,
       ...(options.spawner === undefined ? {} : { spawner: options.spawner }),

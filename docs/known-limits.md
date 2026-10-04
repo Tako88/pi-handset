@@ -195,6 +195,28 @@ rather than guess at it.
   `pi /reload`, not a transient failure. Upgrade path if a default-visible signal is ever
   wanted: a status frame surfaced in the app, not an unconditional stderr write.
 
+## Hub
+
+- **An unauthenticated viewer is closed after 10 s, and at most 64 unauthenticated
+  viewers are accepted** — the viewer listener only, since that is the LAN-exposed
+  surface; the agent listener is loopback-only. The deadline is armed on the agent
+  listener too, so a loopback dial that never `hello`s is closed at 10 s (the bridge
+  hellos immediately on open); a bridge restart storm that stalls dials past 10 s would
+  now close agents that previously survived. **A TCP socket that never completes the
+  WebSocket handshake is not covered** — `server.on('connection')` fires post-upgrade,
+  and HTTP `headersTimeout`/`requestTimeout` are deliberately not set — so this does
+  **not** claim to solve fd exhaustion from raw TCP. **Once `hello` succeeds a connection
+  has no idle timeout: its fd is held indefinitely regardless of activity**, so fd
+  exhaustion by *authenticated* peers is not solved either.
+- **A session caps outstanding commands at 128 total queued entries.** The over-cap
+  command is refused (`too many outstanding commands`), never queued or forwarded.
+  `pendingHistory` is **not** capped here; its distinct-cursor bound is already recorded
+  under **History paging** below.
+- **A listing scans at most 10 000 raw directory entries and resolves at most that many
+  symlinks.** Beyond it the result is the alphabetically-first N of the scanned window,
+  not of the whole directory, and `truncated` says so — so a directory large enough to
+  hit the scan cap can hide an entry that sorts before one that is shown.
+
 ## Images
 
 - **A large image is not rendered; its part is replaced in place and the text
@@ -290,6 +312,15 @@ rather than guess at it.
   load — likely, not impossible — and the guarantee is the recovery path: the hub's
   **unbudgeted** `resync-required` makes the app re-request history, and the
   **unbudgeted** `snapshot` carries the annotated frames back (collapsed).
+- **The 64 KiB bound now covers every view scalar, and a fresh truncated generic marker
+  is the last resort.** `boundToolPayload` keeps the `view === undefined` guard for a
+  viewless payload, applies the line cap, drops bulk in halves, then caps every view
+  string field at 8 KiB with `truncated` set; if the payload is still over, it replaces
+  `view` with a fresh `{type:'generic', truncated:true}`. The residual over-cap path is a
+  pathologically long identity field (`name`) — pi-controlled and assumed short. The
+  accepted behaviour behind the bound: `DiffLine.text` is not byte-capped, so a single
+  huge line converges only by `dropHalfBulk` amputating the whole line, and two 40 KiB
+  texts halve away rather than trim.
 - **A pre-#6 `tool` frame without a `toolCallId` is rejected and dropped silently.** The
   decoder requires a non-empty `toolCallId` and `name` and a valid `status`; a frame in
   the old `{kind:'tool', name, status, args}` shape fails as `bad-field`, and the app
