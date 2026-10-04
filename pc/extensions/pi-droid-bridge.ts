@@ -53,43 +53,6 @@ import { RATE_LIMITED_RECONNECT_MS, computeBackoff } from '../src/bridge/backoff
 import { encodeAgentMessage, parseCommand } from '../src/bridge/wire.ts';
 import { isActiveMode, COMMAND_ALLOWLIST, SESSION_COMMAND_NAME, COMMAND_NOT_ALLOWED } from '../src/bridge/commands.ts';
 
-export type {
-  BridgeHandler,
-  BridgeSessionManager,
-  BridgeCommandCtx,
-  BridgeCommandRegistration,
-  BridgeModel,
-  BridgeModelRegistry,
-  BridgeCtx,
-  TextPart,
-  ImagePart,
-  UserMessageContent,
-  BridgePi,
-  AssistantMessageEvent,
-  MessageEndEvent,
-  BridgeCloseEvent,
-  BridgeSocket,
-  SocketFactory,
-  BridgeDeps,
-} from '../src/bridge/pi-types.ts';
-export type {
-  NormalizedEvent,
-} from '../src/bridge/normalize.ts';
-export { TRIM_MAX_ITERATIONS, normalizeAssistantEvent, normalizeMessageEnd } from '../src/bridge/normalize.ts';
-export type {
-  ToolViewInput,
-} from '../src/bridge/tool-views.ts';
-export { TOOL_VIEW_MAX_LINES, buildToolView, toolCallPayloads, toolResultPayload, boundToolPayload } from '../src/bridge/tool-views.ts';
-export type {
-  HistoryProjection,
-} from '../src/bridge/history.ts';
-export { TREE_MAX_NODES, projectHistory, entryAnchor, mintCursor, parseHistoryCursor, projectTree, annotateToolViews } from '../src/bridge/history.ts';
-export { LABEL_MAX_CODE_POINTS, SETTLED_TEXT_MAX_CODE_POINTS, settleText, sanitizeLabel, labelFromMessage, labelFromEntries } from '../src/bridge/labels.ts';
-export type {
-  BackoffOptions,
-} from '../src/bridge/backoff.ts';
-export { RATE_LIMITED_RECONNECT_MS, computeBackoff } from '../src/bridge/backoff.ts';
-export { isActiveMode, COMMAND_ALLOWLIST, SESSION_COMMAND_NAME, COMMAND_NOT_ALLOWED } from '../src/bridge/commands.ts';
 
 /**
  * The hub session id the most recently installed bridge registered.
