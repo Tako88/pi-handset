@@ -174,7 +174,20 @@ sentence, and no assumption that the reader has already read the README.
 - Body only when the *why* isn't obvious from the subject: ≤3 short lines. Don't
   restate the diff, don't narrate the process.
 - No type prefixes (`feat:`, `fix:`) unless asked.
-- Never commit unless explicitly told.
+- Never merge or push without an explicit go-ahead.
+
+## Branches and releases
+
+- **`develop` is the integration branch and the GitHub default.** Features land
+  here. Because it is the default, `Fixes #N` closes when the commit lands, and a
+  pull request already targets the right branch.
+- **`main` is the last released state**, always an ancestor of `develop`.
+- **A release fast-forwards `main` to `develop`'s tip and tags it `vX.Y.Z`.** One
+  semver is shared by `app/pubspec.yaml` and `pc/package.json` (`PROTOCOL_VERSION`
+  stays a separate integer, bumped only when the wire breaks), and the release is
+  recorded in `CHANGELOG.md`.
+- **Hotfixes cherry-pick onto `develop`.** Never merge `main` back into `develop`:
+  the merge commit would break the linear, fast-forward-only history.
 
 ## Status
 
