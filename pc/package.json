@@ -2,6 +2,14 @@
   "name": "pi-droid-pc",
   "private": true,
   "type": "module",
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/pi-droid-bridge.ts"
+    ]
+  },
   "scripts": {
     "test": "node --test 'src/**/*.test.ts' 'test/**/*.test.ts' 'extensions/**/*.test.ts'",
     "typecheck": "tsc --noEmit"
