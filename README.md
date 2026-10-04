@@ -1,9 +1,15 @@
 # pi-droid
 
-An Android chat client for [pi](https://github.com/earendil-works/pi). A hub runs on
-the PC, a pi extension attaches your running sessions to it, and the phone talks to
-that hub over a WebSocket. The point of the app is streaming text: long assistant
-replies arrive token by token and must stay at 60 fps while they render.
+An Android chat client for [pi](https://github.com/earendil-works/pi). pi runs on
+your PC; this puts it in your pocket — read a long reply from the sofa, check on an
+agent that has been working for twenty minutes, or send the next instruction without
+walking back to the desk.
+
+It is not a terminal mirror, and not a chat wrapper. A hub on the PC attaches to the
+pi sessions already running there, and the phone shows the real thing: the same
+transcript, the same thinking, the same tool calls, rendered properly and updating
+live. Pair once over your LAN or a tailnet, and every `pi` you start afterwards shows
+up in the list.
 
 `pc/` is Node + TypeScript, `app/` is Flutter + Dart, and `protocol/` holds the golden
 fixtures both sides assert against.
