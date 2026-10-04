@@ -678,3 +678,48 @@ rather than guess at it.
   change but the draft text is not, so a draft typed in one session is still in the box in
   another. The navigation migration preserves this deliberately; fixing it is its own
   decision.
+
+## Appearance
+
+The app is tinted with pi's own palette (`app/lib/ui/theme.dart`): pi's built-in dark and
+light themes resolved to hex, mapped onto a Material `ColorScheme` plus a `PiRoles`
+theme extension. Each limit below is a knowing deviation from pi's theme files, and each
+was measured rather than assumed.
+
+- **The light palette is derived, because pi's is broadly sub-AA.** Contrast was measured
+  for every (role, surface) pair the renderers actually draw. pi's light theme fails at
+  AA for `muted` (4.32:1 on its own page), `mdHeading` (4.37), `mdLink` (4.25), `dim`
+  (2.81 — below even the 3:1 bar for a rule) and the whole thinking ramp (1.57–2.44), and
+  `toolOutput` fails in *both* themes (4.46:1 on `toolSuccessBg`). Those values are
+  darkened (light) or lightened (dark) toward `text` until they clear 4.5:1 as text, or
+  3:1 as a rule, against the worst surface each is used on. The hue is unchanged; only
+  lightness moves. pi's *generated* `system` theme enforces exactly this floor internally
+  (`TEXT_MINIMUM_WCAG_CONTRAST = 4.5`), so this is pi's intent rather than a departure
+  from it. A property test in `app/test/ui/theme_test.dart` pins the contrast floor over
+  a hand-written table of pairs — a pair missing from that table is unguarded.
+- **The dark page and card are darker than pi's export colours.** `#21252c` and
+  `#282c34` become `#12141a` and `#191c22`. pi's dark theme declares **no background at
+  all** (its `text` token is the empty string, meaning the terminal's own default), so
+  `#21252c` is only the colour pi guesses for an HTML export page — and on a phone it
+  reads as a washed-out grey over most of the screen. The hue cast and the card-to-page
+  delta are preserved; only the level moves.
+- **The light thinking ramp is pi's *dark* ramp.** pi's light ramp fails the 3:1
+  graphical bar at every level (1.57–2.44), so a thinking row would be invisible on
+  light. The light palette therefore reuses pi's dark ramp values (3.17–4.31 there), with
+  `thinkingMax` nudged to reach 3:1.
+- **The thinking ramp is a rule-and-icon colour, never text.** Its values are 3–4.5:1, so
+  the seven level names are printed in words (`Thinking · high`) rather than coloured by
+  it. It also never colours a *rule* on a thinking row: `thinkingHigh` is the same violet
+  as the accent, so a ramp-coloured rule made a thinking row and the user's row read
+  alike. Thinking rules are neutral; violet means "you".
+- **`dim` is never used for text.** It is rules, dividers and handles only — it sits
+  under 4.5:1 on both themes. `muted` is the lowest role fit for words.
+- **Roboto is the body face.** Type is platform fonts only: the platform mono face for
+  anything the machine produced or named (tool names and arguments, command output,
+  diffs, file paths, session ids, the pairing code, the context reading), and the
+  platform sans for prose. A monospace/sans split is pi's own shape, but a *distinctive*
+  body face is not achieved — bundling one is a one-file change when wanted.
+- **The app follows the phone's light/dark setting, not pi's configured theme.** pi's
+  theme role is not on the wire, and putting it there would be a protocol change for no
+  real gain. So a phone in light mode shows pi's light palette even when pi itself is
+  running `dark`.

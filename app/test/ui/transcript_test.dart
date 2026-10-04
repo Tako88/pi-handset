@@ -14,6 +14,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:pi_droid/client/hub_client.dart';
 import 'package:pi_droid/client/tool_view.dart';
 import 'package:pi_droid/client/transcript.dart';
+import 'package:pi_droid/ui/theme.dart';
 import 'package:pi_droid/ui/tool_views.dart';
 import 'package:pi_droid/ui/transcript_blocks.dart';
 import 'package:pi_droid/ui/transcript_view.dart';
@@ -44,6 +45,10 @@ class CountingBlocks extends ListBase<TranscriptBlock> {
 
 Widget wrap(SessionTranscript transcript, {VoidCallback? onLoadOlder}) =>
     MaterialApp(
+      // The app's own theme, not Material's default: these renderers read
+      // `PiRoles`, and a test that renders them outside it is not rendering
+      // what the app renders.
+      theme: piTheme(Brightness.dark),
       home: Scaffold(
         body: TranscriptView(
           transcript: transcript,
@@ -648,7 +653,12 @@ void main() {
     expect(find.byKey(const ValueKey('b')), findsOneWidget);
   });
 
-  testWidgets('user and assistant text blocks are aligned apart', (tester) async {
+  testWidgets('the user\'s row carries a tint and a rule, the agent\'s does not', (
+    tester,
+  ) async {
+    // The document shape replaced the old left/right alignment: what tells the
+    // user's own message apart from the agent's prose is now its surface and its
+    // rule, not which side it hugs. Every row still shares one left text edge.
     await tester.pumpWidget(
       wrap(
         SessionTranscript(
@@ -660,14 +670,21 @@ void main() {
       ),
     );
 
-    final mine = tester.widget<Align>(
-      find.ancestor(of: find.text('mine'), matching: find.byType(Align)).first,
+    final scheme = Theme.of(tester.element(find.byType(TranscriptView))).colorScheme;
+    final roles = piTheme(Brightness.dark).extension<PiRoles>()!;
+    final mine = tester.widget<DocumentRow>(
+      find.ancestor(of: find.text('mine'), matching: find.byType(DocumentRow)).first,
     );
-    final theirs = tester.widget<Align>(
-      find.ancestor(of: find.text('theirs'), matching: find.byType(Align)).first,
+    final theirs = tester.widget<DocumentRow>(
+      find.ancestor(of: find.text('theirs'), matching: find.byType(DocumentRow)).first,
     );
-    expect(mine.alignment, Alignment.centerRight);
-    expect(theirs.alignment, Alignment.centerLeft);
+    expect(mine.background, roles.userMessageBg);
+    expect(mine.rule, roles.accent);
+    expect(theirs.background, isNull);
+    expect(theirs.rule, isNull);
+    // And the user's tint is the one Material shows for that same idea, so the
+    // two namespaces cannot drift apart.
+    expect(scheme.primaryContainer, roles.userMessageBg);
   });
 
   testWidgets('a thinking block shows its body and collapses on tap', (
@@ -726,19 +743,31 @@ void main() {
     );
 
     expect(find.text('app/foo.dart +1 −1'), findsOneWidget);
-    expect(find.text('+ added line'), findsOneWidget);
-    expect(find.text('- removed line'), findsOneWidget);
+    expect(find.text('added line'), findsOneWidget);
+    expect(find.text('removed line'), findsOneWidget);
+    // The marker lives in its own gutter so a wrapped line's continuation is
+    // distinguishable from a new line.
+    expect(find.text('+'), findsOneWidget);
+    expect(find.text('-'), findsOneWidget);
 
     Color? colorOf(String text) => tester
-        .widget<Container>(
-          find.ancestor(of: find.text(text), matching: find.byType(Container)).first,
-        )
-        .color;
+        .widget<Text>(find.text(text))
+        .style
+        ?.color;
+    // Coloured text, not a filled row: pi's own diff renderer colours each line
+    // and leaves the tool panel's background alone, and the tool row's tint is
+    // already carrying the *outcome*. What this pins is the property that
+    // matters — an addition and a removal must be tellable apart.
+    final roles = piTheme(Brightness.dark).extension<PiRoles>()!;
+    expect(colorOf('added line'), roles.toolDiffAdded);
+    expect(colorOf('removed line'), roles.toolDiffRemoved);
+    expect(colorOf('+'), roles.toolDiffAdded);
     expect(
-      colorOf('+ added line'),
-      isNot(colorOf('- removed line')),
+      colorOf('added line'),
+      isNot(colorOf('removed line')),
       reason: 'an addition and a removal must be distinguishable, not one colour',
     );
+    expect(colorOf('unchanged'), roles.toolDiffContext);
   });
 
   testWidgets('a file view shows its path, range and body', (tester) async {

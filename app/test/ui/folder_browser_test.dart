@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pi_droid/client/hub_client.dart';
 import 'package:pi_droid/ui/folder_browser.dart';
+import 'package:pi_droid/ui/theme.dart';
 
 import '../client/support/fakes.dart';
 
@@ -46,7 +47,7 @@ class BrowserHarness {
 /// Pumps the browser as the whole app. Good for the listing itself; a pop has
 /// nowhere to go.
 Future<void> pumpDirect(WidgetTester tester, HubClient client) async {
-  await tester.pumpWidget(MaterialApp(home: FolderBrowserScreen(client: client)));
+  await tester.pumpWidget(MaterialApp(theme: piTheme(Brightness.dark), home: FolderBrowserScreen(client: client)));
   await tester.pump();
 }
 
@@ -55,6 +56,7 @@ Future<void> pumpDirect(WidgetTester tester, HubClient client) async {
 Future<void> pushBrowser(WidgetTester tester, HubClient client) async {
   await tester.pumpWidget(
     MaterialApp(
+      theme: piTheme(Brightness.dark),
       home: Builder(
         builder: (context) => Scaffold(
           body: Center(

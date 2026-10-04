@@ -32,6 +32,7 @@ import 'pairing_screen.dart';
 import 'session_list.dart';
 import 'session_menu.dart';
 import 'status_indicator.dart';
+import 'theme.dart';
 import 'transcript_view.dart';
 
 class PiDroidApp extends StatefulWidget {
@@ -900,9 +901,9 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
     title: 'pi',
     // `themeMode` defaults to `ThemeMode.system`, so which of these applies is
     // decided by the phone's own dark-mode setting — no in-app toggle to keep
-    // in sync with it.
-    theme: ThemeData(brightness: Brightness.light),
-    darkTheme: ThemeData(brightness: Brightness.dark),
+    // in sync with it. Both are built from pi's own palette; see `theme.dart`.
+    theme: piTheme(Brightness.light),
+    darkTheme: piTheme(Brightness.dark),
     home: Builder(builder: _home),
     navigatorKey: _navigatorKey,
   );
@@ -947,7 +948,7 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
         // Naming the hub is the only place the paired address is visible once
         // pairing is done — which is exactly when a wrong host is hardest to
         // notice, since everything else looks the same.
-        title: Text(_sessionsTitle()),
+        title: Text(_sessionsTitle(), style: piMono(fontSize: 14)),
         actions: [
           IconButton(
             key: const Key('pairing'),
@@ -1010,6 +1011,10 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
                   key: const Key('session-name'),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
+                  // The session's name is a session's name, not prose: the app
+                  // bar speaks in the machine's voice, like every other label
+                  // that names a thing.
+                  style: piMono(fontSize: 13),
                 ),
               ),
               if (barLabel != null)
@@ -1029,6 +1034,7 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
                         ),
                         maxLines: 1,
                         softWrap: false,
+                        style: piMono(fontSize: 12),
                       ),
                     ),
                   ),

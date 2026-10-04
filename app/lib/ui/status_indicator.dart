@@ -4,12 +4,17 @@
 /// streaming state, so it tests without a widget binding. The distinction that
 /// matters is the *precise* one: `Thinking…` appears only when the bridge
 /// actually signalled the phase, never as a guess for a slow first token.
+///
+/// While the agent is thinking, the spinner takes the thinking-level colour —
+/// the same one the thinking row's rule carries — so the phone shows the level
+/// the PC is running at.
 library;
 
 import 'package:flutter/material.dart';
 
 import '../client/hub_client.dart';
 import '../client/transcript.dart';
+import 'theme.dart';
 
 /// The label for [transcript], or null when no turn is running.
 String? statusLabel(SessionTranscript transcript) {
@@ -44,17 +49,27 @@ class StatusIndicator extends StatelessWidget {
   Widget build(BuildContext context) {
     final label = statusLabel(transcript);
     if (label == null) return const SizedBox.shrink();
+    final roles = Theme.of(context).extension<PiRoles>()!;
+    // The ramp is meaningful only while the phase actually is thinking; every
+    // other phase is the accent.
+    final tint = transcript.thinking
+        ? thinkingLevelColor(roles, transcript.thinkingLevel)
+        : roles.accent;
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
       child: Row(
         children: [
-          const SizedBox(
+          SizedBox(
             width: 12,
             height: 12,
-            child: CircularProgressIndicator(strokeWidth: 2),
+            child: CircularProgressIndicator(strokeWidth: 2, color: tint),
           ),
           const SizedBox(width: 8),
-          Text(label, key: const Key('status-label')),
+          Text(
+            label,
+            key: const Key('status-label'),
+            style: piMono(fontSize: 13, color: roles.muted),
+          ),
         ],
       ),
     );

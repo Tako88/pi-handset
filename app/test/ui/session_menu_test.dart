@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pi_droid/client/hub_client.dart';
 import 'package:pi_droid/ui/session_menu.dart';
+import 'package:pi_droid/ui/theme.dart';
 
 /// A host whose app bar carries the menu. Callbacks record what fired.
 ///
@@ -18,6 +19,7 @@ Widget menuHost({
   bool muted = false,
   List<String>? fired,
 }) => MaterialApp(
+  theme: piTheme(Brightness.dark),
   home: Scaffold(
     appBar: AppBar(
       actions: [
@@ -41,6 +43,7 @@ Widget menuHost({
 /// A host with a single button that opens [open] and records its result.
 Widget triggerHost(Future<void> Function(BuildContext context) open) =>
     MaterialApp(
+      theme: piTheme(Brightness.dark),
       home: Scaffold(
         body: Builder(
           builder: (context) => TextButton(
@@ -466,6 +469,7 @@ void main() {
     String? picked;
     await tester.pumpWidget(
       MaterialApp(
+        theme: piTheme(Brightness.dark),
         // Copy the ambient MediaQuery so view insets survive, and raise only the
         // text scale.
         builder: (context, child) => MediaQuery(
@@ -597,6 +601,7 @@ void main() {
       ModelSummary? picked;
       await tester.pumpWidget(
         MaterialApp(
+          theme: piTheme(Brightness.dark),
           builder: (context, child) => MediaQuery(
             data: MediaQuery.of(context).copyWith(
               textScaler: const TextScaler.linear(2),
@@ -855,6 +860,7 @@ void main() {
       ];
       await tester.pumpWidget(
         MaterialApp(
+          theme: piTheme(Brightness.dark),
           builder: (context, child) => MediaQuery(
             data: MediaQuery.of(
               context,

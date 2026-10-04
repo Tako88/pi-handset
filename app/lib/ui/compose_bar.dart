@@ -12,6 +12,7 @@ import 'package:flutter/material.dart';
 
 import '../client/attachment.dart';
 import '../client/hub_client.dart';
+import 'theme.dart';
 
 class ComposeBar extends StatefulWidget {
   const ComposeBar({
@@ -105,6 +106,7 @@ class _ComposeBarState extends State<ComposeBar> {
 
   @override
   Widget build(BuildContext context) {
+    final roles = Theme.of(context).extension<PiRoles>()!;
     return SafeArea(
       top: false,
       child: Padding(
@@ -140,7 +142,7 @@ class _ComposeBarState extends State<ComposeBar> {
                         onPressed: widget.enabled
                             ? widget.onRemoveAttachment
                             : null,
-                        icon: const Icon(Icons.close),
+                        icon: Icon(Icons.close, color: roles.muted),
                         tooltip: 'Remove image',
                       ),
                     ],
@@ -161,15 +163,31 @@ class _ComposeBarState extends State<ComposeBar> {
                     textInputAction: TextInputAction.newline,
                     decoration: InputDecoration(
                       hintText: 'Message pi',
-                      border: const OutlineInputBorder(),
+                      // A filled field lifted off the page, and the only place a
+                      // blue border appears: focused, which is exactly what
+                      // `border` means in pi's palette.
+                      filled: true,
+                      fillColor: roles.cardBg,
                       isDense: true,
+                      border: OutlineInputBorder(
+                        borderSide: BorderSide(color: roles.borderMuted),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderSide: BorderSide(color: roles.borderMuted),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderSide: BorderSide(color: roles.border),
+                      ),
                       suffixIcon: widget.onAttach == null
                           ? null
                           : IconButton(
                               key: const Key('compose-attach'),
                               onPressed:
                                   widget.enabled ? widget.onAttach : null,
-                              icon: const Icon(Icons.add_photo_alternate_outlined),
+                              icon: Icon(
+                                Icons.add_photo_alternate_outlined,
+                                color: roles.muted,
+                              ),
                               tooltip: 'Attach an image',
                             ),
                     ),
@@ -178,14 +196,14 @@ class _ComposeBarState extends State<ComposeBar> {
                 IconButton(
                   key: const Key('compose-abort'),
                   onPressed: widget.enabled ? widget.onAbort : null,
-                  icon: const Icon(Icons.stop_circle_outlined),
+                  icon: Icon(Icons.stop_circle_outlined, color: roles.error),
                   tooltip: 'Abort',
                 ),
                 IconButton(
                   key: const Key('compose-send'),
                   onPressed: widget.enabled ? _send : null,
                   onLongPress: widget.enabled ? _followUp : null,
-                  icon: const Icon(Icons.send),
+                  icon: Icon(Icons.send, color: roles.accent),
                   tooltip: 'Send (long-press to run after this turn)',
                 ),
               ],

@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pi_droid/client/hub_client.dart';
 import 'package:pi_droid/client/transcript.dart';
+import 'package:pi_droid/ui/theme.dart';
 import 'package:pi_droid/ui/transcript_blocks.dart';
 import 'package:pi_droid/ui/transcript_view.dart';
 
@@ -72,6 +73,7 @@ void main() {
 
   Widget view(String text, Future<void> Function(Uri) onOpenLink) =>
       MaterialApp(
+        theme: piTheme(Brightness.dark),
         home: Scaffold(
           body: TranscriptView(
             transcript: SessionTranscript(

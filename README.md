@@ -551,13 +551,24 @@ fish_add_path $HOME/Android/Sdk/emulator
   authentication, while notices a reconnect cannot fix (resync gave up, session
   gone, token not persisted) survive. Collapsing them into one bucket and clearing
   it blindly would trade a visible lie for an invisible one.
-- **Pairing survives a reboot but not a reinstall.** The endpoint and token live in
-  keystore-wrapped storage, which a normal restart reads fine but `adb install -r`
-  of a rebuilt APK cannot decrypt. So "back to the pairing screen" after a rebuild
-  is an install artifact, not a lost pairing — worth knowing before hunting a bug
-  that is not there. If the read itself fails, the app now says so on the pairing
-  screen (`could not read the saved token: …`) and returns to pairing, instead of
-  spinning on the splash forever.
+- **Pairing survives `adb install -r`.** The endpoint and token live in
+  keystore-wrapped storage. Repeated replace-installs of a rebuilt, same-signature APK on
+  the test phone (2026-10-04) kept the pairing intact — the app relaunched straight into
+  the transcript each time. A *changed signing key*, or an `adb uninstall`, still loses
+  it, and the app now says so on the pairing screen (`could not read the saved token: …`)
+  and returns to pairing rather than spinning on the splash forever.
+- **The palette is pi's own, with measured deviations.** Colours come from pi's built-in
+  dark and light themes resolved to hex — the accent, the tool state tints, the markdown
+  roles, the thinking-level ramp — so a session reads the same on the phone as on the PC.
+  Two kinds of change were needed, both because pi's palette is designed for a terminal:
+  **contrast** (pi's light palette is broadly sub-AA, and `toolOutput` fails in both
+  themes; those values are moved toward `text` until they clear 4.5:1 as text or 3:1 as a
+  rule on the worst surface each is used on, hue untouched) and the **dark page**, which
+  is darker than pi's HTML-export guess because pi's dark theme declares no background at
+  all. Contrast is pinned as a *property* in `app/test/ui/theme_test.dart`, not as hex.
+  Typographically the app has two voices — the platform mono face for anything the
+  machine produced or named, the platform sans for prose. Every deviation, and the
+  known-unguarded edges, are in [`docs/known-limits.md`](docs/known-limits.md).
 
 ## Further reading
 

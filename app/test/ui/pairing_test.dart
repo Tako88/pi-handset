@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pi_droid/client/endpoint_store.dart';
 import 'package:pi_droid/ui/pairing_screen.dart';
+import 'package:pi_droid/ui/theme.dart';
 
 void main() {
   testWidgets('an empty host shows an error and does not submit', (
@@ -14,6 +15,7 @@ void main() {
     String? submitted;
     await tester.pumpWidget(
       MaterialApp(
+      theme: piTheme(Brightness.dark),
         home: PairingScreen(
           onSubmit: (host, port, code) => submitted = code,
         ),
@@ -34,6 +36,7 @@ void main() {
     String? submitted;
     await tester.pumpWidget(
       MaterialApp(
+      theme: piTheme(Brightness.dark),
         home: PairingScreen(
           onSubmit: (host, port, code) => submitted = code,
           initialHost: '10.0.0.2',
@@ -56,6 +59,7 @@ void main() {
     String? submitted;
     await tester.pumpWidget(
       MaterialApp(
+      theme: piTheme(Brightness.dark),
         home: PairingScreen(
           onSubmit: (host, port, code) => submitted = code,
           initialHost: '10.0.0.2',
@@ -77,6 +81,7 @@ void main() {
     String? submitted;
     await tester.pumpWidget(
       MaterialApp(
+      theme: piTheme(Brightness.dark),
         home: PairingScreen(
           onSubmit: (h, p, c) {
             host = h;
@@ -103,6 +108,7 @@ void main() {
   ) async {
     await tester.pumpWidget(
       MaterialApp(
+      theme: piTheme(Brightness.dark),
         home: PairingScreen(
           onSubmit: (host, port, code) {},
           lastError: 'timed out waiting for the hub to authenticate',
@@ -119,7 +125,7 @@ void main() {
 
   testWidgets('the code field suits a mobile keyboard', (tester) async {
     await tester.pumpWidget(
-      MaterialApp(home: PairingScreen(onSubmit: (host, port, code) {})),
+      MaterialApp(theme: piTheme(Brightness.dark), home: PairingScreen(onSubmit: (host, port, code) {})),
     );
 
     final code = tester.widget<TextField>(
@@ -137,6 +143,7 @@ void main() {
   testWidgets('the error text is a live region', (tester) async {
     await tester.pumpWidget(
       MaterialApp(
+      theme: piTheme(Brightness.dark),
         home: PairingScreen(
           onSubmit: (host, port, code) {},
           initialHost: '10.0.0.2',
@@ -161,6 +168,7 @@ void main() {
     String? code;
     await tester.pumpWidget(
       MaterialApp(
+      theme: piTheme(Brightness.dark),
         home: PairingScreen(
           onSubmit: (h, p, c) {
             host = h;
@@ -192,6 +200,7 @@ void main() {
   ) async {
     await tester.pumpWidget(
       MaterialApp(
+      theme: piTheme(Brightness.dark),
         home: PairingScreen(
           onSubmit: (host, port, code) {},
           initialHost: '10.0.0.2',
@@ -213,6 +222,7 @@ void main() {
   testWidgets('the busy spinner is announced', (tester) async {
     await tester.pumpWidget(
       MaterialApp(
+      theme: piTheme(Brightness.dark),
         home: PairingScreen(onSubmit: (host, port, code) {}, busy: true),
       ),
     );
@@ -227,6 +237,7 @@ void main() {
   testWidgets('the busy spinner is coloured onPrimary', (tester) async {
     await tester.pumpWidget(
       MaterialApp(
+      theme: piTheme(Brightness.dark),
         home: PairingScreen(onSubmit: (host, port, code) {}, busy: true),
       ),
     );
@@ -246,6 +257,7 @@ void main() {
     tester,
   ) async {
     Widget screen(String? lastError) => MaterialApp(
+      theme: piTheme(Brightness.dark),
       home: PairingScreen(
         onSubmit: (host, port, code) {},
         initialHost: '10.0.0.2',
@@ -277,6 +289,7 @@ void main() {
     String? scannedCode;
     await tester.pumpWidget(
       MaterialApp(
+      theme: piTheme(Brightness.dark),
         home: PairingScreen(
           onSubmit: (host, port, code) {},
           scanQr: (_) async {
@@ -326,6 +339,7 @@ void main() {
     List<HubEndpoint>? scanned;
     await tester.pumpWidget(
       MaterialApp(
+      theme: piTheme(Brightness.dark),
         home: PairingScreen(
           onSubmit: (host, port, code) {},
           scanQr: (_) async => 'pidroid://pair?v=1&code=abcd-2345',
@@ -348,6 +362,7 @@ void main() {
     var scans = 0;
     await tester.pumpWidget(
       MaterialApp(
+      theme: piTheme(Brightness.dark),
         home: PairingScreen(
           onSubmit: (host, port, code) {},
           scanQr: (_) async {
@@ -376,6 +391,7 @@ void main() {
   testWidgets('a non-pairing QR shows a visible error', (tester) async {
     await tester.pumpWidget(
       MaterialApp(
+      theme: piTheme(Brightness.dark),
         home: PairingScreen(
           onSubmit: (host, port, code) {},
           scanQr: (_) async => 'https://example.com/not-a-pair',
@@ -394,6 +410,7 @@ void main() {
   ) async {
     await tester.pumpWidget(
       MaterialApp(
+      theme: piTheme(Brightness.dark),
         home: PairingScreen(
           onSubmit: (host, port, code) {},
           scanQr: (_) async => 'pidroid://pair?v=2&code=abcd-2345',
@@ -416,6 +433,7 @@ void main() {
   ) async {
     await tester.pumpWidget(
       MaterialApp(
+      theme: piTheme(Brightness.dark),
         home: PairingScreen(
           onSubmit: (host, port, code) {},
           scanQr: (_) async => throw StateError('camera exploded'),
@@ -437,6 +455,7 @@ void main() {
     HubEndpoint? tapped;
     await tester.pumpWidget(
       MaterialApp(
+      theme: piTheme(Brightness.dark),
         home: PairingScreen(
           onSubmit: (host, port, code) {},
           candidates: const [
@@ -462,6 +481,7 @@ void main() {
   ) async {
     await tester.pumpWidget(
       MaterialApp(
+      theme: piTheme(Brightness.dark),
         home: PairingScreen(
           onSubmit: (host, port, code) {},
           candidates: const [
@@ -508,6 +528,7 @@ void main() {
     (tester) async {
       var scans = 0;
       Widget screen(String? lastError) => MaterialApp(
+      theme: piTheme(Brightness.dark),
         home: PairingScreen(
           onSubmit: (host, port, code) {},
           scanQr: (_) async {

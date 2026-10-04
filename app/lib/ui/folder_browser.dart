@@ -15,6 +15,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../client/hub_client.dart';
+import 'theme.dart';
 
 class FolderBrowserScreen extends StatefulWidget {
   const FolderBrowserScreen({super.key, required this.client});
@@ -168,14 +169,21 @@ class _FolderBrowserScreenState extends State<FolderBrowserScreen> {
         for (final entry in listing.entries)
           ListTile(
             leading: const Icon(Icons.folder),
-            title: Text(entry),
+            // A directory name is a path, so it is set in the mono face — the
+            // same voice the transcript uses for paths.
+            title: Text(entry, style: piMono(fontSize: 14)),
             onTap: () => _open(_join(listing.path, entry)),
           ),
         if (listing.truncated)
-          const Padding(
-            key: Key('listing-truncated'),
-            padding: EdgeInsets.all(16),
-            child: Text('Some entries are hidden.'),
+          Padding(
+            key: const Key('listing-truncated'),
+            padding: const EdgeInsets.all(16),
+            child: Text(
+              'Some entries are hidden.',
+              style: TextStyle(
+                color: Theme.of(context).extension<PiRoles>()!.muted,
+              ),
+            ),
           ),
       ],
     );
