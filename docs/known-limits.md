@@ -396,10 +396,11 @@ rather than guess at it.
 - **`pi` must be on the supervisor's `PATH`.** `spawn('pi', …)` resolves through the
   supervisor process's environment; a systemd/launchd-managed hub may not have it.
 - **The bridge must be globally configured.** Production relies on the user's
-  `<agent-dir>/settings.json` listing `pc/extensions` (verified on the dev host). If it
-  does not, a spawned pi never registers; the registration reaper kills it and the
-  start silently yields no row. The hermetic capstone proves the mechanism with an
-  equivalent settings file.
+  `<agent-dir>/settings.json` having the `pc/` package installed — `pi install
+  <checkout>/pc`; the older `"extensions": ["…/pc/extensions"]` form still works
+  too (both verified on the dev host). If neither is present, a spawned pi never
+  registers; the registration reaper kills it and the start silently yields no row.
+  The hermetic capstone proves the mechanism with an equivalent settings file.
 - **The old-hub compatibility gate is a capability array, not a version.** The first
   post-auth `sessions` frame carries
   `capabilities: ["list-dirs","project-session","session-control","attachments"]`;
