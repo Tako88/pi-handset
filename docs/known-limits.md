@@ -120,9 +120,9 @@ rather than guess at it.
   stale-token loop repeats one identical message, so the change-guard holds; a
   differently-worded error landing mid-typing would clear the field.
 - **A displaced pairing attempt's `paired` frame can still win a microtask race.**
-  `_onPaired` has no generation guard, and the shell persists `_pendingEndpoint` on
-  `connected`, so a frame already queued when a new submit lands can pair host B's
-  endpoint with host A's token. The normal path closes the socket first, so the window
+  `_onPaired` has no generation guard, and the shell persists `_pendingEndpoints` on
+  `connected` only when `_persistOnConnect` is set, so a frame already queued when a new
+  submit lands can pair host B's endpoint with host A's token. The normal path closes the socket first, so the window
   is sub-millisecond and the next re-pair fixes it. Accepted: guarding it cannot be
   tested cleanly with the current fakes, and a test that cannot fail is not a test.
 - **Deploy gate: adding an event payload kind needs the hub restarted AND pi
@@ -228,10 +228,10 @@ rather than guess at it.
   drop with no signal to close it. The bridge's shape-refusal cannot detect an old
   bridge; deploy discipline (restart the hub *and* reload pi) is the only defence.
   Against an old hub the app shows no `+` at all.
-- **One gallery image per send, and no camera.** The chip holds at most one image
-  and picking again replaces it; a chip list, drag-reorder and camera capture are not
-  built. Camera would also need a runtime permission, which the gallery path
-  deliberately avoids — the main manifest declares no media or camera permission.
+- **One gallery image per send, and no camera capture in the gallery path.** The chip
+  holds at most one image and picking again replaces it; a chip list, drag-reorder and
+  camera capture are not built. The gallery path deliberately avoids the camera (the
+  `CAMERA` permission in the main manifest belongs to QR scanning, not image picking).
 - **The 350 KiB local cap is the only guaranteed size defence, and it is coupled to
   the hub's 1 MiB `maxPayload`.** A picked image over `maxAttachmentBytes` (350 KiB) is
   refused locally with `'That image is too large to send'` — never sent as a frame the
@@ -612,6 +612,40 @@ rather than guess at it.
 - **`pair` is same-machine only.** It talks over a Unix socket, so it cannot mint a code
   for a hub on another host; there the `kill -USR1` route (or running `pair` on that host)
   is still the way.
+
+## QR scanning
+
+- **A forced candidate is a race *preference*, not a pin.** The picker dials every stored
+  candidate in parallel and adopts the tapped address when it answers; if the preferred
+  candidate fails or does not answer within `_candidateConnectTimeout` (2 s), a held
+  non-preferred success is adopted instead, so the hold can add up to a 2-second stall on a
+  forced tap. Switching preference **after** a successful connection is not possible in
+  place — it needs **Change hub**, because the picker renders only on the pairing screen.
+  The whole list is retained, so a forced-home tap does not break the tailnet reconnect.
+- **A failed scan-pair can only be retried while the same ticket is valid and unburned.**
+  The scanned ticket is single-use and lives 5 minutes: a successful scan whose race
+  authenticates but is rejected, or that burns the ticket's five failed attempts, cannot be
+  retried silently — the only recovery is a **fresh code** (a new scan, or the hub's printed
+  code retyped into the manual form). The client's pre-existing background reconnect keeps
+  presenting the spent ticket until the user re-pairs, so the pairing screen deliberately
+  clears the code and requires a new code (a fresh scan, or the hub's printed code retyped
+  into the manual form) rather than appearing to resubmit the same one. A good ticket and a
+  dead one are indistinguishable to the app: a bad ticket gets silence (the client's auth
+  watchdog fires), not a machine-readable refusal.
+- **The camera permission and its denial UI belong to `mobile_scanner`.** Declaring
+  `CAMERA` in the app manifest does not prompt; the plugin auto-requests it when a scan
+  starts and surfaces a denial through its `errorBuilder`, which the app renders in-route
+  with a Close button. `minSdk 23` did not force a floor bump (the app's is 24) and
+  `compileSdk 36` is satisfied. The **bundled ML Kit backend is the default**, so scanning
+  works offline, at a **+3–10 MB APK** cost; the unbundled (Play Services) backend is opt-in
+  via `android/gradle.properties`.
+- **The candidate list lives under a new key, so a downgrade cannot decode garbage.**
+  `pi_droid_endpoints` holds the newline-joined list while `pi_droid_endpoint` keeps its
+  original single-`host:port` format; the new build writes the *first* candidate to the
+  legacy key and never the list. An older build therefore reads a single endpoint it
+  understands, or nothing when that key is unset and re-pairs cleanly — it never sees the
+  newline string, so it never runs it through `lastIndexOf(':')` to produce a
+  newline-bearing garbage host.
 
 ## Navigation
 
