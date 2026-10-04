@@ -180,6 +180,17 @@ void main() {
     expect(result.error, 'connection lost');
   });
 
+  test('a second start fails an in-flight listing', () async {
+    await pushSessions(capabilities: const ['list-dirs', 'project-session']);
+    final future = client.listDirs();
+    await pumpEventQueue();
+    await client.start('127.0.0.1').timeout(const Duration(seconds: 5));
+    await pumpEventQueue();
+    final result = await future.timeout(const Duration(seconds: 1));
+    expect(result.ok, isFalse);
+    expect(result.error, 'connection replaced');
+  });
+
   test('startSession sends cwd and trust', () async {
     await pushSessions(capabilities: const ['list-dirs', 'project-session']);
     client.startSession(cwd: '/home/u/project', trust: true);
