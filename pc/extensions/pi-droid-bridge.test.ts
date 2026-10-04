@@ -4543,6 +4543,68 @@ test('boundToolPayload flags a view trimmed purely by the line cap', () => {
   assert.equal(bounded.view!.truncated, true);
 });
 
+test('every adversarial tool payload is bounded to TOOL_VIEW_MAX_BYTES', () => {
+  const long = 'x'.repeat(200_000);
+  const payloads: ToolPayload[] = [
+    { kind: 'tool', toolCallId: 'c1', name: 'custom', status: 'done', view: { type: 'generic', target: long } },
+    { kind: 'tool', toolCallId: 'c2', name: 'bash', status: 'done', view: { type: 'command', command: long, output: '' } },
+    { kind: 'tool', toolCallId: 'c3', name: 'edit', status: 'done', view: { type: 'diff', path: long, lines: [] } },
+    { kind: 'tool', toolCallId: 'c4', name: 'read', status: 'done', view: { type: 'file', path: long, content: '' } },
+    { kind: 'tool', toolCallId: 'c5', name: 'ls', status: 'done', view: { type: 'table', columns: [long], rows: [] } },
+  ];
+  for (const payload of payloads) {
+    const bounded = boundToolPayload(payload);
+    assert.ok(
+      Buffer.byteLength(JSON.stringify(bounded)) <= TOOL_VIEW_MAX_BYTES,
+      `${payload.name} exceeded TOOL_VIEW_MAX_BYTES`,
+    );
+  }
+});
+
+test('a view whose scalars cannot all fit becomes a fresh truncated generic marker with identity intact', () => {
+  const column = 'x'.repeat(20_000);
+  const payload: ToolPayload = {
+    kind: 'tool',
+    toolCallId: 'c1',
+    name: 'ls',
+    status: 'done',
+    view: { type: 'table', columns: Array.from({ length: 20 }, () => column), rows: [] },
+  };
+  const bounded = boundToolPayload(payload);
+  assert.ok(Buffer.byteLength(JSON.stringify(bounded)) <= TOOL_VIEW_MAX_BYTES);
+  assert.equal(bounded.view!.type, 'generic');
+  assert.equal(bounded.view!.truncated, true);
+  assert.equal(bounded.toolCallId, 'c1');
+  assert.equal(bounded.name, 'ls');
+  assert.equal(bounded.status, 'done');
+  assert.equal(bounded.kind, 'tool');
+});
+
+test('a scalar-only overflow is capped in place without failing closed', () => {
+  const payload: ToolPayload = {
+    kind: 'tool',
+    toolCallId: 'c1',
+    name: 'read',
+    status: 'done',
+    view: { type: 'file', path: 'x'.repeat(200_000), content: '' },
+  };
+  const bounded = boundToolPayload(payload);
+  assert.ok(Buffer.byteLength(JSON.stringify(bounded)) <= TOOL_VIEW_MAX_BYTES);
+  assert.equal(bounded.view!.type, 'file');
+  assert.equal(bounded.view!.truncated, true);
+});
+
+test('boundToolPayload leaves a viewless payload untouched', () => {
+  const payload: ToolPayload = {
+    kind: 'tool',
+    toolCallId: 'c1',
+    name: 'read',
+    status: 'done',
+  };
+  const bounded = boundToolPayload(payload);
+  assert.deepEqual(bounded, payload);
+});
+
 // ---------------------------------------------------------------------------
 // History annotation
 // ---------------------------------------------------------------------------
