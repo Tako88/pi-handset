@@ -17,6 +17,7 @@ import 'package:pi_droid/client/hub_socket.dart';
 import 'package:pi_droid/client/notification_policy.dart';
 import 'package:pi_droid/client/settle_notification.dart';
 import 'package:pi_droid/client/token_store.dart';
+import 'package:pi_droid/platform/qr_scanner.dart';
 import 'package:pi_droid/ui/app_shell.dart';
 import 'package:pi_droid/ui/folder_browser.dart';
 import 'package:pi_droid/ui/pairing_screen.dart';
@@ -322,11 +323,13 @@ class Harness {
   Harness({
     String? token = testToken,
     HubEndpoint? endpoint,
+    List<HubEndpoint>? endpoints,
     TokenStore? tokenStore,
     String? notifyState,
   }) : store = tokenStore ?? InMemoryTokenStore(
          initial: token,
          initialEndpoint: endpoint,
+         initialEndpoints: endpoints,
          notifyState: notifyState,
        ) {
     client = HubClient(
@@ -346,14 +349,33 @@ class Harness {
   Widget app({
     String? initialSessionId,
     Future<PickedImage?> Function()? pickImage,
+    QrScanner? scanQr,
   }) => PiDroidApp(
     client: client,
     tokenStore: store,
     notifications: notifications,
     initialSessionId: initialSessionId,
     pickImage: pickImage,
+    scanQr: scanQr ?? scanPairingQr,
   );
 }
+
+/// A scanner that returns whatever [uri] currently holds and counts invocations.
+class FakeQrScanner {
+  FakeQrScanner(this.uri);
+
+  String? uri;
+  int calls = 0;
+
+  Future<String?> call(BuildContext context) async {
+    calls++;
+    return uri;
+  }
+}
+
+/// The socket the client adopted: the one it did not close itself.
+FakeHubSocket adoptedSocket(Harness h) =>
+    h.factory.sockets.firstWhere((socket) => !socket.closedByClient);
 
 /// A token store whose endpoint read fails, standing in for a broken platform
 /// keystore.
@@ -487,6 +509,24 @@ void main() {
     // the phone on Tailscale and more than one hub reachable there is nothing
     // on screen that says which machine this list came from.
     expect(find.text('pi sessions · 10.0.0.5:8787'), findsOneWidget);
+  });
+
+  testWidgets('the header names the first candidate and counts the rest', (
+    tester,
+  ) async {
+    final h = Harness(
+      endpoints: const [
+        HubEndpoint(host: '192.168.1.10', port: 8787),
+        HubEndpoint(host: '100.64.1.2', port: 8787),
+      ],
+    );
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+
+    adoptedSocket(h).receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+
+    expect(find.text('pi sessions · 192.168.1.10:8787 +1'), findsOneWidget);
   });
 
   testWidgets('the transcript app bar shows the context usage', (tester) async {
@@ -2313,6 +2353,228 @@ void main() {
     );
     expect(await h.store.read(), testToken);
   });
+
+  testWidgets('scanning a two-address QR dials both, LAN first', (tester) async {
+    final h = Harness(token: null);
+    final scanner = FakeQrScanner(
+      'pidroid://pair?v=1&code=abcd-2345&port=8787'
+      '&ts=100.64.1.2&lan=192.168.1.10',
+    );
+    await tester.pumpWidget(h.app(scanQr: scanner.call));
+    await pumpBootstrap(tester);
+
+    await tester.tap(find.byKey(const Key('pairing-scan')));
+    await tester.pump();
+
+    // A mixed QR races every candidate in parallel, LAN first.
+    expect(scanner.calls, 1);
+    expect(h.factory.urls.length, 2);
+    expect(h.factory.urls[0].host, '192.168.1.10');
+    expect(h.factory.urls[1].host, '100.64.1.2');
+  });
+
+  testWidgets('a successful scanned pairing persists the whole list', (
+    tester,
+  ) async {
+    final h = Harness(token: null);
+    final scanner = FakeQrScanner(
+      'pidroid://pair?v=1&code=abcd-2345&port=8787'
+      '&ts=100.64.1.2&lan=192.168.1.10',
+    );
+    await tester.pumpWidget(h.app(scanQr: scanner.call));
+    await pumpBootstrap(tester);
+
+    await tester.tap(find.byKey(const Key('pairing-scan')));
+    await tester.pump();
+
+    adoptedSocket(h).receive({
+      'protocolVersion': 1,
+      'type': 'paired',
+      'token': testToken,
+    });
+    await tester.pump();
+    h.scheduler.flushNotifications();
+    await tester.pump();
+    await tester.pump();
+
+    expect(await h.store.readEndpoints(), const [
+      HubEndpoint(host: '192.168.1.10', port: 8787),
+      HubEndpoint(host: '100.64.1.2', port: 8787),
+    ]);
+  });
+
+  testWidgets('a failed scanned race still persists the list at scan time', (
+    tester,
+  ) async {
+    final h = Harness(token: null);
+    h.factory.onDial = () => StateError('refused');
+    final scanner = FakeQrScanner(
+      'pidroid://pair?v=1&code=abcd-2345&port=8787'
+      '&ts=100.64.1.2&lan=192.168.1.10',
+    );
+    await tester.pumpWidget(h.app(scanQr: scanner.call));
+    await pumpBootstrap(tester);
+
+    await tester.tap(find.byKey(const Key('pairing-scan')));
+    await tester.pump();
+    await tester.pump();
+
+    // The whole point of persisting at scan: a hub-minted list survives a race
+    // in which no candidate answers, so the tailnet address is not lost.
+    expect(await h.store.readEndpoints(), const [
+      HubEndpoint(host: '192.168.1.10', port: 8787),
+      HubEndpoint(host: '100.64.1.2', port: 8787),
+    ]);
+    // The in-memory picker keeps both rows so the user can force one.
+    expect(find.text('Home network'), findsOneWidget);
+    expect(find.text('Tailscale'), findsOneWidget);
+  });
+
+  testWidgets('bootstrap from a stored two-address list dials both', (
+    tester,
+  ) async {
+    final h = Harness(
+      endpoints: const [
+        HubEndpoint(host: '192.168.1.10', port: 8787),
+        HubEndpoint(host: '100.64.1.2', port: 8787),
+      ],
+    );
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+
+    expect(h.factory.urls.length, 2);
+    expect(h.factory.urls[0].host, '192.168.1.10');
+    expect(h.factory.urls[1].host, '100.64.1.2');
+  });
+
+  testWidgets('a second scan supersedes the race in flight', (tester) async {
+    final h = Harness(token: null);
+    final held = <Completer<HubSocket>>[];
+    h.factory.onDialFuture = (url) {
+      final completer = Completer<HubSocket>();
+      held.add(completer);
+      return completer.future;
+    };
+    final scanner = FakeQrScanner(
+      'pidroid://pair?v=1&code=abcd-2345&port=8787'
+      '&ts=100.64.1.2&lan=192.168.1.10',
+    );
+    await tester.pumpWidget(h.app(scanQr: scanner.call));
+    await pumpBootstrap(tester);
+
+    await tester.tap(find.byKey(const Key('pairing-scan')));
+    await tester.pump();
+    expect(held.length, 2);
+
+    // A second scan replaces the list and supersedes the first race.
+    scanner.uri =
+        'pidroid://pair?v=1&code=efgh-6789&port=8787'
+        '&ts=100.64.9.9&lan=10.0.0.5';
+    await tester.tap(find.byKey(const Key('pairing-scan')));
+    await tester.pump();
+    expect(held.length, 4);
+
+    // The first race's dials resolve late: their sockets are closed and never
+    // sent a hello.
+    final firstLan = FakeHubSocket();
+    final firstTs = FakeHubSocket();
+    held[0].complete(firstLan);
+    held[1].complete(firstTs);
+    await tester.pump();
+    expect(firstLan.closedByClient, isTrue);
+    expect(firstTs.closedByClient, isTrue);
+    expect(firstLan.sent, isEmpty);
+    expect(firstTs.sent, isEmpty);
+
+    // The second race is unaffected and adopts its own first answer.
+    final secondLan = FakeHubSocket();
+    held[2].complete(secondLan);
+    await tester.pump();
+    expect(secondLan.sent, isNotEmpty);
+  });
+
+  testWidgets('forcing the Tailscale row prefers it and keeps the list', (
+    tester,
+  ) async {
+    final h = Harness(token: null);
+    h.factory.onDial = () => StateError('refused');
+    final scanner = FakeQrScanner(
+      'pidroid://pair?v=1&code=abcd-2345&port=8787'
+      '&ts=100.64.1.2&lan=192.168.1.10',
+    );
+    await tester.pumpWidget(h.app(scanQr: scanner.call));
+    await pumpBootstrap(tester);
+    await tester.tap(find.byKey(const Key('pairing-scan')));
+    await tester.pump();
+    await tester.pump();
+
+    // The candidates are reachable now; hold every dial so the fastest answer
+    // cannot decide the winner — only `prefer` does.
+    h.factory.onDial = null;
+    final dials = <String, Completer<HubSocket>>{};
+    h.factory.onDialFuture = (url) =>
+        (dials[url.host] ??= Completer<HubSocket>()).future;
+    final before = h.factory.urls.length;
+    await tester.tap(find.text('Tailscale'));
+    await tester.pump();
+
+    expect(h.factory.urls.length, before + 2);
+    expect(dials.keys, containsAll(['192.168.1.10', '100.64.1.2']));
+
+    // The LAN candidate answers first: without the preference it would be
+    // adopted, so it is held un-authenticated (no hello) while Tailscale
+    // settles.
+    final lanSocket = FakeHubSocket();
+    dials['192.168.1.10']!.complete(lanSocket);
+    await tester.pump();
+    expect(lanSocket.sent, isEmpty);
+
+    // Tailscale answers second and is the one adopted; the held LAN socket is
+    // closed, never authenticated. `onDialFuture` dials do not land in
+    // `factory.sockets`, so identity is asserted on the sockets directly.
+    final tsSocket = FakeHubSocket();
+    dials['100.64.1.2']!.complete(tsSocket);
+    await tester.pump();
+
+    expect(tsSocket.sent, isNotEmpty);
+    expect(tsSocket.closedByClient, isFalse);
+    expect(lanSocket.closedByClient, isTrue);
+    expect(lanSocket.sent, isEmpty);
+    expect(await h.store.readEndpoints(), const [
+      HubEndpoint(host: '192.168.1.10', port: 8787),
+      HubEndpoint(host: '100.64.1.2', port: 8787),
+    ]);
+  });
+
+  testWidgets(
+    'forcing a candidate with no ticket surfaces an error instead of throwing',
+    (tester) async {
+      final h = Harness(
+        token: null,
+        endpoints: const [
+          HubEndpoint(host: '192.168.1.10', port: 8787),
+          HubEndpoint(host: '100.64.1.2', port: 8787),
+        ],
+      );
+      await tester.pumpWidget(h.app());
+      await pumpBootstrap(tester);
+
+      // The R2 state: the scan persisted the list but the race never paired, so
+      // bootstrap could not connect. The picker is the only way forward.
+      expect(find.text('Home network'), findsOneWidget);
+      expect(find.byKey(const Key('pairing-last-error')), findsNothing);
+
+      await tester.tap(find.text('Tailscale'));
+      await tester.pump();
+      await tester.pump();
+
+      // There is no ticket and no stored token, so forcing cannot connect. The
+      // refusal must be surfaced through the visible error slot, never left as
+      // an unhandled async throw from the fire-and-forget callback.
+      expect(find.byKey(const Key('pairing-last-error')), findsOneWidget);
+      expect(find.textContaining('no pairing code'), findsOneWidget);
+    },
+  );
 
   testWidgets('a resync give-up is visible while connected, and dismissible', (
     tester,
