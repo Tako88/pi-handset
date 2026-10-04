@@ -359,7 +359,7 @@ class Harness {
 /// keystore.
 class ThrowingTokenStore extends InMemoryTokenStore {
   @override
-  Future<HubEndpoint?> readEndpoint() async =>
+  Future<List<HubEndpoint>> readEndpoints() async =>
       throw StateError('storage unavailable');
 }
 
@@ -2190,7 +2190,7 @@ void main() {
     h.scheduler.flushNotifications();
     await tester.pump();
 
-    expect(await h.store.readEndpoint(), isNull);
+    expect(await h.store.readEndpoints(), isEmpty);
     expect(await h.store.read(), isNull);
     // The dead end must be visible, and the single-use code must be gone so a
     // fresh one can be typed.
@@ -2295,7 +2295,7 @@ void main() {
     await tester.tap(find.byKey(const Key('pairing-submit')));
     await tester.pump();
 
-    expect(await h.store.readEndpoint(), isNull);
+    expect(await h.store.readEndpoints(), isEmpty);
 
     h.factory.last.receive({
       'protocolVersion': 1,
@@ -2308,8 +2308,8 @@ void main() {
     await tester.pump();
 
     expect(
-      await h.store.readEndpoint(),
-      const HubEndpoint(host: '10.0.0.9', port: 8787),
+      await h.store.readEndpoints(),
+      const [HubEndpoint(host: '10.0.0.9', port: 8787)],
     );
     expect(await h.store.read(), testToken);
   });
@@ -2413,7 +2413,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byType(PairingScreen), findsOneWidget);
-    expect(await h.store.readEndpoint(), isNull);
+    expect(await h.store.readEndpoints(), isEmpty);
     expect(await h.store.read(), isNull);
   });
 

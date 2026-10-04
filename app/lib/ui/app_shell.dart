@@ -290,7 +290,7 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
         if (pending != null) _pendingEndpoint = null;
       }
     });
-    if (pending != null) unawaited(widget.tokenStore.writeEndpoint(pending));
+    if (pending != null) unawaited(widget.tokenStore.writeEndpoints([pending]));
     // Only a real migration writes: an ordinary push must not churn the store.
     if (changed) {
       unawaited(widget.tokenStore.writeNotifyState(_notifyPolicy.encode()));
@@ -350,7 +350,8 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
     }
     HubEndpoint? endpoint;
     try {
-      endpoint = await widget.tokenStore.readEndpoint();
+      final endpoints = await widget.tokenStore.readEndpoints();
+      endpoint = endpoints.isEmpty ? null : endpoints.first;
     } catch (error) {
       if (!mounted) return;
       setState(() {
@@ -393,7 +394,7 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
   /// A wrong saved host is otherwise unrecoverable without reinstalling.
   Future<void> _changeHub() async {
     await widget.client.disconnect();
-    await widget.tokenStore.clearEndpoint();
+    await widget.tokenStore.clearEndpoints();
     await widget.tokenStore.clear();
     _pendingOpenSessionId = null;
     _foregroundStarted = false;

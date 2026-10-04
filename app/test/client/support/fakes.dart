@@ -14,12 +14,12 @@ import 'package:pi_droid/client/notification_presenter.dart';
 import 'package:pi_droid/client/scheduler.dart';
 import 'package:pi_droid/client/token_store.dart';
 
-/// An in-memory [TokenStore] for tests, holding the token, the remembered
-/// endpoint and the notification policy blob. Lives here, not in `lib/`, because
+/// An in-memory [TokenStore] for tests, holding the token, the candidate
+/// endpoints and the notification policy blob. Lives here, not in `lib/`, because
 /// a test double should not ship in the app tree.
 class InMemoryTokenStore implements TokenStore {
   String? _token;
-  HubEndpoint? _endpoint;
+  List<HubEndpoint> _endpoints;
 
   /// The notification policy blob. Public so a shell test can read it back with
   /// a cast from the `TokenStore`-typed harness field.
@@ -33,9 +33,12 @@ class InMemoryTokenStore implements TokenStore {
   InMemoryTokenStore({
     String? initial,
     HubEndpoint? initialEndpoint,
+    List<HubEndpoint>? initialEndpoints,
     this.notifyState,
   }) : _token = initial,
-       _endpoint = initialEndpoint;
+       _endpoints =
+           initialEndpoints ??
+           (initialEndpoint == null ? const [] : [initialEndpoint]);
 
   @override
   Future<String?> read() async => _token;
@@ -51,16 +54,16 @@ class InMemoryTokenStore implements TokenStore {
   }
 
   @override
-  Future<HubEndpoint?> readEndpoint() async => _endpoint;
+  Future<List<HubEndpoint>> readEndpoints() async => List.of(_endpoints);
 
   @override
-  Future<void> writeEndpoint(HubEndpoint endpoint) async {
-    _endpoint = endpoint;
+  Future<void> writeEndpoints(List<HubEndpoint> endpoints) async {
+    _endpoints = List.of(endpoints);
   }
 
   @override
-  Future<void> clearEndpoint() async {
-    _endpoint = null;
+  Future<void> clearEndpoints() async {
+    _endpoints = const [];
   }
 
   @override
@@ -78,7 +81,7 @@ class InMemoryTokenStore implements TokenStore {
 class GatedTokenStore implements TokenStore {
   final Completer<void> gate = Completer<void>();
   String? _token;
-  HubEndpoint? _endpoint;
+  List<HubEndpoint> _endpoints = const [];
   String? _notifyState;
 
   @override
@@ -96,16 +99,16 @@ class GatedTokenStore implements TokenStore {
   }
 
   @override
-  Future<HubEndpoint?> readEndpoint() async => _endpoint;
+  Future<List<HubEndpoint>> readEndpoints() async => List.of(_endpoints);
 
   @override
-  Future<void> writeEndpoint(HubEndpoint endpoint) async {
-    _endpoint = endpoint;
+  Future<void> writeEndpoints(List<HubEndpoint> endpoints) async {
+    _endpoints = List.of(endpoints);
   }
 
   @override
-  Future<void> clearEndpoint() async {
-    _endpoint = null;
+  Future<void> clearEndpoints() async {
+    _endpoints = const [];
   }
 
   // The notify policy is not gated: only the token write's blocking window is

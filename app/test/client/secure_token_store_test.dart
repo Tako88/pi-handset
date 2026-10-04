@@ -48,6 +48,8 @@ void main() {
   test('the store is a TokenStore with a stable key', () {
     expect(SecureTokenStore(), isA<TokenStore>());
     expect(SecureTokenStore.defaultKey, 'pi_droid_token');
+    expect(SecureTokenStore.defaultEndpointsKey, 'pi_droid_endpoints');
+    expect(SecureTokenStore.defaultEndpointKey, 'pi_droid_endpoint');
   });
 
   test('read maps the configured key onto the channel', () async {
@@ -96,41 +98,78 @@ void main() {
     expect(await store.read(), isNull);
   });
 
-  // The endpoint is not a secret, but it lives in the same store under its own
-  // key rather than in a second `flutter_secure_storage` wrapper.
-  test('the endpoint round-trips under its own key', () async {
+  // The endpoints are not secrets, but they live in the same store under their
+  // own keys rather than in a second `flutter_secure_storage` wrapper. The list
+  // lives under the new key; the legacy single value is kept in its original
+  // format for a downgrade.
+  test('writeEndpoints stores the list and the first under the legacy key', () async {
     final store = SecureTokenStore();
 
-    await store.writeEndpoint(const HubEndpoint(host: '10.0.0.5', port: 9000));
+    await store.writeEndpoints(const [
+      HubEndpoint(host: 'h1', port: 1),
+      HubEndpoint(host: 'h2', port: 2),
+    ]);
 
-    expect(calls.last.method, 'write');
-    expect((calls.last.arguments as Map)['key'], 'pi_droid_endpoint');
-    expect((calls.last.arguments as Map)['value'], '10.0.0.5:9000');
-    expect(
-      await store.readEndpoint(),
-      const HubEndpoint(host: '10.0.0.5', port: 9000),
-    );
+    expect(storage[SecureTokenStore.defaultEndpointsKey], 'h1:1\nh2:2');
+    expect(storage[SecureTokenStore.defaultEndpointKey], 'h1:1');
+    expect(await store.readEndpoints(), const [
+      HubEndpoint(host: 'h1', port: 1),
+      HubEndpoint(host: 'h2', port: 2),
+    ]);
   });
 
-  test('readEndpoint returns null for an unknown key', () async {
-    expect(await SecureTokenStore().readEndpoint(), isNull);
+  test('readEndpoints returns empty for an unknown key', () async {
+    expect(await SecureTokenStore().readEndpoints(), isEmpty);
   });
 
-  test('readEndpoint returns null for a stored value that does not parse', () async {
-    storage[SecureTokenStore.defaultEndpointKey] = 'garbage';
+  test('readEndpoints migrates a legacy single value', () async {
+    storage[SecureTokenStore.defaultEndpointKey] = 'h:1';
 
-    expect(await SecureTokenStore().readEndpoint(), isNull);
+    expect(await SecureTokenStore().readEndpoints(), const [
+      HubEndpoint(host: 'h', port: 1),
+    ]);
   });
 
-  test('clearEndpoint deletes only the endpoint', () async {
+  test('readEndpoints prefers the new key when both are present', () async {
+    storage[SecureTokenStore.defaultEndpointsKey] = 'a:1\nb:2';
+    storage[SecureTokenStore.defaultEndpointKey] = 'legacy:9';
+
+    expect(await SecureTokenStore().readEndpoints(), const [
+      HubEndpoint(host: 'a', port: 1),
+      HubEndpoint(host: 'b', port: 2),
+    ]);
+  });
+
+  test('writeEndpoints with an empty list clears the legacy key too', () async {
+    final store = SecureTokenStore();
+    await store.writeEndpoints(const [HubEndpoint(host: 'h', port: 1)]);
+    expect(storage[SecureTokenStore.defaultEndpointKey], 'h:1');
+
+    await store.writeEndpoints(const []);
+
+    expect(await store.readEndpoints(), isEmpty);
+    expect(storage.containsKey(SecureTokenStore.defaultEndpointKey), isFalse);
+  });
+
+  test('readEndpoints falls back to the legacy value when the new key is corrupt', () async {
+    storage[SecureTokenStore.defaultEndpointsKey] = 'garbage';
+    storage[SecureTokenStore.defaultEndpointKey] = 'h:1';
+
+    expect(await SecureTokenStore().readEndpoints(), const [
+      HubEndpoint(host: 'h', port: 1),
+    ]);
+  });
+
+  test('clearEndpoints deletes both keys', () async {
     final store = SecureTokenStore();
     await store.write('tok');
-    await store.writeEndpoint(const HubEndpoint(host: 'h', port: 1));
+    await store.writeEndpoints(const [HubEndpoint(host: 'h', port: 1)]);
 
-    await store.clearEndpoint();
+    await store.clearEndpoints();
 
-    expect((calls.last.arguments as Map)['key'], 'pi_droid_endpoint');
-    expect(await store.readEndpoint(), isNull);
+    expect(storage.containsKey(SecureTokenStore.defaultEndpointsKey), isFalse);
+    expect(storage.containsKey(SecureTokenStore.defaultEndpointKey), isFalse);
+    expect(await store.readEndpoints(), isEmpty);
     expect(await store.read(), 'tok');
   });
 
