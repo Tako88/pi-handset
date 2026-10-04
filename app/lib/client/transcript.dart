@@ -238,6 +238,22 @@ class TranscriptDerivation {
       return;
     }
 
+    // A summary pi wrote when it rewrote the context — a branch summary from
+    // tree navigation, or a compaction. pi shows it as a notice rather than a
+    // chat turn; without a row here the phone silently skips the point the
+    // conversation was summarized, which reads as messages going missing.
+    final summaryNotice = _summaryNoticeText(entry);
+    if (summaryNotice != null) {
+      _blocks.add(
+        TranscriptBlock(
+          kind: TranscriptBlockKind.notice,
+          id: '$idBase:0',
+          text: summaryNotice,
+        ),
+      );
+      return;
+    }
+
     final source = _unwrap(entry);
     if (source == null) {
       // The flattened fixture shape `{type: 'user'|'assistant', text}`.
@@ -469,6 +485,23 @@ void _collectToolCallIds(Object? content, Set<String> ids) {
       ids.add(part['id'] as String);
     }
   }
+}
+
+/// The notice text for a summary entry — a `branch_summary` written when the
+/// tree navigates away from a branch, or a `compaction`. Mirrors the collapsed
+/// line pi prints. Null for anything else, and for a summary with no text,
+/// which pi itself never renders.
+String? _summaryNoticeText(Map<Object?, Object?> entry) {
+  final summary = entry['summary'];
+  if (summary is! String || summary.trim().isEmpty) return null;
+  if (entry['type'] == 'branch_summary') return 'Branch summary';
+  if (entry['type'] == 'compaction') {
+    final tokens = entry['tokensBefore'];
+    return tokens is int
+        ? 'Compacted from $tokens tokens'
+        : 'Compacted conversation';
+  }
+  return null;
 }
 
 /// Unwraps a snapshot entry (`{type:'message', message:{…}}`) or accepts a bare

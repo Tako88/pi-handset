@@ -203,7 +203,7 @@ List<TranscriptBlock> incremental(List<Object?> entries) {
 
 Object? randomEntry(Random rng, List<String> ids) {
   final id = ids[rng.nextInt(ids.length)];
-  switch (rng.nextInt(21)) {
+  switch (rng.nextInt(23)) {
     case 0:
       return {'role': 'user', 'content': 'u${rng.nextInt(10)}'};
     case 1:
@@ -273,8 +273,21 @@ Object? randomEntry(Random rng, List<String> ids) {
         default:
           return rng.nextInt(1000);
       }
+    case 21:
+      return {
+        'type': 'compaction',
+        'id': 'c${rng.nextInt(3)}',
+        'summary': rng.nextBool() ? '' : 'gist ${rng.nextInt(3)}',
+        'tokensBefore': rng.nextInt(1000),
+      };
+    default:
+      return {
+        'type': 'branch_summary',
+        'id': 'b${rng.nextInt(3)}',
+        'fromId': id,
+        'summary': rng.nextBool() ? '' : 'branch gist ${rng.nextInt(3)}',
+      };
   }
-  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -477,6 +490,30 @@ void main() {
         kind: TranscriptBlockKind.notice,
         id: goldenId(s, 0),
         text: 'oops',
+      ),
+    ]);
+  });
+
+  test('E21: appending a compaction entry yields the summary notice', () {
+    final c = {'type': 'compaction', 'summary': 'gist', 'tokensBefore': 900};
+    final d = TranscriptDerivation()..append(c);
+    expectBlocksEqual(d.blocks, [
+      TranscriptBlock(
+        kind: TranscriptBlockKind.notice,
+        id: goldenId(c, 0),
+        text: 'Compacted from 900 tokens',
+      ),
+    ]);
+  });
+
+  test('E22: appending a branch summary yields the summary notice', () {
+    final b = {'type': 'branch_summary', 'summary': 'gist', 'fromId': 'leaf'};
+    final d = TranscriptDerivation()..append(b);
+    expectBlocksEqual(d.blocks, [
+      TranscriptBlock(
+        kind: TranscriptBlockKind.notice,
+        id: goldenId(b, 0),
+        text: 'Branch summary',
       ),
     ]);
   });
