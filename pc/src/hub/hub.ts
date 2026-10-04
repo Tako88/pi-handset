@@ -76,7 +76,9 @@ import type { Spawner } from './spawner.ts';
  *   required field, an explicit session takeover displacing an agent, or a
  *   permitted type with no dispatch branch (dispatch fails closed).
  * - `CLOSE_CAPABILITY` (4003): a message this listener does not permit.
- * - `CLOSE_RATE_LIMITED` (4008): the failed-credential cap was reached. It is
+ * - `CLOSE_RATE_LIMITED` (4008): the failed-credential cap was reached, an
+ *   unauthenticated connection outlived its auth deadline, or the
+ *   unauthenticated-viewer cap was exceeded. After a failed credential it is
  *   sent **after a short delay** so the socket cannot be used as a fast token
  *   oracle.
  * - `CLOSE_INTERNAL` (4500): an unexpected error escaped a message handler and
@@ -95,6 +97,10 @@ export const CLOSE_INTERNAL = 4500;
 
 const DEFAULT_MAX_AUTH_ATTEMPTS = 3;
 const DEFAULT_AUTH_CLOSE_DELAY_MS = 250;
+/** Deadline for a connection to authenticate before it is closed. */
+const DEFAULT_AUTH_DEADLINE_MS = 10_000;
+/** Most unauthenticated viewer connections accepted at once. */
+const DEFAULT_MAX_UNAUTHENTICATED_VIEWERS = 64;
 /** Cap on a single inbound frame; `ws` defaults to 100 MB, far too generous. */
 const DEFAULT_MAX_PAYLOAD = 1024 * 1024;
 
@@ -132,6 +138,10 @@ export interface HubOptions {
   maxAuthAttempts?: number;
   /** Delay before closing a connection that exhausted its attempts. */
   authCloseDelayMs?: number;
+  /** Deadline for a connection to authenticate, in ms. Defaults to 10 000. */
+  authDeadlineMs?: number;
+  /** Max unauthenticated viewer connections accepted at once. Defaults to 64. */
+  maxUnauthenticatedViewers?: number;
   /** Per-viewer budget for relayed events, in bytes. */
   maxViewerBytes?: number;
   /** Maximum size of a single inbound frame, in bytes. Defaults to 1 MiB. */
@@ -174,6 +184,8 @@ interface Connection {
   authenticated: boolean;
   authAttempts: number;
   closing: boolean;
+  /** Armed at connection time; cleared on auth success and on close. */
+  authTimer?: NodeJS.Timeout;
   /** Session ids this viewer has been told to resync; cleared per session. */
   readonly resyncAnnounced: Set<string>;
 }
@@ -211,6 +223,8 @@ interface State {
     tickets: TicketStore;
     maxAuthAttempts: number;
     authCloseDelayMs: number;
+    authDeadlineMs: number;
+    maxUnauthenticatedViewers: number;
     maxViewerBytes: number;
     homeDir: string;
     agentDir: string;
@@ -404,6 +418,16 @@ function failAuth(connection: Connection, config: State['config']): void {
   timer.unref();
 }
 
+/**
+ * Marks the connection authenticated and clears its deadline timer: the clear
+ * (not the callback's guard) is what stops a healthy socket being closed.
+ */
+function markAuthenticated(connection: Connection): void {
+  connection.authenticated = true;
+  clearTimeout(connection.authTimer);
+  connection.authTimer = undefined;
+}
+
 function authenticate(connection: Connection, text: string, state: State): void {
   const result = decode(text);
   if (!result.ok || result.value.type !== 'hello') {
@@ -417,7 +441,7 @@ function authenticate(connection: Connection, text: string, state: State): void 
       failAuth(connection, state.config);
       return;
     }
-    connection.authenticated = true;
+    markAuthenticated(connection);
     sendToViewer(connection, {
       protocolVersion: PROTOCOL_VERSION,
       type: 'paired',
@@ -430,7 +454,7 @@ function authenticate(connection: Connection, text: string, state: State): void 
     failAuth(connection, state.config);
     return;
   }
-  connection.authenticated = true;
+  markAuthenticated(connection);
   pushSessions(state, connection);
 }
 
@@ -1088,6 +1112,9 @@ export async function createHub(options: HubOptions): Promise<Hub> {
       tickets: options.tickets,
       maxAuthAttempts: options.maxAuthAttempts ?? DEFAULT_MAX_AUTH_ATTEMPTS,
       authCloseDelayMs: options.authCloseDelayMs ?? DEFAULT_AUTH_CLOSE_DELAY_MS,
+      authDeadlineMs: options.authDeadlineMs ?? DEFAULT_AUTH_DEADLINE_MS,
+      maxUnauthenticatedViewers:
+        options.maxUnauthenticatedViewers ?? DEFAULT_MAX_UNAUTHENTICATED_VIEWERS,
       maxViewerBytes: options.maxViewerBytes ?? MAX_RELAY_BYTES,
       homeDir,
       agentDir,
@@ -1121,6 +1148,10 @@ export async function createHub(options: HubOptions): Promise<Hub> {
       socket.on('close', () => {
         sockets.delete(socket);
         state.viewers.delete(connection);
+        if (connection.authTimer !== undefined) {
+          clearTimeout(connection.authTimer);
+          connection.authTimer = undefined;
+        }
         // A closing agent retires its session and tells subscribers; a closing
         // viewer is dropped from every set it was in. A retired session changes
         // the registry, so the remaining viewers are pushed the new list.
@@ -1160,6 +1191,25 @@ export async function createHub(options: HubOptions): Promise<Hub> {
           closeWith(connection, CLOSE_INTERNAL);
         }
       });
+
+      // Cap check AFTER all three listeners are attached, and BEFORE the
+      // deadline timer. The refused socket still gets its `close` event, so
+      // the cleanup that removes it from `sockets`/`state.viewers` runs; a
+      // `return` before `socket.on('close')` would leak the entry for good.
+      if (
+        listener === 'viewer' &&
+        [...state.viewers].filter((viewer) => !viewer.authenticated).length >
+          state.config.maxUnauthenticatedViewers
+      ) {
+        closeWith(connection, CLOSE_RATE_LIMITED);
+        return;
+      }
+
+      connection.authTimer = setTimeout(() => {
+        if (connection.authenticated) return;
+        closeWith(connection, CLOSE_RATE_LIMITED);
+      }, state.config.authDeadlineMs);
+      connection.authTimer.unref();
     });
   }
 

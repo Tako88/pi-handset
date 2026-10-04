@@ -300,6 +300,39 @@ test('an unauthenticated connection sending a non-hello is closed as a protocol 
   assert.equal(code, CLOSE_PROTOCOL);
 });
 
+test('a connection that never authenticates is closed at the auth deadline', async () => {
+  const hub = await startHub({ authDeadlineMs: 50 });
+  const viewer = await connect(hub.viewerPort);
+
+  const { code } = await closed(viewer);
+  assert.equal(code, CLOSE_RATE_LIMITED);
+});
+
+test('a connection that authenticates before the deadline stays connected past it', async () => {
+  const hub = await startHub({ authDeadlineMs: 100 });
+  const viewer = await connect(hub.viewerPort);
+  await helloTokened(viewer);
+
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  assert.equal(viewer.ws.readyState, WebSocket.OPEN);
+});
+
+test('an unauthenticated viewer beyond the cap is closed immediately, leaves the viewer set, and the cap releases on auth', async () => {
+  const hub = await startHub({ maxUnauthenticatedViewers: 1, authDeadlineMs: 5000 });
+  const first = await connect(hub.viewerPort);
+  const second = await connect(hub.viewerPort);
+
+  assert.equal((await closed(second)).code, CLOSE_RATE_LIMITED);
+  assert.equal(first.ws.readyState, WebSocket.OPEN);
+
+  // `first` authenticating frees its slot; a leaked refused `second` would
+  // keep the unauthenticated count at 1 and make this third dial be refused.
+  await helloViewer(first);
+
+  const third = await connect(hub.viewerPort);
+  await helloViewer(third);
+});
+
 test('a valid ticket pairs once and the hub replies with paired carrying the token', async () => {
   const tickets = createTicketStore();
   const ticket = tickets.issue();
