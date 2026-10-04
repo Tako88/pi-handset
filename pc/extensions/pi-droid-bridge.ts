@@ -787,14 +787,14 @@ function dropHalfBulk(view: ToolView): boolean {
       view.lines.splice(Math.floor(view.lines.length / 2));
       return true;
     case 'file': {
+      if (view.content === '') return false;
       const lines = view.content.split('\n');
-      if (lines.length === 0) return false;
       view.content = lines.slice(0, Math.floor(lines.length / 2)).join('\n');
       return true;
     }
     case 'command': {
+      if (view.output === '') return false;
       const lines = view.output.split('\n');
-      if (lines.length === 0) return false;
       view.output = lines.slice(0, Math.floor(lines.length / 2)).join('\n');
       return true;
     }
@@ -811,24 +811,81 @@ function dropHalfBulk(view: ToolView): boolean {
   }
 }
 
+/** The per-scalar byte cap applied to every string field of a bounded view. */
+const TOOL_SCALAR_MAX_BYTES = 8 * 1024;
+
 /**
- * Bounds one tool payload to `TOOL_VIEW_MAX_BYTES`. Bulk lines are dropped from
- * the tail until the serialized payload fits, and `view.truncated` is set so the
- * app can render its explicit marker. A view already under the cap is returned
+ * Caps a string's UTF-8 byte length to `maxBytes`, keeping the head. Returns
+ * the text unchanged when it already fits. Trailing code units are dropped
+ * after the byte slice so a split multi-byte character cannot push the result
+ * back over the cap.
+ */
+function capScalarBytes(text: string, maxBytes: number): string {
+  if (Buffer.byteLength(text) <= maxBytes) return text;
+  let result = Buffer.from(text, 'utf8').subarray(0, maxBytes).toString('utf8');
+  while (Buffer.byteLength(result) > maxBytes) result = result.slice(0, -1);
+  return result;
+}
+
+/** Caps every string field of a view to `TOOL_SCALAR_MAX_BYTES`, in place. */
+function boundViewScalars(view: ToolView): void {
+  switch (view.type) {
+    case 'diff':
+      view.path = capScalarBytes(view.path, TOOL_SCALAR_MAX_BYTES);
+      return;
+    case 'file':
+      view.path = capScalarBytes(view.path, TOOL_SCALAR_MAX_BYTES);
+      view.content = capScalarBytes(view.content, TOOL_SCALAR_MAX_BYTES);
+      return;
+    case 'command':
+      view.command = capScalarBytes(view.command, TOOL_SCALAR_MAX_BYTES);
+      view.output = capScalarBytes(view.output, TOOL_SCALAR_MAX_BYTES);
+      return;
+    case 'matches':
+      for (const match of view.matches) {
+        match.file = capScalarBytes(match.file, TOOL_SCALAR_MAX_BYTES);
+        match.text = capScalarBytes(match.text, TOOL_SCALAR_MAX_BYTES);
+      }
+      return;
+    case 'table':
+      view.columns = view.columns.map((column) => capScalarBytes(column, TOOL_SCALAR_MAX_BYTES));
+      view.rows = view.rows.map((row) =>
+        row.map((cell) => capScalarBytes(cell, TOOL_SCALAR_MAX_BYTES)),
+      );
+      return;
+    case 'generic':
+      if (view.target !== undefined) {
+        view.target = capScalarBytes(view.target, TOOL_SCALAR_MAX_BYTES);
+      }
+      return;
+  }
+}
+
+/**
+ * Bounds one tool payload to `TOOL_VIEW_MAX_BYTES`. `trimToLineCap` runs
+ * unconditionally (it mutates only when a cap is actually exceeded), then bulk
+ * lines are dropped from the tail until the payload fits, then every view
+ * scalar is capped to `TOOL_SCALAR_MAX_BYTES`; anything still over after that
+ * becomes a fresh truncated generic marker (a view with many capped scalars,
+ * e.g. a table with many long columns). `view.truncated` is set so the app can
+ * render its explicit marker. A view already under the cap is returned
  * untouched. The cap is a quarter of the relay budget, deliberately: a relayed
  * frame is dropped whole whenever any byte is outstanding on the viewer, so a
  * payload bounded at the budget itself would be dropped under any backlog.
  */
 export function boundToolPayload(payload: ToolPayload): ToolPayload {
   const view = payload.view;
-  if (view === undefined || view.type === 'generic') return payload;
+  if (view === undefined) return payload;
   if (trimToLineCap(view)) view.truncated = true;
-  if (Buffer.byteLength(JSON.stringify(payload)) <= TOOL_VIEW_MAX_BYTES) return payload;
+  const fits = (): boolean => Buffer.byteLength(JSON.stringify(payload)) <= TOOL_VIEW_MAX_BYTES;
+  if (fits()) return payload;
   view.truncated = true;
   for (let guard = 0; guard < 64; guard += 1) {
-    if (Buffer.byteLength(JSON.stringify(payload)) <= TOOL_VIEW_MAX_BYTES) break;
+    if (fits()) break;
     if (!dropHalfBulk(view)) break;
   }
+  boundViewScalars(view);
+  if (!fits()) payload.view = { type: 'generic', truncated: true };
   return payload;
 }
 
