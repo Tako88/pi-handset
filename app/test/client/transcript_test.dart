@@ -458,6 +458,56 @@ void main() {
     expect(blocks.single.text, 'model overloaded');
   });
 
+  test('a compaction entry becomes a notice naming what it replaced', () {
+    final blocks = deriveBlocks([
+      {
+        'type': 'compaction',
+        'id': 'c1',
+        'summary': 'the gist of the conversation so far',
+        'tokensBefore': 12345,
+      },
+    ]);
+
+    expect(blocks, hasLength(1));
+    expect(blocks.single.kind, TranscriptBlockKind.notice);
+    expect(blocks.single.text, 'Compacted from 12345 tokens');
+  });
+
+  test('a compaction entry with no token count still becomes a notice', () {
+    // A hook-driven compaction may carry no numeric `tokensBefore`.
+    final blocks = deriveBlocks([
+      {'type': 'compaction', 'id': 'c1', 'summary': 'gist', 'tokensBefore': 'x'},
+    ]);
+
+    expect(blocks, hasLength(1));
+    expect(blocks.single.text, 'Compacted conversation');
+  });
+
+  test('a branch summary entry becomes a notice', () {
+    final blocks = deriveBlocks([
+      {
+        'type': 'branch_summary',
+        'id': 'b1',
+        'fromId': 'leaf-1',
+        'summary': 'what the abandoned branch established',
+      },
+    ]);
+
+    expect(blocks, hasLength(1));
+    expect(blocks.single.kind, TranscriptBlockKind.notice);
+    expect(blocks.single.text, 'Branch summary');
+  });
+
+  test('a summary entry with no text emits no row', () {
+    // pi itself renders nothing for these, so neither does the phone.
+    final blocks = deriveBlocks([
+      {'type': 'compaction', 'id': 'c1', 'summary': '   '},
+      {'type': 'branch_summary', 'id': 'b1'},
+    ]);
+
+    expect(blocks, isEmpty);
+  });
+
   test('a tool call and a later result pair into one block at the call', () {
     final blocks = deriveBlocks([
       assistantWith([toolCallBlock(id: 'call-1')]),
