@@ -24,6 +24,9 @@ import { dirname, isAbsolute, join, sep } from 'node:path';
 /** Default maximum number of entries returned by a single listing. */
 export const DEFAULT_MAX_DIR_ENTRIES = 500;
 
+/** Mode for the trust store: it lists which project folders exist and whether each is trusted. */
+const TRUST_FILE_MODE = 0o600;
+
 /** Default maximum encoded byte budget (`name` + JSON overhead) for a listing. */
 export const DEFAULT_MAX_DIR_BYTES = 256 * 1024;
 
@@ -321,7 +324,7 @@ export function saveTrustDecision(trustPath: string, cwd: string, decision: bool
   // Same directory as the target: a rename is only atomic within a filesystem.
   const tmpPath = `${trustPath}.tmp-${process.pid}-${++tmpCounter}`;
   try {
-    writeFileSync(tmpPath, `${JSON.stringify(sorted, null, 2)}\n`, 'utf-8');
+    writeFileSync(tmpPath, `${JSON.stringify(sorted, null, 2)}\n`, { encoding: 'utf-8', mode: TRUST_FILE_MODE });
     renameSync(tmpPath, trustPath);
   } catch (error) {
     try {
