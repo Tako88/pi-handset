@@ -182,6 +182,9 @@ sentence, and no assumption that the reader has already read the README.
   here. Because it is the default, `Fixes #N` closes when the commit lands, and a
   pull request already targets the right branch.
 - **`main` is the last released state**, always an ancestor of `develop`.
+- **`main` moves only when there is something to release.** Docs, chores and other
+  internal changes queue on `develop` and ride along with the next release — a commit
+  being merged is not by itself a reason to cut a version.
 - **A release fast-forwards `main` to `develop`'s tip and tags it `vX.Y.Z`.** One
   semver is shared by `app/pubspec.yaml` and `pc/package.json` (`PROTOCOL_VERSION`
   stays a separate integer, bumped only when the wire breaks), and the release is
