@@ -26,6 +26,7 @@ import { fileURLToPath } from 'node:url';
 import {
   ALL_MESSAGE_TYPES,
   AGENT_MESSAGE_TYPES,
+  AGENT_STATES,
   EVENT_PAYLOAD_KINDS,
   HUB_CAPABILITIES,
   HUB_TO_VIEWER_MESSAGE_TYPES,
@@ -33,6 +34,7 @@ import {
   STREAM_PHASES,
   TOOL_STATUSES,
   VIEWER_MESSAGE_TYPES,
+  VIEW_TYPES,
   decode,
   encode,
 } from './protocol.ts';
@@ -187,6 +189,19 @@ test('every event payload kind has a valid fixture', () => {
   }
 });
 
+test('every declared view type has a valid fixture', () => {
+  const covered = new Set<string>();
+  for (const fixture of validFixtures()) {
+    const result = decodeFixture(fixture);
+    if (!result.ok || result.value.type !== 'event') continue;
+    const view = (result.value as { payload?: { view?: { type?: unknown } } }).payload?.view;
+    if (view !== undefined && typeof view.type === 'string') covered.add(view.type);
+  }
+  for (const type of VIEW_TYPES) {
+    assert.ok(covered.has(type), `no valid fixture for view type: ${type}`);
+  }
+});
+
 // Ties the canonical lists to `decode`'s switch. TypeScript unions are erased
 // at runtime, so the lists cannot be derived from the type; this one-way check
 // is what stops a type that is in a union and in `decode` but missing from a
@@ -270,6 +285,8 @@ test('the canonical message-type and payload-kind lists match the shared fixture
     sessionOrigins: string[];
     hubCapabilities: string[];
     toolStatuses: string[];
+    agentStates: string[];
+    viewTypes: string[];
   };
   assert.deepEqual(new Set(ALL_MESSAGE_TYPES), new Set(shared.messageTypes));
   assert.deepEqual(new Set(EVENT_PAYLOAD_KINDS), new Set(shared.eventPayloadKinds));
@@ -280,6 +297,8 @@ test('the canonical message-type and payload-kind lists match the shared fixture
   assert.deepEqual(new Set(SESSION_ORIGINS), new Set(shared.sessionOrigins));
   assert.deepEqual(new Set(HUB_CAPABILITIES), new Set(shared.hubCapabilities));
   assert.deepEqual(new Set(TOOL_STATUSES), new Set(shared.toolStatuses));
+  assert.deepEqual(new Set(AGENT_STATES), new Set(shared.agentStates));
+  assert.deepEqual(new Set(VIEW_TYPES), new Set(shared.viewTypes));
 });
 
 test('every invalid fixture is rejected for the right reason', () => {

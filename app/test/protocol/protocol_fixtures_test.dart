@@ -147,6 +147,19 @@ void main() {
     }
   });
 
+  test('every declared view type has a valid fixture', () {
+    final covered = <String>{};
+    for (final file in validFixtures()) {
+      final result = decode(file.readAsStringSync());
+      if (!result.ok || result.value!['type'] != 'event') continue;
+      final view = (result.value!['payload'] as Map)['view'];
+      if (view is Map && view['type'] is String) covered.add(view['type'] as String);
+    }
+    for (final type in viewTypes) {
+      expect(covered, contains(type), reason: 'no valid fixture for view type: $type');
+    }
+  });
+
   // Ties the canonical lists to `decode`. Dart has no runtime view of the
   // switch arms, so this one-way check is what stops a type missing from a list
   // from shipping green with no fixture demanded.
@@ -269,6 +282,8 @@ void main() {
     expect(sessionOrigins.toSet(), (shared['sessionOrigins'] as List).toSet());
     expect(hubCapabilities.toSet(), (shared['hubCapabilities'] as List).toSet());
     expect(toolStatuses.toSet(), (shared['toolStatuses'] as List).toSet());
+    expect(agentStates.toSet(), (shared['agentStates'] as List).toSet());
+    expect(viewTypes.toSet(), (shared['viewTypes'] as List).toSet());
   });
 
   test('every invalid fixture is rejected for the right reason', () {

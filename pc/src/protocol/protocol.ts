@@ -220,6 +220,16 @@ export interface LeafPayload {
 export const TOOL_STATUSES = ['running', 'done', 'error'] as const;
 export type ToolStatus = (typeof TOOL_STATUSES)[number];
 
+/**
+ * The view types a relayed `tool` payload may carry. Canonical: the fixture
+ * suite pins this list to the shared `message-types.json`, and the app's
+ * `parseToolView` switch to its own `viewTypes`, so a type added on one side
+ * and not the other fails a suite. An unknown type is still valid on the wire
+ * (the app renders its generic fallback); this list is the set the app knows.
+ */
+export const VIEW_TYPES = ['diff', 'file', 'command', 'matches', 'table', 'generic'] as const;
+export type ViewType = (typeof VIEW_TYPES)[number];
+
 /** One line of a [DiffView]; `add`/`del` are additions/removals, `ctx` neither. */
 export interface DiffLine {
   kind: 'add' | 'del' | 'ctx';
@@ -289,6 +299,14 @@ export type ToolView =
   | MatchesView
   | TableView
   | GenericView;
+
+// Compile-time pin: [VIEW_TYPES] and the [ToolView] union must describe the
+// same set of types. A member added to either without the other fails no
+// runtime test (the list would still match the shared file), so it is caught
+// here instead, by `npm run typecheck`.
+type _AssertTrue<T extends true> = T;
+type _ViewListCoversUnion = _AssertTrue<ViewType extends ToolView['type'] ? true : false>;
+type _UnionCoversViewList = _AssertTrue<ToolView['type'] extends ViewType ? true : false>;
 
 export interface ToolPayload {
   kind: 'tool';
