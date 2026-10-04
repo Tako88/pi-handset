@@ -29,7 +29,7 @@
 
 import { loadOrCreateToken, resolveConfigDir } from '../src/hub/auth.ts';
 import { readDiscovery, resolveRuntimeDir } from '../src/hub/discovery.ts';
-import { HISTORY_MAX_BYTES, PROTOCOL_VERSION, asObject, asString, encode } from '../src/protocol/protocol.ts';
+import { HISTORY_MAX_BYTES, PROTOCOL_VERSION, asObject, asString } from '../src/protocol/protocol.ts';
 import type {
   AgentState,
   AgentToHubMessage,
@@ -49,6 +49,9 @@ import { parseImages, normalizeAssistantEvent, normalizeMessageEnd } from '../sr
 import { toolCallPayloads, toolResultPayload, boundToolPayload } from '../src/bridge/tool-views.ts';
 import { collectToolArgs, collectUnpairedToolArgs, annotateToolViews, TREE_MAX_NODES, projectHistory, entryAnchor, mintCursor, parseHistoryCursor, projectTree, projectModel, readContextUsage } from '../src/bridge/history.ts';
 import { messageText, SETTLED_TEXT_MAX_CODE_POINTS, settleText, sanitizeLabel, labelFromMessage, labelFromEntries } from '../src/bridge/labels.ts';
+import { RATE_LIMITED_RECONNECT_MS, computeBackoff } from '../src/bridge/backoff.ts';
+import { encodeAgentMessage, parseCommand } from '../src/bridge/wire.ts';
+import { isActiveMode, COMMAND_ALLOWLIST, SESSION_COMMAND_NAME, COMMAND_NOT_ALLOWED } from '../src/bridge/commands.ts';
 
 export type {
   BridgeHandler,
@@ -82,42 +85,11 @@ export type {
 } from '../src/bridge/history.ts';
 export { TREE_MAX_NODES, projectHistory, entryAnchor, mintCursor, parseHistoryCursor, projectTree, annotateToolViews } from '../src/bridge/history.ts';
 export { LABEL_MAX_CODE_POINTS, SETTLED_TEXT_MAX_CODE_POINTS, settleText, sanitizeLabel, labelFromMessage, labelFromEntries } from '../src/bridge/labels.ts';
-
-/** The modes in which the bridge is active; `json`/`print` stay inert. */
-const ACTIVE_MODES = new Set(['tui', 'rpc']);
-
-export function isActiveMode(mode: string): boolean {
-  return ACTIVE_MODES.has(mode);
-}
-
-/** The bridge's command allowlist. Anything else — including a case- or
- * whitespace-variant of an entry — is refused, because the match is exact.
- * Exported so a test can pin it equal to the hub's copy: the two must not
- * drift, or one side allows what the other refuses. */
-export const COMMAND_ALLOWLIST = new Set([
-  'prompt',
-  'steer',
-  'followup',
-  'abort',
-  'setModel',
-  'setThinkingLevel',
-  'compact',
-  'fetchHistory',
-  'setSessionName',
-  'listCommands',
-  'listModels',
-  'listTree',
-  'sessionNew',
-  'sessionTree',
-  'sessionFork',
-]);
-
-/**
- * The bridge's own registered command. Its sole purpose is to hand the handler
- * a real `ExtensionCommandContext`, the only surface exposing
- * `newSession`/`fork`/`navigateTree`.
- */
-export const SESSION_COMMAND_NAME = 'pi-droid-session';
+export type {
+  BackoffOptions,
+} from '../src/bridge/backoff.ts';
+export { RATE_LIMITED_RECONNECT_MS, computeBackoff } from '../src/bridge/backoff.ts';
+export { isActiveMode, COMMAND_ALLOWLIST, SESSION_COMMAND_NAME, COMMAND_NOT_ALLOWED } from '../src/bridge/commands.ts';
 
 /**
  * The hub session id the most recently installed bridge registered.
@@ -140,37 +112,6 @@ let lastRegisteredSessionId: string | null = null;
  */
 export function resetSessionLinkageForTests(): void {
   lastRegisteredSessionId = null;
-}
-
-/**
- * The refusal for a command name the bridge will not dispatch — either because
- * the allowlist has no such name, or because the allowlist has it and the
- * dispatcher has no case for it.
- *
- * Exported and shared so the guard test pins the *path*, not a copy of the
- * string: with two literals, editing one would let a missing case answer with a
- * different message and the guard would pass over a real hole.
- */
-export const COMMAND_NOT_ALLOWED = 'command not allowed';
-
-const BACKOFF_BASE_MS = 500;
-const BACKOFF_CAP_MS = 30_000;
-/**
- * The fixed wait after a `4008` (rate-limited) close: the hub deliberately
- * delays that close, so retrying sooner would only add load. Longer than the
- * first backoff step by construction.
- */
-export const RATE_LIMITED_RECONNECT_MS = 30_000;
-
-export interface BackoffOptions {
-  rng?: () => number;
-}
-
-/** Exponential backoff with full jitter, capped. `attempt` is 0-based. */
-export function computeBackoff(attempt: number, options: BackoffOptions = {}): number {
-  const rng = options.rng ?? Math.random;
-  const ceiling = Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** Math.max(0, attempt));
-  return Math.floor(rng() * ceiling);
 }
 
 export interface BridgeEndpoint {
@@ -219,29 +160,6 @@ function resolveDeps(deps: BridgeDeps): ResolvedDeps {
     setTimeout: deps.setTimeout ?? ((fn, ms) => setTimeout(fn, ms)),
     clearTimeout: deps.clearTimeout ?? ((handle) => clearTimeout(handle as NodeJS.Timeout)),
   };
-}
-
-function encodeAgentMessage(message: AgentToHubMessage): string {
-  // `encode` is the protocol module's single-object encoder for the message
-  // types it fully owns (hello/event); the rest are typed by protocol.ts too.
-  if (message.type === 'hello' || message.type === 'event') return encode(message);
-  return JSON.stringify(message);
-}
-
-function parseCommand(message: Record<string, unknown>): CommandMessage | null {
-  const id = asString(message.id);
-  const sessionId = asString(message.sessionId);
-  const name = asString(message.name);
-  if (id === null || sessionId === null || name === null) return null;
-  const command: CommandMessage = {
-    protocolVersion: PROTOCOL_VERSION,
-    type: 'command',
-    id,
-    sessionId,
-    name,
-  };
-  if ('args' in message) command.args = message.args;
-  return command;
 }
 
 interface CommandOutcome {
