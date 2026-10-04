@@ -170,6 +170,15 @@ void main() {
     expect(secondResult.ok, isFalse);
   });
 
+  test('a second start fails pending commands', () async {
+    final future = client.sendCommand('s1', 'prompt');
+    await pumpEventQueue();
+    await client.start('127.0.0.1').timeout(const Duration(seconds: 5));
+    await pumpEventQueue();
+    final result = await future.timeout(const Duration(seconds: 1));
+    expect(result.ok, isFalse);
+  });
+
   test('losing the socket fails pending commands', () async {
     final future = client.sendCommand('s1', 'prompt');
     await pumpEventQueue();

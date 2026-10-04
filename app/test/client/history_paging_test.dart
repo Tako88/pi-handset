@@ -276,4 +276,24 @@ void main() {
     client.loadOlder('s1');
     expect(cursorRequests(), 2);
   });
+
+  test('A11 a second start drops an in-flight page and re-enables the control', () async {
+    await baseline(olderCursor: '2:x');
+    client.loadOlder('s1');
+    expect(client.transcript('s1')!.historyLoading, isTrue);
+    expect(cursorRequests(), 1);
+
+    // The default fake factory auto-answers a dial (fakes.dart call -> fresh
+    // FakeHubSocket), so this completes without firing a connect deadline; the
+    // timeout is a guard against a future harness change, not a driver.
+    await client.start('127.0.0.1').timeout(const Duration(seconds: 5));
+    await pumpEventQueue();
+
+    expect(client.transcript('s1')!.historyLoading, isFalse);
+    expect(scheduler.historyPageTimers.where((t) => !t.cancelled), isEmpty);
+
+    // Usable again immediately, not after the page timeout.
+    client.loadOlder('s1');
+    expect(cursorRequests(), 1); // on the new socket
+  });
 }

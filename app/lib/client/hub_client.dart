@@ -706,6 +706,11 @@ class HubClient {
     // A follow armed on a previous hub names a foreign session id; left set, it
     // would suppress every restore on the new hub until its timer fired.
     _clearReplacementFollow();
+    // The follow was just cleared, so a `followsReplacement` pending can never be
+    // settled by the abandoned hub: deliberately no `skipReplacement: true`
+    // (unlike `_onSocketDone`, whose successor still arrives after a reconnect).
+    _failPending('connection replaced');
+    _clearPendingHistoryPages();
     await _dropConnection();
 
     _candidates = List<HubEndpoint>.of(candidates);
@@ -739,8 +744,7 @@ class HubClient {
     // `stop()` closes `changes` for good and never resets `_state`, so nothing
     // else would ever drop the derivations; they die here.
     _derivations.clear();
-    _pendingHistoryCursor.clear();
-    _cancelHistoryPageTimeouts();
+    _clearPendingHistoryPages();
     // Every in-flight command fails rather than hanging the caller forever.
     _failPending('client stopped');
     await _dropConnection(reason: 'client stopped');
@@ -780,8 +784,7 @@ class HubClient {
     _sessionGoneCounts.clear();
     _restoredSessions.clear();
     _derivations.clear();
-    _pendingHistoryCursor.clear();
-    _cancelHistoryPageTimeouts();
+    _clearPendingHistoryPages();
     _lastErrorFromConnection = false;
     _state = const HubClientState();
     _flushNotify();
@@ -966,6 +969,21 @@ class HubClient {
       timer.cancel();
     }
     _historyPageTimers.clear();
+  }
+
+  /// Drops every in-flight older-page request: the single-flight cursor, the
+  /// bounded wait, and the `historyLoading` flag (or the control stays disabled
+  /// with no page in flight). A page's reply can only arrive on the socket that
+  /// asked, so a replaced connection must never leave one of these behind.
+  void _clearPendingHistoryPages() {
+    for (final sessionId in _pendingHistoryCursor.keys) {
+      final transcript = _state.transcripts[sessionId];
+      if (transcript != null && transcript.historyLoading) {
+        _putTranscript(sessionId, transcript.copyWith(historyLoading: false));
+      }
+    }
+    _pendingHistoryCursor.clear();
+    _cancelHistoryPageTimeouts();
   }
 
   /// Sends one allowlisted command and completes when its `command-result`
