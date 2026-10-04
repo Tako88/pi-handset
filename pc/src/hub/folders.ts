@@ -18,7 +18,8 @@
  * keys pi computes.
  */
 
-import { existsSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, opendirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync, mkdirSync } from 'node:fs';
+import type { Dir } from 'node:fs';
 import { dirname, isAbsolute, join, sep } from 'node:path';
 
 /** Default maximum number of entries returned by a single listing. */
@@ -29,6 +30,13 @@ const TRUST_FILE_MODE = 0o600;
 
 /** Default maximum encoded byte budget (`name` + JSON overhead) for a listing. */
 export const DEFAULT_MAX_DIR_BYTES = 256 * 1024;
+
+/**
+ * Default maximum raw directory entries a single listing will scan. A scan cap
+ * independent of the response cap bounds the work even when the scanned window
+ * holds no directories at all.
+ */
+export const DEFAULT_MAX_DIR_SCAN_ENTRIES = 10_000;
 
 /** Makes each trust-store temp file name unique within this process. */
 let tmpCounter = 0;
@@ -57,7 +65,7 @@ export interface DirectoryListing {
   readonly path: string;
   /** Entry names (directories only), sorted case-insensitively. */
   readonly entries: string[];
-  /** True when entries were cut by the count or byte cap. */
+  /** True when the scan was cut or entries were cut by the count or byte cap. */
   readonly truncated: boolean;
 }
 
@@ -133,18 +141,20 @@ export function resolveWithinHome(path: string, home: string): string | null {
  * Lists the directory names directly under `target` (or `home` when `target`
  * is `undefined`). Only directories are returned: files are excluded, and a
  * symlink is included only when its realpath is a directory inside home (a
- * broken or out-of-home symlink is skipped). Both the count and encoded-byte
- * caps stop the walk; `truncated` is true only when entries were actually cut.
+ * broken or out-of-home symlink is skipped). The raw scan is bounded by
+ * `maxScanEntries`, and both the count and encoded-byte caps stop the walk;
+ * `truncated` is true when the scan was cut or entries were actually cut.
  *
  * Throws `FolderError` when `target` is outside home, relative, or nonexistent.
  */
 export function listDirectories(
   target: string | undefined,
   home: string,
-  options: { maxEntries?: number; maxBytes?: number } = {},
+  options: { maxEntries?: number; maxBytes?: number; maxScanEntries?: number } = {},
 ): DirectoryListing {
   const maxEntries = normalizeCap(options.maxEntries, DEFAULT_MAX_DIR_ENTRIES);
   const maxBytes = normalizeCap(options.maxBytes, DEFAULT_MAX_DIR_BYTES);
+  const maxScanEntries = normalizeCap(options.maxScanEntries, DEFAULT_MAX_DIR_SCAN_ENTRIES);
   const root = canonicalizePath(home);
 
   let resolved: string;
@@ -156,32 +166,57 @@ export function listDirectories(
     resolved = within;
   }
 
-  let dirents: { name: string; isDirectory(): boolean; isSymbolicLink(): boolean }[];
+  // A bounded, synchronous scan: `opendirSync`/`readSync` read one raw entry
+  // at a time so work stops at `maxScanEntries` without materializing the whole
+  // directory. One entry is read past the cap to tell "exactly N" from "more
+  // remain", which preserves the exact-fit case. A throw mid-scan (after some
+  // entries were read) becomes a whole `FolderError` — the partial listing is
+  // deliberately discarded rather than salvaged.
+  const names: string[] = [];
+  let scanned = 0;
+  let scanTruncated = false;
+  let dir: Dir;
   try {
-    dirents = readdirSync(resolved, { withFileTypes: true });
+    dir = opendirSync(resolved);
   } catch (error) {
     throw new FolderError(`cannot read directory ${resolved}: ${String(error)}`);
   }
-
-  const names: string[] = [];
-  for (const dirent of dirents) {
-    if (dirent.isDirectory()) {
+  try {
+    while (true) {
+      const dirent = dir.readSync();
+      if (dirent === null) break;
+      if (scanned >= maxScanEntries) {
+        scanTruncated = true;
+        break;
+      }
+      scanned += 1;
+      if (dirent.isDirectory()) {
+        names.push(dirent.name);
+        continue;
+      }
+      if (!dirent.isSymbolicLink()) continue;
+      // A symlink is offered only when it resolves to a directory inside home;
+      // a broken or out-of-home link is skipped.
+      const linkPath = join(resolved, dirent.name);
+      let linkReal: string;
+      try {
+        linkReal = realpathSync(linkPath);
+        if (!statSync(linkReal).isDirectory()) continue;
+      } catch {
+        continue;
+      }
+      if (!isWithin(linkReal, root)) continue;
       names.push(dirent.name);
-      continue;
     }
-    if (!dirent.isSymbolicLink()) continue;
-    // A symlink is offered only when it resolves to a directory inside home;
-    // a broken or out-of-home link is skipped.
-    const linkPath = join(resolved, dirent.name);
-    let linkReal: string;
+  } catch (error) {
+    throw new FolderError(`cannot read directory ${resolved}: ${String(error)}`);
+  } finally {
     try {
-      linkReal = realpathSync(linkPath);
-      if (!statSync(linkReal).isDirectory()) continue;
+      dir.closeSync();
     } catch {
-      continue;
+      // `readSync` may auto-close at EOF; a close failure must not mask the
+      // listing (or the failure) this method is about to return or throw.
     }
-    if (!isWithin(linkReal, root)) continue;
-    names.push(dirent.name);
   }
 
   names.sort((a, b) => {
@@ -196,7 +231,7 @@ export function listDirectories(
 
   const entries: string[] = [];
   let bytes = 0;
-  let truncated = false;
+  let truncated = scanTruncated;
   for (const name of names) {
     if (entries.length >= maxEntries) {
       truncated = true;
