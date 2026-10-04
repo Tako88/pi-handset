@@ -126,6 +126,17 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
   /// Navigator stack: non-null iff the transcript route is installed.
   Route<void>? _transcriptRoute;
 
+  /// The installed pairing route, or null when it is not up. Non-destructive:
+  /// opening pairing leaves the list connected underneath. Mirrors the
+  /// Navigator stack so the push is idempotent and the pop can be reconciled.
+  Route<void>? _pairingRoute;
+
+  /// Whether a deliberate pairing (typed, scanned or a forced candidate) is in
+  /// flight. Set when the attempt starts; a `connected` state with it set pops
+  /// the pushed pairing route. A background reconnect never sets it, so it
+  /// cannot close a pairing screen the user is still filling in.
+  bool _pairingAttempt = false;
+
   /// The last non-null active session. Kept so the outgoing transcript stays
   /// rendered during the pop animation, after `_close()` nulls the live id.
   String? _lastActiveSessionId;
@@ -315,6 +326,26 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
         }
       }
     });
+    // A deliberate pairing just reached `connected`: clear the flag and close
+    // the pushed pairing route, if one is open. The flag is cleared whether or
+    // not a route is open (a pairing from the root form sets it too). It is the
+    // flag, not a bare `connected` check, that keeps a background reconnect
+    // from popping a pairing screen the user is still filling in.
+    if (_pairingAttempt && state.status == HubConnectionStatus.connected) {
+      _pairingAttempt = false;
+      final route = _pairingRoute;
+      if (route != null) {
+        _pairingRoute = null;
+        final navigator = _navigatorKey.currentState;
+        if (navigator != null) {
+          if (route.isCurrent) {
+            navigator.pop();
+          } else {
+            navigator.removeRoute(route);
+          }
+        }
+      }
+    }
     if (pendingEndpoints.isNotEmpty) {
       unawaited(widget.tokenStore.writeEndpoints(pendingEndpoints));
     }
@@ -414,6 +445,7 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
     _pendingEndpoints = [endpoint];
     _pendingTicket = code;
     _persistOnConnect = true;
+    _pairingAttempt = true;
     setState(() => _candidates = [endpoint]);
     await widget.client.startCandidates([endpoint], ticket: code);
   }
@@ -433,12 +465,14 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
     });
     await widget.tokenStore.writeEndpoints(candidates);
     if (!mounted) return;
+    _pairingAttempt = true;
     await widget.client.startCandidates(candidates, ticket: code);
   }
 
   /// Re-races the candidate list, preferring the tapped one.
   Future<void> _connectCandidate(HubEndpoint candidate) async {
     try {
+      _pairingAttempt = true;
       await widget.client.startCandidates(
         _candidates,
         ticket: _pendingTicket,
@@ -448,8 +482,11 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
       // The scan persisted the list but the race never paired, so after a
       // restart there are candidates and neither a ticket nor a stored token.
       // Forcing one cannot connect; surface it rather than letting the
-      // fire-and-forget callback throw into the void.
+      // fire-and-forget callback throw into the void. The attempt is over, so
+      // its flag must go too: left set, a later genuine `connected` would be
+      // mistaken for this failed pairing and close the screen.
       if (!mounted) return;
+      _pairingAttempt = false;
       setState(() {
         _bootstrapError =
             'could not connect: no pairing code or saved token for this hub';
@@ -457,27 +494,24 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
     }
   }
 
-  /// Forgets the hub, its token and the open transcript, and returns to pairing.
-  /// A wrong saved host is otherwise unrecoverable without reinstalling.
-  Future<void> _changeHub() async {
-    await widget.client.disconnect();
-    await widget.tokenStore.clearEndpoints();
-    await widget.tokenStore.clear();
-    _pendingOpenSessionId = null;
-    _foregroundStarted = false;
-    await widget.notifications.stopForeground();
-    if (!mounted) return;
-    setState(() {
-      _authenticated = false;
-      _candidates = const [];
-      _pendingEndpoints = const [];
-      _pendingTicket = null;
-      _persistOnConnect = false;
-      _bootstrapError = null;
-      _dismissedError = null;
-      _attachment = null;
-      _state = widget.client.state;
-    });
+  /// Opens the pairing screen as a pushed route over the live session list.
+  ///
+  /// Non-destructive: nothing is disconnected or cleared, so back always
+  /// returns to the list with the pairing intact. The latch makes the push
+  /// idempotent, and the route's `PopScope` clears it on a real pop.
+  void _openPairing() {
+    if (_pairingRoute != null) return;
+    final route = MaterialPageRoute<void>(
+      builder: (_) => PopScope<void>(
+        canPop: true,
+        onPopInvokedWithResult: (didPop, _) {
+          if (didPop) _pairingRoute = null;
+        },
+        child: _pairingScreen(),
+      ),
+    );
+    _pairingRoute = route;
+    _navigatorKey.currentState?.push(route);
   }
 
   /// Refetches the active session's command list when the `/` overlay opens.
@@ -859,26 +893,30 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
     return 'pi sessions · $first +${_candidates.length - 1}';
   }
 
+  /// The pairing widget, shared by the boot path (as the root) and the pushed
+  /// route (over the live list).
+  Widget _pairingScreen() => PairingScreen(
+    onSubmit: _pair,
+    onScanned: _pairScanned,
+    onCandidate: _connectCandidate,
+    candidates: _candidates,
+    scanQr: widget.scanQr,
+    lastError: _state.lastError ?? _bootstrapError,
+    busy:
+        _state.status == HubConnectionStatus.connecting ||
+        _state.status == HubConnectionStatus.authenticating,
+    initialHost: _candidates.isEmpty ? '' : _candidates.first.host,
+    initialPort: _candidates.isEmpty
+        ? '8787'
+        : _candidates.first.port.toString(),
+  );
+
   Widget _home(BuildContext context) {
     if (_loading) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
     if (!_authenticated) {
-      return PairingScreen(
-        onSubmit: _pair,
-        onScanned: _pairScanned,
-        onCandidate: _connectCandidate,
-        candidates: _candidates,
-        scanQr: widget.scanQr,
-        lastError: _state.lastError ?? _bootstrapError,
-        busy:
-            _state.status == HubConnectionStatus.connecting ||
-            _state.status == HubConnectionStatus.authenticating,
-        initialHost: _candidates.isEmpty ? '' : _candidates.first.host,
-        initialPort: _candidates.isEmpty
-            ? '8787'
-            : _candidates.first.port.toString(),
-      );
+      return _pairingScreen();
     }
 
     // The list is always the `home` route. The transcript, when one is open, is
@@ -891,10 +929,10 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
         title: Text(_sessionsTitle()),
         actions: [
           IconButton(
-            key: const Key('change-hub'),
+            key: const Key('pairing'),
             icon: const Icon(Icons.settings_ethernet),
-            tooltip: 'Change hub',
-            onPressed: _changeHub,
+            tooltip: 'Pairing',
+            onPressed: _openPairing,
           ),
         ],
       ),

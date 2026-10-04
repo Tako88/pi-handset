@@ -95,6 +95,10 @@ class _PairingScreenState extends State<PairingScreen> {
   /// is the only path.
   bool _noAddress = false;
 
+  /// The candidate row the user last tapped, marked with a check. Purely a
+  /// display latch: the tap still reports through [PairingScreen.onCandidate].
+  HubEndpoint? _selected;
+
   @override
   void dispose() {
     _host.dispose();
@@ -172,7 +176,7 @@ class _PairingScreenState extends State<PairingScreen> {
         if (addresses.isEmpty || port == null) {
           setState(() {
             _scanError = null;
-            _code.text = pairing.code;
+            _code.text = formatTicketDisplay(pairing.code);
             _noAddress = true;
           });
           return;
@@ -180,7 +184,7 @@ class _PairingScreenState extends State<PairingScreen> {
         setState(() {
           _scanError = null;
           _noAddress = false;
-          _code.text = pairing.code;
+          _code.text = formatTicketDisplay(pairing.code);
           _host.text = addresses.first.host;
           _port.text = port.toString();
         });
@@ -253,7 +257,14 @@ class _PairingScreenState extends State<PairingScreen> {
                       leading: const Icon(Icons.lan_outlined),
                       title: Text(candidateLabel(candidate.host)),
                       subtitle: Text(candidate.encode()),
-                      onTap: () => widget.onCandidate?.call(candidate),
+                      selected: candidate == _selected,
+                      trailing: candidate == _selected
+                          ? const Icon(Icons.check)
+                          : null,
+                      onTap: () {
+                        setState(() => _selected = candidate);
+                        widget.onCandidate?.call(candidate);
+                      },
                     ),
                 ],
                 if (_noAddress) ...[

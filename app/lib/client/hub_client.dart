@@ -762,7 +762,7 @@ class HubClient {
     _prefer = null;
     _failPending('disconnected');
     // Not awaited: closing the socket below ends delivery, and awaiting a
-    // subscription cancel leaves the UI's change-hub action pending under a
+    // subscription cancel leaves a UI-initiated disconnect pending under a
     // widget-test clock.
     await _dropConnection(awaitSubscription: false, reason: 'disconnected');
     _credential = null;

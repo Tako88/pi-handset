@@ -294,7 +294,7 @@ void main() {
           .text,
       '4321',
     );
-    expect(find.text('ABCD2345'), findsOneWidget);
+    expect(find.text('ABCD-2345'), findsOneWidget);
     expect(scannedCode, 'ABCD2345');
     expect(scanned, const [
       HubEndpoint(host: '192.168.1.10', port: 4321),
@@ -321,7 +321,7 @@ void main() {
 
     // `--no-lan` minted a code with no address: there is nothing to race, so the
     // manual form is the only path and the hub must be told nothing yet.
-    expect(find.text('ABCD2345'), findsOneWidget);
+    expect(find.text('ABCD-2345'), findsOneWidget);
     expect(find.byKey(const Key('pairing-no-address')), findsOneWidget);
     expect(scanned, isNull);
   });
@@ -439,6 +439,52 @@ void main() {
     expect(tapped, const HubEndpoint(host: '100.64.1.2', port: 8787));
   });
 
+  testWidgets('the tapped candidate is marked selected and the mark moves', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PairingScreen(
+          onSubmit: (host, port, code) {},
+          candidates: const [
+            HubEndpoint(host: '192.168.1.10', port: 8787),
+            HubEndpoint(host: '100.64.1.2', port: 8787),
+          ],
+          onCandidate: (candidate) {},
+        ),
+      ),
+    );
+
+    const lan = Key('pairing-candidate-192.168.1.10:8787');
+    const ts = Key('pairing-candidate-100.64.1.2:8787');
+    bool selected(Key key) =>
+        tester.widget<ListTile>(find.byKey(key)).selected;
+    Finder check(Key key) => find.descendant(
+      of: find.byKey(key),
+      matching: find.byIcon(Icons.check),
+    );
+
+    expect(selected(lan), isFalse);
+    expect(selected(ts), isFalse);
+    expect(check(lan), findsNothing);
+    expect(check(ts), findsNothing);
+
+    await tester.tap(find.byKey(ts));
+    await tester.pump();
+
+    expect(selected(ts), isTrue);
+    expect(check(ts), findsOneWidget);
+    expect(selected(lan), isFalse);
+
+    await tester.tap(find.byKey(lan));
+    await tester.pump();
+
+    expect(selected(lan), isTrue);
+    expect(check(lan), findsOneWidget);
+    expect(selected(ts), isFalse);
+    expect(check(ts), findsNothing);
+  });
+
   testWidgets(
     'a scan-triggered auth failure is visible and clears the code without rescanning',
     (tester) async {
@@ -458,7 +504,7 @@ void main() {
       await tester.pumpWidget(screen(null));
       await tester.tap(find.byKey(const Key('pairing-scan')));
       await tester.pump();
-      expect(find.text('ABCD2345'), findsOneWidget);
+      expect(find.text('ABCD-2345'), findsOneWidget);
 
       // The hub rejects the scanned ticket: the shell surfaces lastError and the
       // single-use code is cleared, but the scanner is never re-run on its own.
@@ -469,7 +515,7 @@ void main() {
         find.textContaining('the hub rejected the pairing code'),
         findsOneWidget,
       );
-      expect(find.text('ABCD2345'), findsNothing);
+      expect(find.text('ABCD-2345'), findsNothing);
       expect(find.byKey(const Key('pairing-scan')), findsOneWidget);
       expect(scans, 1);
     },
