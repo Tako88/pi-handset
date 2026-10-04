@@ -50,18 +50,23 @@ void main() {
     }
   });
 
-  test('main manifest declares no media or camera permission', () {
+  test('main manifest declares no media permission', () {
     // Sending one gallery image needs no runtime permission: the picker uses
     // the system photo picker / document UI, which grants per-item access. Pin
-    // that no broad media or camera permission is declared, because the other
-    // manifest tests assert presence only and so cannot catch an added one.
+    // that no broad media permission is declared, because the other manifest
+    // tests assert presence only and so cannot catch an added one.
+    //
+    // CAMERA was deliberately moved out of this list when the QR scanner
+    // landed: the scanner genuinely needs the camera, so its absence is no
+    // longer the invariant. It is now asserted present by the positive test
+    // below instead of absent here. See AGENTS.md on changing tests
+    // deliberately.
     final xml = File('android/app/src/main/AndroidManifest.xml').readAsStringSync();
 
     for (final permission in const [
       'android.permission.READ_MEDIA_IMAGES',
       'android.permission.READ_EXTERNAL_STORAGE',
       'android.permission.WRITE_EXTERNAL_STORAGE',
-      'android.permission.CAMERA',
     ]) {
       expect(
         RegExp(
@@ -69,9 +74,24 @@ void main() {
         ).hasMatch(xml),
         isFalse,
         reason: '$permission must not be declared: the gallery picker needs no '
-            'broad media or camera permission',
+            'broad media permission',
       );
     }
+  });
+
+  test('main manifest declares the CAMERA permission', () {
+    // The QR scanner opens the camera. Release builds merge only the main
+    // manifest, and a missing CAMERA here makes `MobileScanner` fail at
+    // runtime with no source-level gate to catch it, so pin its presence.
+    final xml = File('android/app/src/main/AndroidManifest.xml').readAsStringSync();
+
+    expect(
+      RegExp(
+        r'<uses-permission\s+android:name="android\.permission\.CAMERA"\s*/>',
+      ).hasMatch(xml),
+      isTrue,
+      reason: 'the QR scanner needs the CAMERA permission in the main manifest',
+    );
   });
 
   test('main manifest opts into predictive back', () {
