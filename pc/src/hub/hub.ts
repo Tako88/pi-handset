@@ -103,6 +103,8 @@ const DEFAULT_AUTH_DEADLINE_MS = 10_000;
 const DEFAULT_MAX_UNAUTHENTICATED_VIEWERS = 64;
 /** Cap on a single inbound frame; `ws` defaults to 100 MB, far too generous. */
 const DEFAULT_MAX_PAYLOAD = 1024 * 1024;
+/** Most outstanding commands one session may have queued. */
+const DEFAULT_MAX_PENDING_COMMANDS = 128;
 
 /** The bridge's command allowlist; anything else is refused here too.
  * Exported so a test can pin it equal to the bridge's copy: the two must not
@@ -159,6 +161,8 @@ export interface HubOptions {
   maxDirEntries?: number;
   /** Max encoded bytes for one `list-dirs`. Defaults to 256 KiB. */
   maxDirBytes?: number;
+  /** Most outstanding commands one session may have queued. Defaults to 128. */
+  maxPendingCommands?: number;
   /** The process supervisor for app-started sessions, when one is configured. */
   spawner?: Spawner;
   /** Called when an escaped error is contained in a message handler. The hub
@@ -231,6 +235,7 @@ interface State {
     trustPath: string;
     maxDirEntries: number;
     maxDirBytes: number;
+    maxPendingCommands: number;
     spawner?: Spawner;
     onHandlerError?: (error: unknown) => void;
   };
@@ -861,12 +866,19 @@ function handleCommand(
     return;
   }
   if (!COMMAND_ALLOWLIST.has(name)) {
-    sendToViewer(connection, commandResult(id, false, 'unknown command'), null);
+    send(connection, commandResult(id, false, 'unknown command'));
     return;
   }
   const session = state.sessions.get(sessionId);
   if (session === undefined) {
-    sendToViewer(connection, commandResult(id, false, 'unknown session'), null);
+    send(connection, commandResult(id, false, 'unknown session'));
+    return;
+  }
+  // The cap counts queued ENTRIES, not distinct ids: two commands sharing an id
+  // are two outstanding commands. A refusal answers the request directly and is
+  // never queued or forwarded.
+  if (queuedCommandCount(session) >= state.config.maxPendingCommands) {
+    send(connection, commandResult(id, false, 'too many outstanding commands'));
     return;
   }
   // Keyed by (session, id) with the issuing viewer queued: two viewers using
@@ -875,6 +887,13 @@ function handleCommand(
   if (queue === undefined) session.pendingCommands.set(id, [connection]);
   else queue.push(connection);
   send(session.agent, message);
+}
+
+/** Total outstanding commands queued for one session, across all ids. */
+function queuedCommandCount(session: Session): number {
+  let total = 0;
+  for (const queue of session.pendingCommands.values()) total += queue.length;
+  return total;
 }
 
 function handleCommandResult(
@@ -1087,6 +1106,7 @@ export async function createHub(options: HubOptions): Promise<Hub> {
   const trustPath = options.trustPath ?? join(agentDir, 'trust.json');
   const maxDirEntries = options.maxDirEntries ?? DEFAULT_MAX_DIR_ENTRIES;
   const maxDirBytes = options.maxDirBytes ?? DEFAULT_MAX_DIR_BYTES;
+  const maxPendingCommands = options.maxPendingCommands ?? DEFAULT_MAX_PENDING_COMMANDS;
   const agent = new WebSocketServer({ host: '127.0.0.1', port: 0, maxPayload });
   // Attach the readiness promises before awaiting either: a server that starts
   // listening while we await its sibling would otherwise fire 'listening' once,
@@ -1121,6 +1141,7 @@ export async function createHub(options: HubOptions): Promise<Hub> {
       trustPath,
       maxDirEntries,
       maxDirBytes,
+      maxPendingCommands,
       ...(options.spawner === undefined ? {} : { spawner: options.spawner }),
       ...(options.onHandlerError === undefined ? {} : { onHandlerError: options.onHandlerError }),
     },

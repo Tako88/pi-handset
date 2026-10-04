@@ -787,6 +787,148 @@ test('a command for an unknown session is rejected', async () => {
   assert.equal(result.ok, false);
 });
 
+test('a command beyond the pending cap is refused and not forwarded', async () => {
+  const hub = await startHub({ maxPendingCommands: 2 });
+  const agent = await connect(hub.agentPort);
+  const viewer = await connect(hub.viewerPort);
+  await helloTokened(agent);
+  await helloViewer(viewer);
+  agent.send({ protocolVersion: PROTOCOL_VERSION, type: 'register', sessionId: 's1' });
+  await barrier(agent);
+
+  const command = (id: string) => ({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'command',
+    id,
+    sessionId: 's1',
+    name: 'prompt',
+    args: { text: 'hi' },
+  });
+  viewer.send(command('c1'));
+  viewer.send(command('c2'));
+  viewer.send(command('c3'));
+
+  // Positive first: two real deliveries prove the agent harness is live, so
+  // the timeout-based "nothing more" below cannot pass on a dead reader.
+  assert.equal((await agent.next(2000)).id, 'c1');
+  assert.equal((await agent.next(2000)).id, 'c2');
+  assert.equal(await agent.tryNext(300), undefined, 'c3 must not be forwarded');
+
+  const refused = await viewer.next(2000);
+  assert.equal(refused.type, 'command-result');
+  assert.equal(refused.id, 'c3');
+  assert.equal(refused.ok, false);
+  assert.equal(refused.error, 'too many outstanding commands');
+
+  // Answering c1 frees a slot; c4 is then forwarded, proving c3 was never
+  // queued and c1's completion released the cap.
+  agent.send({ protocolVersion: PROTOCOL_VERSION, type: 'command-result', id: 'c1', ok: true });
+  await barrier(agent);
+  viewer.send(command('c4'));
+  const forwarded = await agent.next(2000);
+  assert.equal(forwarded.type, 'command');
+  assert.equal(forwarded.id, 'c4');
+});
+
+test('the pending cap counts queued entries, not distinct ids', async () => {
+  const hub = await startHub({ maxPendingCommands: 2 });
+  const agent = await connect(hub.agentPort);
+  const viewer = await connect(hub.viewerPort);
+  await helloTokened(agent);
+  await helloViewer(viewer);
+  agent.send({ protocolVersion: PROTOCOL_VERSION, type: 'register', sessionId: 's1' });
+  await barrier(agent);
+
+  const command = (id: string) => ({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'command',
+    id,
+    sessionId: 's1',
+    name: 'prompt',
+    args: { text: 'hi' },
+  });
+  // The same id twice is two queued entries, not one distinct key.
+  viewer.send(command('c1'));
+  viewer.send(command('c1'));
+  viewer.send(command('c2'));
+
+  assert.equal((await agent.next(2000)).id, 'c1');
+  assert.equal((await agent.next(2000)).id, 'c1');
+  assert.equal(await agent.tryNext(300), undefined, 'c2 must not be forwarded');
+
+  const refused = await viewer.next(2000);
+  assert.equal(refused.type, 'command-result');
+  assert.equal(refused.id, 'c2');
+  assert.equal(refused.ok, false);
+  assert.equal(refused.error, 'too many outstanding commands');
+});
+
+test('hub-local command refusals are delivered even when the viewer budget is exhausted', async () => {
+  const hub = await startHub({ maxPendingCommands: 1, maxViewerBytes: 1 });
+  const agent = await connect(hub.agentPort);
+  await helloTokened(agent);
+  agent.send({ protocolVersion: PROTOCOL_VERSION, type: 'register', sessionId: 's1' });
+  await barrier(agent);
+
+  const viewer = await connect(hub.viewerPort);
+  // A 1-byte budget drops the post-auth `sessions` push, exactly as in the
+  // list-dirs test; authenticate raw and do not wait for it.
+  viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'hello', token: TOKEN });
+  await barrier(viewer);
+
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'command',
+    id: 'c1',
+    sessionId: 's1',
+    name: 'notACommand',
+  });
+  const unknownCommand = await viewer.next(2000);
+  assert.equal(unknownCommand.type, 'command-result');
+  assert.equal(unknownCommand.id, 'c1');
+  assert.equal(unknownCommand.ok, false);
+  assert.equal(unknownCommand.error, 'unknown command');
+
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'command',
+    id: 'c2',
+    sessionId: 'ghost',
+    name: 'prompt',
+  });
+  const unknownSession = await viewer.next(2000);
+  assert.equal(unknownSession.type, 'command-result');
+  assert.equal(unknownSession.id, 'c2');
+  assert.equal(unknownSession.ok, false);
+  assert.equal(unknownSession.error, 'unknown session');
+
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'command',
+    id: 'c3',
+    sessionId: 's1',
+    name: 'prompt',
+  });
+  await barrier(viewer);
+  assert.equal(
+    (await agent.next(2000)).id,
+    'c3',
+    'the first command is forwarded and fills the cap',
+  );
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'command',
+    id: 'c4',
+    sessionId: 's1',
+    name: 'prompt',
+  });
+  const overCap = await viewer.next(2000);
+  assert.equal(overCap.type, 'command-result');
+  assert.equal(overCap.id, 'c4');
+  assert.equal(overCap.ok, false);
+  assert.equal(overCap.error, 'too many outstanding commands');
+});
+
 test('closing an agent socket removes its session and tells subscribers', async () => {
   const hub = await startHub();
   const agent = await connect(hub.agentPort);
