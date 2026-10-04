@@ -224,6 +224,24 @@ void main() {
     expect(semantics.properties.label, isNotNull);
   });
 
+  testWidgets('the busy spinner is coloured onPrimary', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PairingScreen(onSubmit: (host, port, code) {}, busy: true),
+      ),
+    );
+
+    // The FilledButton's background is `primary`, and the indicator's default is
+    // also `primary` — invisible. It must be the button's foreground colour.
+    final scheme = Theme.of(
+      tester.element(find.byType(PairingScreen)),
+    ).colorScheme;
+    final indicator = tester.widget<CircularProgressIndicator>(
+      find.byType(CircularProgressIndicator),
+    );
+    expect(indicator.color, scheme.onPrimary);
+  });
+
   testWidgets('a new client error clears the code so a fresh one can be typed', (
     tester,
   ) async {

@@ -247,6 +247,24 @@ void main() {
     expect(scheduler.reconnectTimers, isNotEmpty);
   });
 
+  test('a new deliberate attempt clears the previous connection error', () async {
+    factory.onDial = () => Exception('connection refused');
+    unawaited(client.start(lan.host));
+    await pumpEventQueue();
+    expect(client.state.lastError, contains('refused'));
+
+    // The retry must start from a clean slate: the stale error would otherwise
+    // outlive the attempt it describes and keep the pairing form showing a
+    // failure the new attempt does not have.
+    final held = Completer<HubSocket>();
+    factory.onDial = null;
+    factory.onDialFuture = (_) => held.future;
+    unawaited(client.startCandidates(const [lan]));
+    await pumpEventQueue();
+
+    expect(client.state.lastError, isNull);
+  });
+
   test('an empty candidate list is a StateError', () async {
     await expectLater(client.startCandidates(const []), throwsStateError);
   });

@@ -302,6 +302,19 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
     final pendingEndpoints = persist ? _pendingEndpoints : const <HubEndpoint>[];
     setState(() {
       _state = state;
+      // A deliberate pairing that ended in failure is over: drop the flag so
+      // the button reverts to "Pair" and can spin again on a retry. Only a
+      // connection-scoped error ends the attempt — a session notice that
+      // outlived it (e.g. a resync give-up) is not this dial failing, and
+      // clearing on it would hide the spinner and skip a successful pop.
+      // Success is handled below, after the `connected` check — clearing it
+      // here would skip that pop.
+      if (_pairingAttempt &&
+          state.status != HubConnectionStatus.connected &&
+          state.lastError != null &&
+          widget.client.lastErrorFromConnection) {
+        _pairingAttempt = false;
+      }
       // Open/close/switch/replacement: a picked image belongs to the session it
       // was picked in, and the pre-existing draft text is deliberately global.
       if (state.activeSessionId != previous) {
@@ -490,6 +503,16 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
       setState(() {
         _bootstrapError =
             'could not connect: no pairing code or saved token for this hub';
+      });
+    } catch (error) {
+      // The keystore could not hand a token back (a platform failure, not a
+      // missing one). Same contract as the StateError arm: surface it and end
+      // the attempt, or the already-dropped socket leaves a permanent spinner
+      // no reconnect can clear.
+      if (!mounted) return;
+      _pairingAttempt = false;
+      setState(() {
+        _bootstrapError = 'could not read the saved token: $error';
       });
     }
   }
@@ -902,9 +925,7 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
     candidates: _candidates,
     scanQr: widget.scanQr,
     lastError: _state.lastError ?? _bootstrapError,
-    busy:
-        _state.status == HubConnectionStatus.connecting ||
-        _state.status == HubConnectionStatus.authenticating,
+    busy: _pairingAttempt,
     initialHost: _candidates.isEmpty ? '' : _candidates.first.host,
     initialPort: _candidates.isEmpty
         ? '8787'
@@ -937,6 +958,7 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
         ],
       ),
       body: _withStatusBanner(
+        context,
         SessionList(
           sessions: _state.sessions,
           onOpen: _open,
@@ -1054,6 +1076,7 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
               builder: (context, constraints) => Stack(
                 children: [
                   _withStatusBanner(
+                    context,
                     // Keyed on the session: a new session is a new view, so its
                     // scroll position and following state are not inherited from
                     // the last one.
@@ -1192,7 +1215,7 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
   /// A thin banner so a dropped connection, a dead-end resync or a send failure
   /// is never silent. Shown whenever there is an error, whatever the status —
   /// not only while disconnected.
-  Widget _withStatusBanner(Widget child) {
+  Widget _withStatusBanner(BuildContext context, Widget child) {
     final error = _state.lastError;
     final showError = error != null && error != _dismissedError;
     final showReconnect = _state.status != HubConnectionStatus.connected;
@@ -1208,7 +1231,12 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
               Expanded(
                 child: Padding(
                   padding: const EdgeInsets.symmetric(vertical: 8),
-                  child: Text(showError ? error : 'Reconnecting to the hub…'),
+                  child: Text(
+                    showError ? error : 'Reconnecting to the hub…',
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.onErrorContainer,
+                    ),
+                  ),
                 ),
               ),
               if (showError)
