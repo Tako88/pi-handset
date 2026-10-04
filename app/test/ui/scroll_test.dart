@@ -12,6 +12,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pi_droid/client/hub_client.dart';
 import 'package:pi_droid/client/transcript.dart';
+import 'package:pi_droid/ui/theme.dart';
 import 'package:pi_droid/ui/transcript_view.dart';
 
 /// A transcript taller than the 600px test viewport.
@@ -46,6 +47,7 @@ SessionTranscript mixed(int count) => SessionTranscript(
 
 Widget wrap(SessionTranscript transcript, {Key? key}) =>
     MaterialApp(
+      theme: piTheme(Brightness.dark),
       home: TranscriptView(
         key: key,
         transcript: transcript,

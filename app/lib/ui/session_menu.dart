@@ -11,6 +11,7 @@ library;
 
 import 'package:flutter/material.dart';
 import 'package:pi_droid/client/hub_client.dart';
+import 'package:pi_droid/ui/theme.dart';
 
 /// pi's canonical thinking levels.
 ///
@@ -155,6 +156,10 @@ class SessionMenuButton extends StatelessWidget {
                 Text(
                   thinkingLevel!,
                   key: const Key('session-menu-thinking-level'),
+                  style: piMono(
+                    fontSize: 12,
+                    color: Theme.of(context).extension<PiRoles>()!.muted,
+                  ),
                 ),
               ],
             ],
@@ -177,6 +182,10 @@ class SessionMenuButton extends StatelessWidget {
                     key: const Key('session-menu-model-name'),
                     overflow: TextOverflow.ellipsis,
                     maxLines: 1,
+                    style: piMono(
+                      fontSize: 12,
+                      color: Theme.of(context).extension<PiRoles>()!.muted,
+                    ),
                   ),
                 ),
             ],
@@ -318,21 +327,35 @@ class _RenameDialogState extends State<_RenameDialog> {
 Future<String?> pickThinkingLevel(BuildContext context, String? current) {
   return showModalBottomSheet<String>(
     context: context,
-    builder: (sheetContext) => SafeArea(
-      child: ListView(
-        key: const Key('thinking-picker'),
-        shrinkWrap: true,
-        children: [
-          for (final level in thinkingLevels)
-            ListTile(
-              key: Key('thinking-$level'),
-              title: Text(level),
-              trailing: level == current ? const Icon(Icons.check) : null,
-              onTap: () => Navigator.pop(sheetContext, level),
-            ),
-        ],
-      ),
-    ),
+    builder: (sheetContext) {
+      final roles = Theme.of(sheetContext).extension<PiRoles>()!;
+      return SafeArea(
+        child: ListView(
+          key: const Key('thinking-picker'),
+          shrinkWrap: true,
+          children: [
+            for (final level in thinkingLevels)
+              ListTile(
+                key: Key('thinking-$level'),
+                // The same ramp the transcript's thinking row carries, so the
+                // picker and the row agree on what "high" looks like. On the
+                // icon, not the label: the ramp is a border colour and its
+                // lower levels are under the 4.5:1 a line of text needs.
+                leading: Icon(
+                  Icons.psychology,
+                  size: 16,
+                  color: thinkingLevelColor(roles, level),
+                ),
+                title: Text(level),
+                trailing: level == current
+                    ? Icon(Icons.check, color: roles.accent)
+                    : null,
+                onTap: () => Navigator.pop(sheetContext, level),
+              ),
+          ],
+        ),
+      );
+    },
   );
 }
 
@@ -549,6 +572,7 @@ class _ModelPickerState extends State<_ModelPicker> {
 
   @override
   Widget build(BuildContext context) {
+    final roles = Theme.of(context).extension<PiRoles>()!;
     final matches = modelsMatching(widget.models, _query.text);
     return SafeArea(
       // Explicit keyboard avoidance: the framework does not inset sheet
@@ -592,7 +616,12 @@ class _ModelPickerState extends State<_ModelPicker> {
                       ListTile(
                         key: Key('model-${model.provider}-${model.id}'),
                         title: Text(model.name),
-                        subtitle: Text('${model.provider}/${model.id}'),
+                        // `provider/id` is the machine's name for the model, not
+                        // its display name — the mono face says so.
+                        subtitle: Text(
+                          '${model.provider}/${model.id}',
+                          style: piMono(fontSize: 12, color: roles.muted),
+                        ),
                         trailing:
                             (model.provider == widget.current?.provider &&
                                     model.id == widget.current?.id)

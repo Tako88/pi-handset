@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import '../client/endpoint_store.dart';
 import '../platform/qr_scanner.dart';
 import '../protocol/pairing_uri.dart';
+import 'theme.dart';
 import '../protocol/ticket.dart';
 
 class PairingScreen extends StatefulWidget {
@@ -238,6 +239,10 @@ class _PairingScreenState extends State<PairingScreen> {
                   maxLength: 12,
                   textCapitalization: TextCapitalization.characters,
                   decoration: const InputDecoration(labelText: 'Pairing code'),
+                  // An 8-character code read off another screen: the mono face
+                  // and the tracking are what make it checkable at a glance,
+                  // and the hub prints it with a dash.
+                  style: piMono(fontSize: 16, letterSpacing: 2),
                 ),
                 if (widget.scanQr != null) ...[
                   const SizedBox(height: 12),
@@ -256,10 +261,27 @@ class _PairingScreenState extends State<PairingScreen> {
                       dense: true,
                       leading: const Icon(Icons.lan_outlined),
                       title: Text(candidateLabel(candidate.host)),
-                      subtitle: Text(candidate.encode()),
+                      // A host:port is the machine's name for itself.
+                      subtitle: Text(
+                        candidate.encode(),
+                        style: piMono(
+                          fontSize: 12,
+                          color: Theme.of(
+                            context,
+                          ).extension<PiRoles>()!.muted,
+                        ),
+                      ),
                       selected: candidate == _selected,
+                      selectedTileColor: Theme.of(
+                        context,
+                      ).extension<PiRoles>()!.selectedBg,
                       trailing: candidate == _selected
-                          ? const Icon(Icons.check)
+                          ? Icon(
+                              Icons.check,
+                              color: Theme.of(
+                                context,
+                              ).extension<PiRoles>()!.accent,
+                            )
                           : null,
                       onTap: () {
                         setState(() => _selected = candidate);

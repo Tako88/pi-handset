@@ -10,13 +10,15 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:pi_droid/client/attachment.dart';
 import 'package:pi_droid/client/hub_client.dart';
 import 'package:pi_droid/ui/compose_bar.dart';
+import 'package:pi_droid/ui/theme.dart';
 
-Widget wrap(ComposeBar bar) => MaterialApp(home: Scaffold(body: bar));
+Widget wrap(ComposeBar bar) => MaterialApp(theme: piTheme(Brightness.dark), home: Scaffold(body: bar));
 
 /// The scaled variant applies the text scale *below* `MaterialApp`, so the
 /// `MediaQuery` cannot be replaced by the one `MaterialApp` derives from the
 /// view.
 Widget wrapScaled(ComposeBar bar) => MaterialApp(
+      theme: piTheme(Brightness.dark),
   home: Scaffold(
     body: MediaQuery(
       data: const MediaQueryData(textScaler: TextScaler.linear(2)),

@@ -36,6 +36,7 @@ import '../client/hub_client.dart';
 import '../client/stick_to_bottom.dart';
 import '../client/transcript.dart';
 import 'transcript_blocks.dart';
+import 'theme.dart';
 
 class TranscriptView extends StatefulWidget {
   const TranscriptView({
@@ -301,6 +302,7 @@ class _TranscriptViewState extends State<TranscriptView> {
                     text: widget.transcript.streamingThinking,
                     complete: false,
                   ),
+                  thinkingLevel: widget.transcript.thinkingLevel,
                 ),
               );
             }
@@ -332,6 +334,12 @@ class _TranscriptViewState extends State<TranscriptView> {
             child: FloatingActionButton.small(
               onPressed: _returnToBottom,
               tooltip: 'Jump to latest',
+              // Quiet, not the accent: this is a convenience, not the screen's
+              // one action, and it floats over the transcript while you read.
+              backgroundColor: Theme.of(
+                context,
+              ).extension<PiRoles>()!.cardBg,
+              foregroundColor: Theme.of(context).extension<PiRoles>()!.text,
               child: const Icon(Icons.arrow_downward),
             ),
           ),
@@ -344,7 +352,10 @@ class _TranscriptViewState extends State<TranscriptView> {
       case TranscriptBlockKind.text:
         return TextBlock(block: block, onOpenLink: widget.onOpenLink);
       case TranscriptBlockKind.thinking:
-        return ThinkingBlock(block: block);
+        return ThinkingBlock(
+          block: block,
+          thinkingLevel: widget.transcript.thinkingLevel,
+        );
       case TranscriptBlockKind.tool:
         final expanded = block.id == _expandedToolId;
         return ToolBlock(

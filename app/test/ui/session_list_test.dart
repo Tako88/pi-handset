@@ -6,6 +6,13 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pi_droid/client/hub_client.dart';
 import 'package:pi_droid/ui/session_list.dart';
+import 'package:pi_droid/ui/theme.dart';
+
+/// The app's own theme, not Material's default: `SessionList` reads `PiRoles`,
+/// and a test that renders it outside the app's theme is not rendering what the
+/// app renders.
+Widget host(Widget child) =>
+    MaterialApp(theme: piTheme(Brightness.dark), home: Scaffold(body: child));
 
 const sessions = [
   SessionSummary(sessionId: 's1', label: 'api refactor', agentState: 'idle'),
@@ -14,9 +21,7 @@ const sessions = [
 
 void main() {
   testWidgets('an empty session list says so', (tester) async {
-    await tester.pumpWidget(
-      MaterialApp(home: Scaffold(body: SessionList(sessions: const [], onOpen: (_) {}))),
-    );
+    await tester.pumpWidget(host(SessionList(sessions: const [], onOpen: (_) {})));
 
     expect(find.text(SessionList.emptyMessage), findsOneWidget);
   });
@@ -25,7 +30,7 @@ void main() {
     tester,
   ) async {
     await tester.pumpWidget(
-      MaterialApp(home: Scaffold(body: SessionList(sessions: sessions, onOpen: (_) {}))),
+      host(SessionList(sessions: sessions, onOpen: (_) {})),
     );
 
     expect(find.text('api refactor'), findsOneWidget);
@@ -33,6 +38,24 @@ void main() {
     expect(find.text('idle'), findsOneWidget);
     expect(find.text('running'), findsOneWidget);
     expect(find.text(SessionList.emptyMessage), findsNothing);
+  });
+
+  testWidgets('a running session is ruled apart from an idle one', (
+    tester,
+  ) async {
+    // The rule is the only thing on a row you cannot read off the label, so it
+    // has to mean something. Violet = running, the same violet the transcript
+    // gives the user's own row.
+    await tester.pumpWidget(
+      host(SessionList(sessions: sessions, onOpen: (_) {})),
+    );
+
+    final roles = piTheme(Brightness.dark).extension<PiRoles>()!;
+    DocumentRow rowOf(String label) => tester.widget<DocumentRow>(
+      find.ancestor(of: find.text(label), matching: find.byType(DocumentRow)).first,
+    );
+    expect(rowOf('docs pass').rule, roles.accent);
+    expect(rowOf('api refactor').rule, roles.dim);
   });
 
   testWidgets('a long session label is ellipsized to a single line', (
@@ -44,11 +67,7 @@ void main() {
       SessionSummary(sessionId: 's2', label: 'short', agentState: 'idle'),
     ];
     await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: SessionList(sessions: longSessions, onOpen: (_) {}),
-        ),
-      ),
+      host(SessionList(sessions: longSessions, onOpen: (_) {})),
     );
 
     expect(tester.widget<Text>(find.text(longLabel)).maxLines, 1);
@@ -73,10 +92,8 @@ void main() {
   testWidgets('tapping a session opens it', (tester) async {
     SessionSummary? opened;
     await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: SessionList(sessions: sessions, onOpen: (session) => opened = session),
-        ),
+      host(
+        SessionList(sessions: sessions, onOpen: (session) => opened = session),
       ),
     );
 
@@ -101,11 +118,7 @@ void main() {
         origin: 'pc',
       ),
     ];
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(body: SessionList(sessions: mixed, onOpen: (_) {})),
-      ),
-    );
+    await tester.pumpWidget(host(SessionList(sessions: mixed, onOpen: (_) {})));
 
     expect(find.text(SessionList.appSectionHeader), findsOneWidget);
     expect(find.text(SessionList.pcSectionHeader), findsOneWidget);
@@ -117,7 +130,7 @@ void main() {
     tester,
   ) async {
     await tester.pumpWidget(
-      MaterialApp(home: Scaffold(body: SessionList(sessions: sessions, onOpen: (_) {}))),
+      host(SessionList(sessions: sessions, onOpen: (_) {})),
     );
 
     expect(find.text(SessionList.appSectionHeader), findsNothing);
@@ -137,13 +150,11 @@ void main() {
       ),
     ];
     await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: SessionList(
-            sessions: mixed,
-            onOpen: (_) {},
-            onKill: (session) => killed = session,
-          ),
+      host(
+        SessionList(
+          sessions: mixed,
+          onOpen: (_) {},
+          onKill: (session) => killed = session,
         ),
       ),
     );
@@ -164,11 +175,7 @@ void main() {
       ),
     ];
     await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: SessionList(sessions: mixed, onOpen: (_) {}, onKill: (_) {}),
-        ),
-      ),
+      host(SessionList(sessions: mixed, onOpen: (_) {}, onKill: (_) {})),
     );
 
     expect(find.byKey(const Key('kill-s2')), findsNothing);

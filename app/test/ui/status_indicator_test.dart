@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:pi_droid/client/hub_client.dart';
 import 'package:pi_droid/client/transcript.dart';
 import 'package:pi_droid/ui/status_indicator.dart';
+import 'package:pi_droid/ui/theme.dart';
 
 SessionTranscript transcriptWithTool({String? toolName = 'read', Object? result}) =>
     SessionTranscript(
@@ -169,8 +170,9 @@ void main() {
     tester,
   ) async {
     await tester.pumpWidget(
-      const MaterialApp(
-        home: Scaffold(
+      MaterialApp(
+        theme: piTheme(Brightness.dark),
+        home: const Scaffold(
           body: Column(
             children: [
               StatusIndicator(
