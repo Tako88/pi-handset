@@ -590,6 +590,29 @@ rather than guess at it.
   build and tap migrates the flag to the successor while the tap writes the old id, and
   one tap may appear not to stick. No crash.
 
+## Pairing
+
+- **A hub has exactly one outstanding ticket.** `ticket.issue()` replaces the previous
+  ticket, so minting a second code (via `pair` or `kill -USR1`) immediately invalidates the
+  first. Pre-existing, but the QR makes it more likely to be noticed: print one code at a
+  time and pair with it before printing another.
+- **The QR carries a 5-minute, single-use ticket, never the token.** The QR is only as
+  sensitive as the code it encodes; it cannot be replayed after pairing or after the TTL.
+- **`--no-lan` advertises no addresses at all.** The QR then carries the code only, and the
+  app must be given the address by hand. A LAN hub with no RFC1918 address (for example a
+  public-IP-only host) advertises nothing for the same reason.
+- **The control socket's only protection is filesystem permissions**: the `0700`
+  `<runtimeDir>/pi-droid` directory plus a `0600` `control.sock`. There is no protocol-level
+  authentication, deliberately — any same-UID process can already read the token file, so
+  the socket adds no exposure beyond that.
+- **A `SIGKILL`ed hub leaves its `control.sock` behind.** The next `serve` reclaims the stale
+  file at the rename step — it listens on a unique temp path first, then renames that socket
+  onto the canonical path — so `pair` sees `ECONNREFUSED` (and the dead discovery pid reads as
+  "no hub") until then.
+- **`pair` is same-machine only.** It talks over a Unix socket, so it cannot mint a code
+  for a hub on another host; there the `kill -USR1` route (or running `pair` on that host)
+  is still the way.
+
 ## Navigation
 
 - **The predictive preview is an Android 14+ default; Android 13 needs the developer-option

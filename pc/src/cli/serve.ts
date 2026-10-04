@@ -3,23 +3,26 @@
  *
  * Parse the flags, take the exclusion lock (see `acquireLock`), refuse to start
  * while another live supervisor holds it (unless `--take-over`), load the
- * persisted token, start the hub's two listeners, publish the discovery record
- * with the real ports, and stay alive until a signal.
+ * persisted token, start the hub's two listeners and the control socket,
+ * publish the discovery record with the real ports, and stay alive until a
+ * signal.
  *
  * The lock is the exclusion primitive; the discovery file is only the published
  * record. Taking the lock *before* touching the record is what makes two
  * simultaneous starts exclusive — a check-then-write of the record is not.
  *
  * `--port` is the viewer port (default 8787); `--no-lan` binds that listener to
- * loopback instead of `0.0.0.0`. The lock and record are released on `SIGINT`/
- * `SIGTERM`, but only while we still hold the lock, so a taken-over hub cannot
- * delete its successor's record.
+ * loopback instead of `0.0.0.0`. The lock, record and control socket are
+ * released on `SIGINT`/`SIGTERM`, but the record only while we still hold the
+ * lock, so a taken-over hub cannot delete its successor's record.
  *
  * `console.*` is avoided in the library; stderr writes here are the CLI's job.
  */
 
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { createControlServer } from '../hub/control.ts';
+import type { ControlServer } from '../hub/control.ts';
 import { loadOrCreateToken, resolveConfigDir } from '../hub/auth.ts';
 import {
   acquireLock,
@@ -32,7 +35,7 @@ import {
 } from '../hub/discovery.ts';
 import type { LockResult } from '../hub/discovery.ts';
 import { createHub } from '../hub/hub.ts';
-import { TICKET_TTL_MS, createTicketStore } from '../hub/pairing.ts';
+import { TICKET_TTL_MS, createTicketStore, normalizeTicket } from '../hub/pairing.ts';
 import { DEFAULT_MAX_SESSIONS, createSpawner } from '../hub/spawner.ts';
 import { PROTOCOL_VERSION } from '../protocol/protocol.ts';
 
@@ -115,9 +118,10 @@ export function parseArgs(argv: readonly string[]): ServeArgs {
   return args;
 }
 
-function refuse(message: string, code: number): void {
+/** Writes the refusal and returns the exit code; the caller returns it. */
+function refuse(message: string, code: number): number {
   process.stderr.write(`pi-droid serve: ${message}\n`);
-  process.exitCode = code;
+  return code;
 }
 
 function warn(message: string): void {
@@ -125,14 +129,15 @@ function warn(message: string): void {
 }
 
 /**
- * The startup hint: how to ask for a pairing code. It names the exact signal
- * and pid because the phone cannot read the token file, so this line is the
+ * The startup hint: how to ask for a pairing code. It names the absolute
+ * `main.ts` path so it is runnable from any cwd before #37 installs the
+ * `pi-droid` bin. The phone cannot read the token file, so this line is the
  * only path from a fresh device to a code.
  */
-export function pairingHint(pid: number): string {
+export function pairingHint(mainPath: string): string {
   return (
-    `pi-droid serve: ready. Pair a phone: run \`kill -USR1 ${pid}\` to print a ` +
-    `pairing code (valid for ${TICKET_TTL_MS / 60_000} minutes).\n`
+    `pi-droid serve: ready. Pair a phone: run \`node ${mainPath} pair\` to print a ` +
+    `code and QR (valid for ${TICKET_TTL_MS / 60_000} minutes).\n`
   );
 }
 
@@ -185,13 +190,53 @@ export async function finishShutdown(
   return 0;
 }
 
-async function main(): Promise<void> {
+/**
+ * A mid-startup failure after the hub (and optionally the control socket) is
+ * live: tear both down, release the lock, and report the tabled exit code. A
+ * rejecting `close` must NOT skip the lock release or the refusal — the
+ * original startup error is what gets reported, and an unreleased lock would
+ * strand the next `serve`. Never throws.
+ */
+export async function abortStartup(
+  hub: { close(): Promise<void> },
+  runtimeDir: string,
+  pid: number,
+  message: string,
+  code: number,
+  control?: { close(): Promise<void> },
+): Promise<number> {
+  try {
+    await hub.close();
+  } catch {
+    // Best-effort: report the original startup error, not the close failure.
+  }
+  if (control !== undefined) {
+    try {
+      await control.close();
+    } catch {
+      // Best-effort, same reasoning.
+    }
+  }
+  releaseLock(runtimeDir, pid);
+  return refuse(message, code);
+}
+
+/**
+ * Runs one serve process to completion, returning its exit code.
+ *
+ * Startup refusals return their code directly (see the exit-code table in the
+ * pairing-35 plan). On the success path this returns a promise that resolves
+ * only on the first `SIGINT`/`SIGTERM`: the handler is single-shot
+ * (`shuttingDown` is set first, so `mint` refuses and SIGUSR1 mints nothing),
+ * then `control.close()`, then `finishShutdown`, whose code resolves the
+ * promise. The listeners keep the process alive until that signal.
+ */
+export async function runServe(argv: readonly string[]): Promise<number> {
   let args: ServeArgs;
   try {
-    args = parseArgs(process.argv.slice(2));
+    args = parseArgs(argv);
   } catch (error) {
-    refuse((error as Error).message, 2);
-    return;
+    return refuse((error as Error).message, 2);
   }
 
   const runtimeDir = resolveRuntimeDir();
@@ -201,18 +246,16 @@ async function main(): Promise<void> {
     lock = acquireLock(runtimeDir, process.pid, args.takeOver);
   } catch (error) {
     // Startup-fatal: a symlinked/non-directory runtime path or unwritable dir.
-    refuse((error as Error).message, 2);
-    return;
+    return refuse((error as Error).message, 2);
   }
 
   if (!lock.ok) {
-    refuse(
+    return refuse(
       `another supervisor is already running` +
         (lock.holderPid === null ? '' : ` (pid ${lock.holderPid})`) +
         `; use --take-over to replace it`,
       1,
     );
-    return;
   }
 
   // We hold the lock, so the record is ours. A *live* record that does not
@@ -222,13 +265,12 @@ async function main(): Promise<void> {
   const existing = args.takeOver ? null : readDiscovery(runtimeDir);
   if (existing !== null) {
     releaseLock(runtimeDir, process.pid);
-    refuse(
+    return refuse(
       `another supervisor is already running ` +
         `(pid ${existing.pid}, viewer port ${existing.viewerPort}); ` +
         `use --take-over to replace it`,
       1,
     );
-    return;
   }
 
   let token: string;
@@ -243,15 +285,14 @@ async function main(): Promise<void> {
     }
   } catch (error) {
     releaseLock(runtimeDir, process.pid);
-    refuse((error as Error).message, 2);
-    return;
+    return refuse((error as Error).message, 2);
   }
 
   let hub: Awaited<ReturnType<typeof createHub>>;
-  // One store, shared with the hub: the handler below mints from the *same*
-  // instance the hub redeems from. A fresh `createTicketStore()` there would
-  // print codes the hub cannot exchange — the printed-but-unredeemable bug
-  // this milestone fixes.
+  // One store, shared with the hub and the control socket: both mint from the
+  // *same* instance the hub redeems from. A fresh `createTicketStore()` there
+  // would print codes the hub cannot exchange — the printed-but-unredeemable
+  // bug this milestone fixes.
   const tickets = createTicketStore();
   // One supervisor per serve: the hub owns the spawner and closes it on a
   // graceful stop, group-killing every app-started child.
@@ -266,16 +307,37 @@ async function main(): Promise<void> {
     });
   } catch (error) {
     releaseLock(runtimeDir, process.pid);
-    refuse(
+    return refuse(
       `could not start the listeners on port ${args.port}: ${(error as Error).message}`,
       1,
     );
-    return;
   }
 
   // Declared before the SIGUSR1 handler so a signal arriving after teardown has
   // begun is seen as shutting down and mints nothing (`pairingAnnouncement`).
   let shuttingDown = false;
+
+  // Started BEFORE `writeDiscovery` (R2.7): if the record is visible, the
+  // socket is already listening, so `pair` never sees a live record with a
+  // not-yet-listening socket. `mint` mints from the SAME store the hub
+  // redeems from; no `!`, and the control handler turns a throw into a refusal.
+  let control: ControlServer;
+  try {
+    control = await createControlServer({
+      runtimeDir,
+      viewerPort: args.port,
+      lan: args.lan,
+      mint: () => (shuttingDown ? null : normalizeTicket(tickets.issue()) ?? null),
+    });
+  } catch (error) {
+    return await abortStartup(
+      hub,
+      runtimeDir,
+      process.pid,
+      `could not start the control socket: ${(error as Error).message}`,
+      1,
+    );
+  }
 
   // Installed before the discovery file is written, so a reader that sees the
   // record is guaranteed the handler exists. Printed on demand, never at
@@ -295,35 +357,48 @@ async function main(): Promise<void> {
       protocolVersion: PROTOCOL_VERSION,
     });
   } catch (error) {
-    await hub.close();
-    releaseLock(runtimeDir, process.pid);
-    refuse((error as Error).message, 2);
-    return;
+    return await abortStartup(
+      hub,
+      runtimeDir,
+      process.pid,
+      (error as Error).message,
+      2,
+      control,
+    );
   }
 
-  process.stdout.write(pairingHint(process.pid));
+  process.stdout.write(
+    pairingHint(fileURLToPath(new URL('./main.ts', import.meta.url))),
+  );
 
-  const shutdown = async (): Promise<void> => {
-    // Single-shot: a second signal must not re-enter teardown. Any close()
-    // rejection is caught inside `finishShutdown`, so this never becomes an
-    // unhandled rejection.
-    if (shuttingDown) return;
-    shuttingDown = true;
-    process.exitCode = await finishShutdown(hub, runtimeDir, process.pid);
-  };
-  process.on('SIGINT', () => {
-    void shutdown();
+  return await new Promise<number>((resolve) => {
+    const shutdown = async (): Promise<void> => {
+      // Single-shot: a second signal must not re-enter teardown. Any close()
+      // rejection is caught inside `finishShutdown`, so this never becomes an
+      // unhandled rejection.
+      if (shuttingDown) return;
+      shuttingDown = true;
+      try {
+        await control.close();
+      } catch {
+        // Best-effort: teardown must still reach `finishShutdown`.
+      }
+      resolve(await finishShutdown(hub, runtimeDir, process.pid));
+    };
+    process.on('SIGINT', () => {
+      void shutdown();
+    });
+    process.on('SIGTERM', () => {
+      void shutdown();
+    });
   });
-  process.on('SIGTERM', () => {
-    void shutdown();
-  });
-
-  // The listeners keep the process alive until a signal.
 }
 
 if (
   process.argv[1] !== undefined &&
   import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
-  void main();
+  void runServe(process.argv.slice(2)).then((code) => {
+    process.exitCode = code;
+  });
 }
