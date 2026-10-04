@@ -1755,6 +1755,15 @@ class Bridge {
     // 4003 is a capability violation: a bridge bug, not a transient failure.
     // Retrying it at capped backoff would reconnect forever.
     if (code === 4003) return;
+    // 4002 is a protocol violation — a version mismatch, malformed JSON, a missing
+    // field, or an unhandled type. All are permanent producer bugs (whose side is
+    // not knowable here): a retry reconnects to the same rejection forever. Stop,
+    // and say why. CLOSE_INTERNAL (4500) is deliberately NOT included: that close
+    // is transient and must retry.
+    if (code === 4002) {
+      this.debug('stderr', 'pi-droid bridge: protocol close 4002; not reconnecting\n');
+      return;
+    }
     // 4008 is rate-limited: the hub delayed the close deliberately, so wait a
     // longer fixed span rather than an ordinary jittered backoff step.
     if (code === 4008) {

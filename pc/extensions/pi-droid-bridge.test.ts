@@ -36,7 +36,7 @@ import { writeDiscovery } from '../src/hub/discovery.ts';
 import { loadOrCreateToken } from '../src/hub/auth.ts';
 // Test-only coupling: the hub's copy of the allowlist is asserted equal to the
 // bridge's so drift fails cheaply instead of only at the real-pi capstone.
-import { COMMAND_ALLOWLIST as HUB_COMMAND_ALLOWLIST } from '../src/hub/hub.ts';
+import { CLOSE_INTERNAL, COMMAND_ALLOWLIST as HUB_COMMAND_ALLOWLIST } from '../src/hub/hub.ts';
 
 // Deliberately `.ts`, and deliberately written before the module exists: the
 // red run must fail with an unresolved import, not a loader error.
@@ -2426,6 +2426,40 @@ test('a 4003 capability close does not schedule a reconnect', () => {
   socket.open();
   socket.drop(4003);
   assert.equal(harness.timers.length, 0, 'a bridge capability bug must not retry forever');
+});
+
+test('a 4002 protocol close does not schedule a reconnect', () => {
+  const harness = makeHarness();
+  harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  socket.drop(4002);
+  assert.equal(harness.timers.length, 0, 'a protocol violation is permanent; retrying cannot fix it');
+});
+
+test('a 4002 close is surfaced as terminal', () => {
+  const harness = makeHarness({ env: { PI_DROID_DEBUG: '1' } });
+  harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  socket.drop(4002);
+  assert.ok(
+    harness.writes.some((w) => w.stream === 'stderr' && w.text.includes('protocol close 4002')),
+    'the operator must see why the bridge stopped',
+  );
+});
+
+// PIN (green at red-first time — the fall-through already reconnects): the
+// M2×M3 collision guard. A contained internal error (CLOSE_INTERNAL, 4500) is
+// transient and MUST still reconnect. A future edit that made every >=4000 code
+// terminal would redden this before it shipped permanent bridge death.
+test('a 4500 internal close still reconnects', () => {
+  const harness = makeHarness();
+  harness.start();
+  const socket = harness.sockets[0]!;
+  socket.open();
+  socket.drop(CLOSE_INTERNAL);
+  assert.equal(harness.timers.length, 1, 'a contained internal fault is transient; retry');
 });
 
 test('a 4008 rate-limit close reconnects after a fixed longer delay', () => {
