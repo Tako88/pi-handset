@@ -60,6 +60,8 @@ export const HISTORY_MAX_BYTES = 768 * 1024;
  *   It arrives **after a short delay** (~250 ms), deliberately, so a socket
  *   cannot be used as a fast token oracle. Treat it as "wait, then retry", not
  *   as a transport failure.
+ * - `4500` an unexpected internal handler error, contained to one connection;
+ *   retryable — this is a transient fault, not a capability or protocol bug.
  *
  * ## Envelope
  * Every message is one JSON object with `protocolVersion` and `type`.

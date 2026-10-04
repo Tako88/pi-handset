@@ -79,10 +79,19 @@ import type { Spawner } from './spawner.ts';
  * - `CLOSE_RATE_LIMITED` (4008): the failed-credential cap was reached. It is
  *   sent **after a short delay** so the socket cannot be used as a fast token
  *   oracle.
+ * - `CLOSE_INTERNAL` (4500): an unexpected error escaped a message handler and
+ *   was contained to one connection. Transient by assumption — both clients
+ *   retry it, unlike the terminal 4002.
  */
 export const CLOSE_PROTOCOL = 4002;
 export const CLOSE_CAPABILITY = 4003;
 export const CLOSE_RATE_LIMITED = 4008;
+/**
+ * 4500: an unexpected error escaped a message handler and was contained to
+ * one connection. Transient by assumption — both clients retry it, unlike
+ * the terminal 4002.
+ */
+export const CLOSE_INTERNAL = 4500;
 
 const DEFAULT_MAX_AUTH_ATTEMPTS = 3;
 const DEFAULT_AUTH_CLOSE_DELAY_MS = 250;
@@ -142,6 +151,9 @@ export interface HubOptions {
   maxDirBytes?: number;
   /** The process supervisor for app-started sessions, when one is configured. */
   spawner?: Spawner;
+  /** Called when an escaped error is contained in a message handler. The hub
+   *  writes no stderr itself; the CLI owns reporting. */
+  onHandlerError?: (error: unknown) => void;
 }
 
 export interface Hub {
@@ -206,6 +218,7 @@ interface State {
     maxDirEntries: number;
     maxDirBytes: number;
     spawner?: Spawner;
+    onHandlerError?: (error: unknown) => void;
   };
   readonly sessions: Map<string, Session>;
   /** Authenticated viewer connections; the broadcast audience for `sessions`. */
@@ -1082,6 +1095,7 @@ export async function createHub(options: HubOptions): Promise<Hub> {
       maxDirEntries,
       maxDirBytes,
       ...(options.spawner === undefined ? {} : { spawner: options.spawner }),
+      ...(options.onHandlerError === undefined ? {} : { onHandlerError: options.onHandlerError }),
     },
     sessions: new Map(),
     viewers: new Set(),
@@ -1132,7 +1146,20 @@ export async function createHub(options: HubOptions): Promise<Hub> {
       // A socket error is followed by a close; the close handler is the one
       // that matters. Ignoring here keeps the process off the crash path.
       socket.on('error', () => {});
-      socket.on('message', (data: RawData) => handleMessage(state, connection, data));
+      socket.on('message', (data: RawData) => {
+        try {
+          handleMessage(state, connection, data);
+        } catch (error) {
+          // Contained to this one connection. 4500 is retryable on purpose: a
+          // transient handler fault must not become permanent bridge death.
+          try {
+            state.config.onHandlerError?.(error);
+          } catch {
+            // Observability must not re-introduce the crash this guard prevents.
+          }
+          closeWith(connection, CLOSE_INTERNAL);
+        }
+      });
     });
   }
 

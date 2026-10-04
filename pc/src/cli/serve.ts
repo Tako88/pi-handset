@@ -304,6 +304,8 @@ export async function runServe(argv: readonly string[]): Promise<number> {
       viewerPort: args.port,
       viewerHost: args.lan ? '0.0.0.0' : '127.0.0.1',
       spawner,
+      onHandlerError: (error) =>
+        warn(`a message handler failed: ${error instanceof Error ? error.message : String(error)}`),
     });
   } catch (error) {
     releaseLock(runtimeDir, process.pid);
