@@ -531,7 +531,7 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
         onPopInvokedWithResult: (didPop, _) {
           if (didPop) _pairingRoute = null;
         },
-        child: _pairingScreen(),
+        child: _pairingScreen(showBack: true),
       ),
     );
     _pairingRoute = route;
@@ -918,8 +918,10 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
   }
 
   /// The pairing widget, shared by the boot path (as the root) and the pushed
-  /// route (over the live list).
-  Widget _pairingScreen() => PairingScreen(
+  /// route (over the live list). [showBack] is true only for the pushed case:
+  /// the boot root has nothing behind it, so it must not offer a way back.
+  Widget _pairingScreen({bool showBack = false}) => PairingScreen(
+    showBack: showBack,
     onSubmit: _pair,
     onScanned: _pairScanned,
     onCandidate: _connectCandidate,

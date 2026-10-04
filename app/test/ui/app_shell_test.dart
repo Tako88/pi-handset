@@ -2940,6 +2940,43 @@ void main() {
     expect(find.byType(PairingScreen), findsOneWidget);
   });
 
+  testWidgets('the pushed pairing screen shows a visible way back', (
+    tester,
+  ) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+
+    await tester.tap(find.byKey(const Key('pairing')));
+    await tester.pumpAndSettle();
+    expect(find.byType(PairingScreen), findsOneWidget);
+
+    // Tapping the hub icon opens a screen with no title bar and no button that
+    // leaves it: a dead end under gesture navigation. Back must be on screen,
+    // and it must be non-destructive like the system back button already is.
+    await tester.tap(find.byKey(const Key('pairing-back')));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(PairingScreen), findsNothing);
+    expect(find.byKey(const Key('start-session')), findsOneWidget);
+    expect(h.client.state.status, HubConnectionStatus.connected);
+  });
+
+  testWidgets('the boot pairing screen offers no back control', (tester) async {
+    // Before a pairing has ever succeeded the very same widget is the whole
+    // app: there is nothing behind it, so a back control would be a lie.
+    final h = Harness(token: null);
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+
+    expect(find.byType(PairingScreen), findsOneWidget);
+    expect(find.byKey(const Key('pairing-back')), findsNothing);
+    // Not just no back button: no title bar at all.
+    expect(find.byType(AppBar), findsNothing);
+  });
+
   testWidgets('the pairing button opens the route only once', (tester) async {
     final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
     await tester.pumpWidget(h.app());

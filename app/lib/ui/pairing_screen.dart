@@ -26,6 +26,7 @@ class PairingScreen extends StatefulWidget {
     this.candidates = const [],
     this.onCandidate,
     this.onScanned,
+    this.showBack = false,
   });
 
   /// Called with the validated host, port and normalized code.
@@ -58,6 +59,12 @@ class PairingScreen extends StatefulWidget {
   /// carried at least one address. A code-only (`--no-lan`) scan reports
   /// nothing here — there is no address to race.
   final void Function(List<HubEndpoint> candidates, String code)? onScanned;
+
+  /// Whether to offer a visible way out. True only when the caller pushed this
+  /// screen over a live session list; false when it is the whole app before the
+  /// first pairing, where there is nothing behind it to go back to. Told by the
+  /// caller rather than inferred from connection state, which would be a guess.
+  final bool showBack;
 
   static const String missingHostError = 'Enter the hub address.';
   static const String invalidPortError = 'Enter a port between 1 and 65535.';
@@ -202,6 +209,14 @@ class _PairingScreenState extends State<PairingScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      // Only the pushed route gets a title bar: over the boot root it would be
+      // a bar with a back arrow that leads nowhere.
+      appBar: widget.showBack
+          ? AppBar(
+              title: const Text('Pairing'),
+              leading: const BackButton(key: Key('pairing-back')),
+            )
+          : null,
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(
