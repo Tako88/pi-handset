@@ -24,6 +24,7 @@ class ComposeBar extends StatefulWidget {
     required this.onFollowUp,
     this.enabled = true,
     this.attachment,
+    this.thinkingLevel,
     this.onAttach,
     this.onRemoveAttachment,
   });
@@ -46,6 +47,11 @@ class ComposeBar extends StatefulWidget {
 
   /// The image picked for this send, or null for no chip.
   final PickedImage? attachment;
+
+  /// pi's current thinking level, or null when the session has not reported one
+  /// (a fresh session, or an older bridge). It colours the band's rules, the way
+  /// pi's own editor is bordered — see [build].
+  final String? thinkingLevel;
 
   /// Opens the gallery. Optional: an old hub advertises no attachments
   /// capability, so the shell passes null and no attach button renders — the
@@ -107,11 +113,27 @@ class _ComposeBarState extends State<ComposeBar> {
   @override
   Widget build(BuildContext context) {
     final roles = Theme.of(context).extension<PiRoles>()!;
+    // pi borders its editor with the *thinking level's* colour
+    // (`interactive-mode.js:3635` → `getThinkingBorderColor(level)`, falling back
+    // to `off`), and with green in bash mode, which this app has no equivalent
+    // of. So the composer is a full-width band ruled top and bottom in the same
+    // ramp the thinking row and the level picker use — one colour for "the level
+    // pi is running at", shown in the place you are looking when you type.
+    final band = thinkingLevelColor(roles, widget.thinkingLevel);
     return SafeArea(
       top: false,
-      child: Padding(
-        padding: const EdgeInsets.all(8),
-        child: Column(
+      child: Container(
+        decoration: BoxDecoration(
+          // Full width: the rules run edge to edge, and the field itself carries
+          // no border, so the band *is* the input.
+          border: Border(
+            top: BorderSide(color: band),
+            bottom: BorderSide(color: band),
+          ),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(8),
+          child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             if (widget.attachment != null)
@@ -161,23 +183,24 @@ class _ComposeBarState extends State<ComposeBar> {
                     minLines: 1,
                     maxLines: 4,
                     textInputAction: TextInputAction.newline,
+                    // The band's rules are the input's edges and the attach icon
+                    // sets the decorator's height, so the text is centred against
+                    // the buttons rather than riding high in it.
+                    textAlignVertical: TextAlignVertical.center,
                     decoration: InputDecoration(
                       hintText: 'Message pi',
-                      // A filled field lifted off the page, and the only place a
-                      // blue border appears: focused, which is exactly what
-                      // `border` means in pi's palette.
-                      filled: true,
-                      fillColor: roles.cardBg,
+                      // No border and no fill of its own: the band's rules are the
+                      // input's edges, exactly as pi draws its editor.
                       isDense: true,
-                      border: OutlineInputBorder(
-                        borderSide: BorderSide(color: roles.borderMuted),
-                      ),
-                      enabledBorder: OutlineInputBorder(
-                        borderSide: BorderSide(color: roles.borderMuted),
-                      ),
-                      focusedBorder: OutlineInputBorder(
-                        borderSide: BorderSide(color: roles.border),
-                      ),
+                      // `isDense` lays the content box out at the TOP, while the
+                      // attach `suffixIcon` (a 48px IconButton) sets the
+                      // decorator's height — which left the hint ~7px above the
+                      // band's centre. Zero padding plus an explicit centre
+                      // alignment makes the text and the buttons share a centre.
+                      contentPadding: EdgeInsets.zero,
+                      border: InputBorder.none,
+                      enabledBorder: InputBorder.none,
+                      focusedBorder: InputBorder.none,
                       suffixIcon: widget.onAttach == null
                           ? null
                           : IconButton(
@@ -211,6 +234,7 @@ class _ComposeBarState extends State<ComposeBar> {
           ],
         ),
       ),
+    ),
     );
   }
 }

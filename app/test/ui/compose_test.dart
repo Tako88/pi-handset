@@ -34,7 +34,67 @@ final Uint8List onePixelPng = base64Decode(
 
 Future<CommandResult> ok(String _) async => const CommandResult(ok: true);
 
+/// The composer band's top and bottom rule colours, as painted.
+({Color? top, Color? bottom}) bandRules(WidgetTester tester) {
+  final box =
+      tester
+              .widget<Container>(
+                find
+                    .descendant(
+                      of: find.byType(ComposeBar),
+                      matching: find.byType(Container),
+                    )
+                    .first,
+              )
+              .decoration
+          as BoxDecoration;
+  final border = box.border! as Border;
+  return (top: border.top.color, bottom: border.bottom.color);
+}
+
 void main() {
+  testWidgets('the composer is ruled by the thinking level, like pi\'s editor', (
+    tester,
+  ) async {
+    // pi colours its editor border with `getThinkingBorderColor(level)`
+    // (interactive-mode.js:3635, falling back to `off`), so the composer band
+    // carries the same ramp the thinking row and the level picker use.
+    final roles = piTheme(Brightness.dark).extension<PiRoles>()!;
+    final controller = TextEditingController();
+    final focusNode = FocusNode();
+    addTearDown(controller.dispose);
+    addTearDown(focusNode.dispose);
+
+    Future<void> pump(String? level) => tester.pumpWidget(
+      wrap(
+        ComposeBar(
+          controller: controller,
+          focusNode: focusNode,
+          onSend: (text) => ok(text),
+          onAbort: () {},
+          onFollowUp: ok,
+          thinkingLevel: level,
+        ),
+      ),
+    );
+
+    await pump('high');
+    final high = bandRules(tester);
+    expect(high.top, roles.thinkingHigh);
+    expect(high.bottom, roles.thinkingHigh);
+
+    await pump('max');
+    expect(bandRules(tester).top, roles.thinkingMax);
+    expect(
+      bandRules(tester).top,
+      isNot(high.top),
+      reason: 'the band has to move when the level does',
+    );
+
+    // A fresh session has no level yet; pi falls back to `off`.
+    await pump(null);
+    expect(bandRules(tester).top, roles.thinkingOff);
+  });
   testWidgets('compose sends the typed prompt', (tester) async {
     final controller = TextEditingController();
     final focusNode = FocusNode();

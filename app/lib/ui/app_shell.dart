@@ -1129,6 +1129,7 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
             controller: _composer,
             focusNode: _composerFocus,
             enabled: _state.status == HubConnectionStatus.connected,
+            thinkingLevel: transcript.thinkingLevel,
             attachment: attachmentsEnabled ? _attachment : null,
             onAttach: attachmentsEnabled
                 ? () => _pickAttachment(context)
