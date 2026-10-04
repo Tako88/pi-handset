@@ -53,3 +53,10 @@ String? normalizeTicket(Object? raw) {
   }
   return compact;
 }
+
+/// Groups a normalized 8-character ticket as `XXXX-XXXX` for display, matching
+/// what the hub prints. A value that is not exactly [ticketLength] characters is
+/// returned unchanged; callers only ever pass a normalized ticket.
+String formatTicketDisplay(String code) => code.length == ticketLength
+    ? '${code.substring(0, 4)}-${code.substring(4)}'
+    : code;

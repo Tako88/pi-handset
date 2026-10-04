@@ -39,4 +39,12 @@ void main() {
       }
     }
   });
+
+  test('formatTicketDisplay groups a normalized ticket as the hub prints it', () {
+    expect(formatTicketDisplay('ABCD2345'), 'ABCD-2345');
+    expect(formatTicketDisplay('0MVSE3SS'), '0MVS-E3SS');
+    // Not a normalized ticket: returned unchanged rather than mangled.
+    expect(formatTicketDisplay('ABCD234'), 'ABCD234');
+    expect(formatTicketDisplay(''), '');
+  });
 }

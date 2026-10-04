@@ -2576,6 +2576,54 @@ void main() {
     },
   );
 
+  testWidgets(
+    'a failed candidate attempt leaves no flag for a later connect to pop on',
+    (tester) async {
+      final h = Harness(
+        endpoints: const [
+          HubEndpoint(host: '192.168.1.10', port: 8787),
+          HubEndpoint(host: '100.64.1.2', port: 8787),
+        ],
+      );
+      await tester.pumpWidget(h.app());
+      await pumpBootstrap(tester);
+      adoptedSocket(h).receive(sessionsFrame([sessionS1]));
+      await settle(tester, h.scheduler);
+
+      // The pairing screen as a pushed route over the live list.
+      await tester.tap(find.byKey(const Key('pairing')));
+      await tester.pumpAndSettle();
+      expect(find.byType(PairingScreen), findsOneWidget);
+
+      // The hub drops first: `_dropConnection`'s subscription-cancel await only
+      // completes under a widget-test clock once the socket is already gone.
+      adoptedSocket(h).remoteClose(1006);
+      await tester.pump();
+      await tester.pump();
+      expect(find.byType(PairingScreen), findsOneWidget);
+
+      // The store then loses the token, so forcing a candidate cannot connect:
+      // the attempt throws and surfaces the error through the screen.
+      await h.store.clear();
+      await tester.tap(find.byKey(const Key('pairing-candidate-100.64.1.2:8787')));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('no pairing code'), findsOneWidget);
+
+      // A later genuine connect — a background reconnect, not a deliberate
+      // pairing — must not be mistaken for the failed attempt and pop the
+      // route. The flag that failed attempt set has to be gone.
+      await h.store.write(testToken);
+      await h.client.startCandidates(const [
+        HubEndpoint(host: '192.168.1.10', port: 8787),
+      ]);
+      h.factory.last.receive(sessionsFrame([sessionS1]));
+      await settle(tester, h.scheduler);
+      await tester.pumpAndSettle();
+
+      expect(find.byType(PairingScreen), findsOneWidget);
+    },
+  );
+
   testWidgets('a resync give-up is visible while connected, and dismissible', (
     tester,
   ) async {
@@ -2664,19 +2712,173 @@ void main() {
     expect(find.byKey(const Key('pairing-last-error')), findsNothing);
   });
 
-  testWidgets('change hub clears the saved endpoint and token', (tester) async {
+  testWidgets('a fresh boot with nothing saved shows the root pairing screen', (
+    tester,
+  ) async {
+    final h = Harness(token: null);
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+
+    expect(find.byType(PairingScreen), findsOneWidget);
+    expect(find.byKey(const Key('pairing-submit')), findsOneWidget);
+    // It is the root, not a pushed route: there is no list underneath.
+    expect(find.byKey(const Key('start-session')), findsNothing);
+  });
+
+  testWidgets('opening pairing keeps the saved endpoint and token', (
+    tester,
+  ) async {
     final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
     await tester.pumpWidget(h.app());
     await pumpBootstrap(tester);
     h.factory.last.receive(sessionsFrame([sessionS1]));
     await settle(tester, h.scheduler);
 
-    await tester.tap(find.byKey(const Key('change-hub')));
+    await tester.tap(find.byKey(const Key('pairing')));
+    await tester.pumpAndSettle();
+
+    // Pairing is a pushed route over the live list, not a destructive state
+    // swap: the credential and the connection are untouched.
+    expect(find.byType(PairingScreen), findsOneWidget);
+    expect(h.client.state.status, HubConnectionStatus.connected);
+    expect(
+      await h.store.readEndpoints(),
+      const [HubEndpoint(host: '10.0.0.5', port: 8787)],
+    );
+    expect(await h.store.read(), testToken);
+  });
+
+  testWidgets('the pairing route pops back to the connected list', (
+    tester,
+  ) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+
+    await tester.tap(find.byKey(const Key('pairing')));
+    await tester.pumpAndSettle();
+    expect(find.byType(PairingScreen), findsOneWidget);
+
+    await pressSystemBack(tester, h.scheduler);
+    await tester.pumpAndSettle();
+
+    expect(find.byType(PairingScreen), findsNothing);
+    expect(find.byKey(const Key('start-session')), findsOneWidget);
+    expect(h.client.state.status, HubConnectionStatus.connected);
+  });
+
+  testWidgets('the pairing route can be reopened after it pops', (tester) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+
+    await tester.tap(find.byKey(const Key('pairing')));
+    await tester.pumpAndSettle();
+    await pressSystemBack(tester, h.scheduler);
+    await tester.pumpAndSettle();
+    expect(find.byType(PairingScreen), findsNothing);
+
+    // The pop cleared the latch, so the button pushes a fresh route.
+    await tester.tap(find.byKey(const Key('pairing')));
+    await tester.pumpAndSettle();
+    expect(find.byType(PairingScreen), findsOneWidget);
+  });
+
+  testWidgets('the pairing button opens the route only once', (tester) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+
+    await tester.tap(find.byKey(const Key('pairing')));
+    await tester.pumpAndSettle();
+
+    // Invoke the covered button again without hit-testing. The latch must make
+    // it a no-op, or a single back would land on a second pairing screen.
+    final button = tester.widget<IconButton>(
+      find.byKey(const Key('pairing'), skipOffstage: false),
+    );
+    button.onPressed!();
+    await tester.pumpAndSettle();
+
+    await pressSystemBack(tester, h.scheduler);
+    await tester.pumpAndSettle();
+
+    expect(find.byType(PairingScreen), findsNothing);
+  });
+
+  testWidgets('a successful deliberate pairing pops the pushed route', (
+    tester,
+  ) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+
+    // The hub drops (the list stays up with a banner); the user re-pairs from
+    // the pushed form.
+    h.factory.last.remoteClose(1006);
+    await tester.pump();
+    await tester.pump();
+    expect(h.client.state.status, isNot(HubConnectionStatus.connected));
+
+    await tester.tap(find.byKey(const Key('pairing')));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byKey(const Key('pairing-code')), 'ABCD2345');
+    await tester.ensureVisible(find.byKey(const Key('pairing-submit')));
+    await tester.tap(find.byKey(const Key('pairing-submit')));
+    await tester.pump();
+    await tester.pump();
+
+    // The deliberate attempt dialled a fresh socket; a `paired` frame completes
+    // it and the route closes on the reach of `connected`.
+    h.factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'paired',
+      'token': testToken,
+    });
+    await tester.pump();
+    h.scheduler.flushNotifications();
+    await tester.pumpAndSettle();
+
+    expect(find.byType(PairingScreen), findsNothing);
+    expect(find.byKey(const Key('start-session')), findsOneWidget);
+  });
+
+  testWidgets('a background reconnect does not pop the pushed pairing route', (
+    tester,
+  ) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+
+    await tester.tap(find.byKey(const Key('pairing')));
+    await tester.pumpAndSettle();
+    expect(find.byType(PairingScreen), findsOneWidget);
+
+    // A drop and redial completing with the stored token: no deliberate attempt
+    // is in flight, so the flag must not be set and the route must stay put.
+    h.factory.last.remoteClose(1006);
+    await tester.pump();
+    await tester.pump();
+    h.scheduler.reconnectTimers.last.fire();
+    await tester.pump();
+    await tester.pump();
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await tester.pump();
+    h.scheduler.flushNotifications();
     await tester.pumpAndSettle();
 
     expect(find.byType(PairingScreen), findsOneWidget);
-    expect(await h.store.readEndpoints(), isEmpty);
-    expect(await h.store.read(), isNull);
   });
 
   testWidgets('the sessions view starts an app session', (tester) async {
@@ -3277,7 +3479,7 @@ void main() {
     expect(find.textContaining('the session ghost is gone'), findsOneWidget);
   });
 
-  testWidgets('the foreground service starts once and stops on change hub', (
+  testWidgets('the foreground service starts once and survives opening pairing', (
     tester,
   ) async {
     final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
@@ -3296,9 +3498,11 @@ void main() {
     await settle(tester, h.scheduler);
     expect(h.notifications.startForegroundCalls, 1);
 
-    await tester.tap(find.byKey(const Key('change-hub')));
+    // Opening pairing is non-destructive: the service stays up behind the route.
+    await tester.tap(find.byKey(const Key('pairing')));
     await tester.pumpAndSettle();
-    expect(h.notifications.stopForegroundCalls, 1);
+    expect(find.byType(PairingScreen), findsOneWidget);
+    expect(h.notifications.stopForegroundCalls, 0);
   });
 
   testWidgets('a hub without attachments shows no attach button', (
