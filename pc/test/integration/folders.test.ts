@@ -7,6 +7,7 @@
 
 import assert from 'node:assert/strict';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -332,4 +333,31 @@ test('saveTrustDecision refuses a malformed store and leaves it byte-identical',
 
   assert.throws(() => saveTrustDecision(trustPath, home, true), TrustStoreError);
   assert.deepEqual(readFileSync(trustPath), before, 'the store must be untouched');
+});
+
+test('saveTrustDecision writes the store at 0600', () => {
+  const home = scratch();
+  const trustPath = join(home, 'trust.json');
+  const project = join(home, 'project');
+  mkdirSync(project);
+
+  saveTrustDecision(trustPath, project, true);
+
+  assert.equal(statSync(trustPath).mode & 0o777, 0o600);
+});
+
+test('saveTrustDecision repairs a pre-existing 0644 store to 0600', () => {
+  const home = scratch();
+  const trustPath = join(home, 'trust.json');
+  const project = join(home, 'project');
+  mkdirSync(project);
+
+  saveTrustDecision(trustPath, project, true);
+  chmodSync(trustPath, 0o644);
+  assert.equal(statSync(trustPath).mode & 0o777, 0o644, 'the precondition is a wider store');
+
+  saveTrustDecision(trustPath, join(home, 'other'), false);
+
+  assert.equal(statSync(trustPath).mode & 0o777, 0o600, 'the rename repairs the wider mode');
+  assert.equal(trustDecision(trustPath, project), true, 'the merge survives');
 });
