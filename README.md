@@ -331,30 +331,36 @@ sudo ufw allow from 192.168.1.0/24 to any port 8787 proto tcp
 ### Loading the extension into your own pi
 
 The hub and the app are useless without the **bridge**, and the bridge is a pi
-extension: it only exists inside a running `pi`. Register its directory once, in
-`~/.pi/agent/settings.json`:
+extension: it only exists inside a running `pi`. `pc/` is a pi package, so install it
+with pi's own package command:
 
-```json
-"extensions": [
-  "/home/tako/dev/pi/extensions",
-  "/home/tako/dev/pi-droid/pc/extensions"
-]
+```sh
+pi install /path/to/pi-droid/pc
 ```
 
-Every `pi` you start after that attaches to the hub automatically — no flags. Start
-them in either order: if pi comes up first the bridge logs `no hub discovered` and
-retries on capped backoff until the hub appears.
+That records the package in `~/.pi/agent/settings.json` and loads the bridge from
+where it sits, so a checkout is used in place — nothing to copy, nothing to keep in
+sync. Every `pi` you start afterwards attaches to the hub automatically — no flags.
+Start them in either order: if pi comes up first the bridge logs `no hub discovered`
+and retries on capped backoff until the hub appears.
 
-**Do not copy or symlink the bridge somewhere else.** It imports `../src/hub/auth.ts`,
-`../src/hub/discovery.ts` and `../src/protocol/protocol.ts`; a copy resolves those
-against the wrong root and fails to load. The path above is the only correct one.
+Install the **directory**, never a copy or a symlink of it. The bridge imports
+`../src/hub/auth.ts`, `../src/hub/discovery.ts` and `../src/protocol/protocol.ts`,
+which only resolve from inside the real `pc/` tree.
 
-**The `.ignore` file in that directory is load-bearing.** pi loads *every* `.ts`/`.js`
-file in a registered directory as an extension — including `*.test.ts` — so
-`pc/extensions/.ignore` (containing `*.test.ts`) is what keeps
-`pi-droid-bridge.test.ts` from being loaded as a live extension. Files *inside a
-subdirectory* are different: only `index.ts` is an entry point there, which is why
-the existing `/home/tako/dev/pi/extensions` needs no equivalent.
+Two things to know about the recorded path:
+
+- `pi install` stores it **relative to the settings file**, so moving the checkout
+  breaks the install — re-run `pi install` from the new location. `pi list` prints
+  the resolved absolute path, which is the quickest way to check.
+- Registering the directory by hand still works. If you already have the old
+  `"extensions": ["…/pc/extensions"]` entry, you can drop it; the package and the
+  directory entry resolve to the same file.
+
+**The `.ignore` file is load-bearing.** A package's `extensions/` directory is
+scanned for `*.ts`/`*.js`, including `*.test.ts`, so `pc/extensions/.ignore`
+(containing `*.test.ts`) is what keeps `pi-droid-bridge.test.ts` from being loaded
+as a live extension.
 
 To confirm the bridge loaded without starting a hub, point the runtime dir at an
 empty one and watch for its complaint:
