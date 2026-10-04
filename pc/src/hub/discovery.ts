@@ -104,7 +104,7 @@ export function isProcessAlive(
   }
 }
 
-function ensureDiscoveryDir(runtimeDir: string): string {
+export function ensureDiscoveryDir(runtimeDir: string): string {
   const dir = join(runtimeDir, 'pi-droid');
   const existing = lstatOrNull(dir);
 
@@ -222,6 +222,11 @@ export function removeDiscovery(runtimeDir: string, pid: number): void {
   } catch {
     // Already gone, unreadable, or never there: nothing to do.
   }
+}
+
+/** The control-socket path under a runtime dir; one shared construction. */
+export function controlSocketPath(runtimeDir: string): string {
+  return join(runtimeDir, 'pi-droid', 'control.sock');
 }
 
 /** The exclusion lock path; one shared construction. */

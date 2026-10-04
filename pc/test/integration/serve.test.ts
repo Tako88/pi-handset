@@ -20,10 +20,12 @@ import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 
 import { PROTOCOL_VERSION } from '../../src/protocol/protocol.ts';
-import { finishShutdown } from '../../src/cli/serve.ts';
+import { acquireLock } from '../../src/hub/discovery.ts';
+import { abortStartup, finishShutdown } from '../../src/cli/serve.ts';
 
 const pcRoot = fileURLToPath(new URL('../..', import.meta.url));
 const serveEntry = fileURLToPath(new URL('../../src/cli/serve.ts', import.meta.url));
+const mainEntry = fileURLToPath(new URL('../../src/cli/main.ts', import.meta.url));
 
 /** Bound on a child's exit; a child that will not die is SIGKILLed. */
 const EXIT_TIMEOUT_MS = 10_000;
@@ -78,8 +80,9 @@ interface ServeHandle {
 function startServe(
   args: string[] = [],
   extraEnv: Record<string, string> = {},
+  entry = serveEntry,
 ): ServeHandle {
-  const child = spawn(process.execPath, [serveEntry, ...args], {
+  const child = spawn(process.execPath, [entry, ...args], {
     cwd: pcRoot,
     env: {
       ...process.env,
@@ -213,6 +216,16 @@ async function waitForAnyExit(
   throw new Error('neither serve exited; mutual exclusion failed');
 }
 
+/** Spawns serve, waits for it to exit, and returns its code and stderr. */
+async function runServeToExit(
+  args: string[],
+  extraEnv: Record<string, string> = {},
+): Promise<{ code: number | null; stderr: string }> {
+  const serve = startServe(args, extraEnv);
+  const { code } = await waitExit(serve.child);
+  return { code, stderr: serve.stderr() };
+}
+
 /** The pairing codes printed so far, in print order (`XXXX-XXXX`). */
 function printedCodes(out: string): string[] {
   return out.match(/\b[0-9A-Z]{4}-[0-9A-Z]{4}\b/g) ?? [];
@@ -223,6 +236,65 @@ async function startReadyServe(port: number): Promise<ServeHandle> {
   const serve = startServe(['--port', String(port)]);
   await waitFor(() => readPid() === serve.child.pid, 'the discovery file');
   return serve;
+}
+
+/** Runs `main.ts pair` in this runtime dir and returns its output and code. */
+async function runPairProcess(): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  const child = spawn(process.execPath, [mainEntry, 'pair'], {
+    cwd: pcRoot,
+    env: { ...process.env, PI_DROID_RUNTIME_DIR: runtimeDir, XDG_CONFIG_HOME: configDir },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  spawned.push(child);
+  let stdout = '';
+  let stderr = '';
+  child.stdout!.on('data', (chunk) => {
+    stdout += String(chunk);
+  });
+  child.stderr!.on('data', (chunk) => {
+    stderr += String(chunk);
+  });
+  const { code } = await waitExit(child);
+  return { code, stdout, stderr };
+}
+
+/**
+ * True when the hub accepts `code`. A rejected ticket closes the viewer without
+ * a `paired` reply; the first settle wins.
+ */
+async function acceptsTicket(port: number, code: string): Promise<boolean> {
+  const socket = await connectViewer(port);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (accepted: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(accepted);
+    };
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        reject(new Error('timed out waiting for the hub to answer the ticket'));
+      }
+    }, 5000);
+    socket.on('message', (data) => {
+      const message = JSON.parse(String(data)) as Record<string, unknown>;
+      if (message.type === 'paired') finish(true);
+    });
+    socket.on('close', () => finish(false));
+    socket.on('error', () => finish(false));
+    const hello = JSON.stringify({
+      protocolVersion: PROTOCOL_VERSION,
+      type: 'hello',
+      ticket: code,
+    });
+    // A bad ticket only closes after `maxAuthAttempts` (3); a valid one pairs
+    // on the first.
+    socket.send(hello);
+    setTimeout(() => socket.send(hello), 30);
+    setTimeout(() => socket.send(hello), 60);
+  });
 }
 
 /** Opens the viewer socket; the caller must terminate it (afterEach does). */
@@ -306,16 +378,16 @@ function awaitMessage(
   });
 }
 
-test('serve announces how to request a pairing code, naming the pid', async () => {
+test('serve announces the pair command', async () => {
   const port = await freePort();
   const serve = startServe(['--port', String(port)]);
   await waitFor(() => readPid() === serve.child.pid, 'the discovery file');
 
   await waitFor(
-    () => serve.stdout().includes(`kill -USR1 ${serve.child.pid}`),
+    () => serve.stdout().includes('main.ts pair'),
     'the startup pairing hint',
   );
-  assert.match(serve.stdout(), /kill -USR1 \d+/);
+  assert.match(serve.stdout(), /main\.ts pair/);
 
   const exited = waitExit(serve.child);
   serve.child.kill('SIGTERM');
@@ -462,7 +534,7 @@ test('a second serve refuses while the first is alive and leaves its file untouc
   const second = startServe(['--port', String(await freePort())]);
   const { code } = await waitExit(second.child);
 
-  assert.notEqual(code, 0, 'the second serve must exit non-zero');
+  assert.equal(code, 1, 'a held lock is exit 1');
   assert.match(second.stderr(), /already running|--take-over/i);
   assert.equal(readPid(), first.child.pid, "the first hub's file is untouched");
   assert.equal(statSync(discoveryFile()).ino, before);
@@ -504,6 +576,190 @@ test('a hub whose close rejects yields a non-zero exit, not an unhandled rejecti
   );
 
   assert.equal(code, 1);
+});
+
+test('a mid-startup hub-close rejection still releases the lock and reports the tabled code', async () => {
+  assert.equal(acquireLock(runtimeDir, process.pid).ok, true);
+  assert.equal(existsSync(lockFile()), true, 'precondition: the lock is held');
+
+  const code = await abortStartup(
+    {
+      close: async () => {
+        throw new Error('hub close failed');
+      },
+    },
+    runtimeDir,
+    process.pid,
+    'could not start the control socket: boom',
+    1,
+  );
+
+  assert.equal(code, 1, 'the tabled startup code must survive a close rejection');
+  assert.equal(existsSync(lockFile()), false, 'the lock must be released');
+});
+
+test('serve exits 2 on an unknown flag', async () => {
+  const { code, stderr } = await runServeToExit(['--wat']);
+  assert.equal(code, 2);
+  assert.match(stderr, /--wat/);
+});
+
+test('serve exits 2 when the runtime dir is not a directory', async () => {
+  const file = join(runtimeDir, 'not-a-dir');
+  writeFileSync(file, 'x');
+  const { code } = await runServeToExit([], { PI_DROID_RUNTIME_DIR: file });
+  assert.equal(code, 2);
+});
+
+test('serve exits 1 and releases the lock when a live discovery record exists', async () => {
+  mkdirSync(join(runtimeDir, 'pi-droid'), { recursive: true, mode: 0o700 });
+  writeFileSync(
+    discoveryFile(),
+    JSON.stringify({
+      agentPort: 12345,
+      viewerPort: 8787,
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      protocolVersion: PROTOCOL_VERSION,
+    }),
+    { mode: 0o600 },
+  );
+
+  const { code } = await runServeToExit([]);
+  assert.equal(code, 1);
+  assert.equal(existsSync(lockFile()), false, 'the lock must be released');
+});
+
+test('serve exits 2 and releases the lock when the token cannot be loaded', async () => {
+  const config = join(runtimeDir, 'config');
+  mkdirSync(join(config, 'pi-droid'), { recursive: true });
+  // Replace the would-be config dir with a file so `ensureConfigDir` throws.
+  rmSync(join(config, 'pi-droid'), { recursive: true, force: true });
+  writeFileSync(join(config, 'pi-droid'), 'not a dir');
+
+  const { code } = await runServeToExit([], { XDG_CONFIG_HOME: config });
+  assert.equal(code, 2);
+  assert.equal(existsSync(lockFile()), false, 'the lock must be released');
+});
+
+test('serve exits 1 and releases the lock when the viewer port is taken', async () => {
+  const blocker = createServer();
+  await new Promise<void>((resolve) => blocker.listen(0, '0.0.0.0', () => resolve()));
+  const port = (blocker.address() as AddressInfo).port;
+  try {
+    const { code } = await runServeToExit(['--port', String(port)]);
+    assert.equal(code, 1);
+    assert.equal(existsSync(lockFile()), false, 'the lock must be released');
+  } finally {
+    await new Promise<void>((resolve) => blocker.close(() => resolve()));
+  }
+});
+
+test('serve exits 1 and releases the lock when the control socket cannot start', async () => {
+  mkdirSync(join(runtimeDir, 'pi-droid', 'control.sock'), { recursive: true, mode: 0o700 });
+  const { code } = await runServeToExit(['--port', String(await freePort())]);
+  assert.equal(code, 1);
+  assert.equal(existsSync(lockFile()), false, 'the lock must be released');
+});
+
+test('serve exits 2, releases the lock, and closes the control socket on a discovery failure', async () => {
+  mkdirSync(join(runtimeDir, 'pi-droid', 'supervisor.json'), {
+    recursive: true,
+    mode: 0o700,
+  });
+  const { code } = await runServeToExit(['--port', String(await freePort())]);
+  assert.equal(code, 2);
+  assert.equal(existsSync(lockFile()), false, 'the lock must be released');
+  assert.equal(
+    existsSync(join(runtimeDir, 'pi-droid', 'control.sock')),
+    false,
+    'the control socket must be removed',
+  );
+});
+
+test('serve exits 0 on SIGTERM and removes the control socket', async () => {
+  const port = await freePort();
+  const serve = startServe(['--port', String(port)]);
+  await waitFor(() => readPid() === serve.child.pid, 'the discovery file');
+  const socket = join(runtimeDir, 'pi-droid', 'control.sock');
+  assert.equal(existsSync(socket), true, 'the control socket exists once serving');
+
+  const exited = waitExit(serve.child);
+  serve.child.kill('SIGTERM');
+  const { code } = await exited;
+  assert.equal(code, 0);
+  assert.equal(existsSync(socket), false, 'the control socket is removed on SIGTERM');
+});
+
+test('serve exits 0 on SIGINT and removes the control socket', async () => {
+  const port = await freePort();
+  const serve = await startReadyServe(port);
+  const socket = join(runtimeDir, 'pi-droid', 'control.sock');
+  assert.equal(existsSync(socket), true, 'the control socket exists once serving');
+
+  const exited = waitExit(serve.child);
+  serve.child.kill('SIGINT');
+  const { code } = await exited;
+  assert.equal(code, 0);
+  assert.equal(existsSync(socket), false, 'the control socket is removed on SIGINT');
+});
+
+test('end to end: main.ts serve then main.ts pair prints a code the hub redeems', async () => {
+  const port = await freePort();
+  // Through the dispatcher: `startServe` defaults to `serve.ts` directly, so
+  // only this entry exercises `main.ts`'s `case 'serve'`.
+  const serve = startServe(['serve', '--port', String(port)], {}, mainEntry);
+  await waitFor(() => readPid() === serve.child.pid, 'the discovery file');
+
+  const pair = await runPairProcess();
+  assert.equal(pair.code, 0, pair.stderr);
+  const codes = printedCodes(pair.stdout);
+  assert.equal(codes.length, 1, `expected one printed code in: ${pair.stdout}`);
+  assert.match(pair.stdout, /pidroid:\/\/pair\?v=1&code=/);
+
+  const paired = await redeem(port, codes[0]!);
+  assert.equal(paired.token, persistedToken(), 'the printed code must redeem');
+
+  const exited = waitExit(serve.child);
+  serve.child.kill('SIGTERM');
+  await exited;
+});
+
+test('a pair mint invalidates an earlier SIGUSR1 code', async () => {
+  const port = await freePort();
+  const serve = await startReadyServe(port);
+  serve.child.kill('SIGUSR1');
+  await waitFor(() => printedCodes(serve.stdout()).length === 1, 'the SIGUSR1 code');
+  const sigusr1Code = printedCodes(serve.stdout())[0]!;
+
+  const pair = await runPairProcess();
+  const pairCode = printedCodes(pair.stdout)[0]!;
+  assert.notEqual(pairCode, sigusr1Code);
+
+  assert.equal(await acceptsTicket(port, sigusr1Code), false, 'the older code is dead');
+  assert.equal(await acceptsTicket(port, pairCode), true, 'the pair code is live');
+
+  const exited = waitExit(serve.child);
+  serve.child.kill('SIGTERM');
+  await exited;
+});
+
+test('a SIGUSR1 mint invalidates an earlier pair code', async () => {
+  const port = await freePort();
+  const serve = await startReadyServe(port);
+  const pair = await runPairProcess();
+  const pairCode = printedCodes(pair.stdout)[0]!;
+
+  serve.child.kill('SIGUSR1');
+  await waitFor(() => printedCodes(serve.stdout()).length === 1, 'the SIGUSR1 code');
+  const sigusr1Code = printedCodes(serve.stdout())[0]!;
+
+  assert.equal(await acceptsTicket(port, pairCode), false, 'the older pair code is dead');
+  assert.equal(await acceptsTicket(port, sigusr1Code), true, 'the SIGUSR1 code is live');
+
+  const exited = waitExit(serve.child);
+  serve.child.kill('SIGTERM');
+  await exited;
 });
 
 test('serve spawns bare pi on start-session and SIGTERM kills the group', async () => {

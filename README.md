@@ -289,12 +289,23 @@ The hub prints how:
 
 ```sh
 cd pc
-node src/cli/serve.ts
-# pi-droid serve: ready. Pair a phone: run `kill -USR1 <pid>` to print a pairing code (valid for 5 minutes).
+node src/cli/main.ts serve
+# pi-droid serve: ready. Pair a phone: run `node /abs/path/pc/src/cli/main.ts pair` to print a code and QR (valid for 5 minutes).
 
-kill -USR1 <pid>     # the pid the line above names
+node src/cli/main.ts pair
 # pi-droid pairing code: ABCD-EFGH (valid for 5 minutes)
+# Scan to pair:
+# <a QR of pidroid://pair?v=1&code=ABCD2345&port=8787&lan=192.168.1.10>
+# Reachable at port 8787:
+#   Home network 192.168.1.10:8787
 ```
+
+`pair` talks to the running hub over a `0600` Unix control socket under the
+runtime dir, so it only works on the same machine. The QR encodes a
+`pidroid://pair` URI; scanning it with the app fills in the address, port and
+code. With `--no-lan` the hub advertises no addresses, so the QR carries the
+code only. The legacy `kill -USR1 <pid>` route still prints a code; `pair` is the
+supported path and also prints the QR and the reachable addresses.
 
 Enter the PC's address, the viewer port (`--port`, default 8787) and that code in
 the app. The phone then stores a token, so pairing happens once per phone and

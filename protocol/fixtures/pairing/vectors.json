@@ -1,0 +1,172 @@
+{
+  "version": 1,
+  "vectors": [
+    {
+      "name": "lan only",
+      "kind": "canonical",
+      "uri": "pidroid://pair?v=1&code=ABCD2345&port=8787&lan=192.168.1.10",
+      "pairing": {
+        "code": "ABCD2345",
+        "viewerPort": 8787,
+        "addresses": [{ "kind": "lan", "host": "192.168.1.10" }]
+      }
+    },
+    {
+      "name": "tailscale only",
+      "kind": "canonical",
+      "uri": "pidroid://pair?v=1&code=ABCD2345&port=8787&ts=100.64.1.2",
+      "pairing": {
+        "code": "ABCD2345",
+        "viewerPort": 8787,
+        "addresses": [{ "kind": "ts", "host": "100.64.1.2" }]
+      }
+    },
+    {
+      "name": "both kinds with a repeated lan",
+      "kind": "canonical",
+      "uri": "pidroid://pair?v=1&code=ABCD2345&port=8787&lan=10.0.0.5&lan=192.168.1.10&ts=100.64.1.2",
+      "pairing": {
+        "code": "ABCD2345",
+        "viewerPort": 8787,
+        "addresses": [
+          { "kind": "lan", "host": "10.0.0.5" },
+          { "kind": "lan", "host": "192.168.1.10" },
+          { "kind": "ts", "host": "100.64.1.2" }
+        ]
+      }
+    },
+    {
+      "name": "no addresses (--no-lan)",
+      "kind": "canonical",
+      "uri": "pidroid://pair?v=1&code=ABCD2345",
+      "pairing": {
+        "code": "ABCD2345",
+        "viewerPort": null,
+        "addresses": []
+      }
+    },
+    {
+      "name": "unknown params ignored, including lan2 not read as lan",
+      "kind": "accepted",
+      "uri": "pidroid://pair?v=1&code=ABCD2345&port=8787&lan=10.0.0.5&lan2=1.2.3.4&foo=bar&LAN=5.5.5.5",
+      "pairing": {
+        "code": "ABCD2345",
+        "viewerPort": 8787,
+        "addresses": [{ "kind": "lan", "host": "10.0.0.5" }]
+      }
+    },
+    {
+      "name": "reordered params",
+      "kind": "accepted",
+      "uri": "pidroid://pair?ts=100.64.1.2&port=8787&code=ABCD2345&lan=192.168.1.10&v=1",
+      "pairing": {
+        "code": "ABCD2345",
+        "viewerPort": 8787,
+        "addresses": [
+          { "kind": "lan", "host": "192.168.1.10" },
+          { "kind": "ts", "host": "100.64.1.2" }
+        ]
+      }
+    },
+    {
+      "name": "a dashed code is normalized to canonical",
+      "kind": "accepted",
+      "uri": "pidroid://pair?v=1&code=abcd-2345&port=8787&lan=192.168.1.10",
+      "pairing": {
+        "code": "ABCD2345",
+        "viewerPort": 8787,
+        "addresses": [{ "kind": "lan", "host": "192.168.1.10" }]
+      }
+    },
+    {
+      "name": "missing v",
+      "kind": "rejected",
+      "uri": "pidroid://pair?code=ABCD2345",
+      "error": "unsupported-version"
+    },
+    {
+      "name": "future v",
+      "kind": "rejected",
+      "uri": "pidroid://pair?v=2&code=ABCD2345",
+      "error": "unsupported-version"
+    },
+    {
+      "name": "missing code",
+      "kind": "rejected",
+      "uri": "pidroid://pair?v=1&port=8787&lan=192.168.1.10",
+      "error": "invalid-pairing-uri"
+    },
+    {
+      "name": "short code",
+      "kind": "rejected",
+      "uri": "pidroid://pair?v=1&code=ABCD",
+      "error": "invalid-pairing-uri"
+    },
+    {
+      "name": "out-of-alphabet code",
+      "kind": "rejected",
+      "uri": "pidroid://pair?v=1&code=ABCD234I",
+      "error": "invalid-pairing-uri"
+    },
+    {
+      "name": "lan holding a public address",
+      "kind": "rejected",
+      "uri": "pidroid://pair?v=1&code=ABCD2345&port=8787&lan=8.8.8.8",
+      "error": "invalid-pairing-uri"
+    },
+    {
+      "name": "ts holding a private address",
+      "kind": "rejected",
+      "uri": "pidroid://pair?v=1&code=ABCD2345&port=8787&ts=192.168.1.10",
+      "error": "invalid-pairing-uri"
+    },
+    {
+      "name": "lan holding an IPv6 address",
+      "kind": "rejected",
+      "uri": "pidroid://pair?v=1&code=ABCD2345&port=8787&lan=2001:db8::1",
+      "error": "invalid-pairing-uri"
+    },
+    {
+      "name": "addresses without a port",
+      "kind": "rejected",
+      "uri": "pidroid://pair?v=1&code=ABCD2345&lan=192.168.1.10",
+      "error": "invalid-pairing-uri"
+    },
+    {
+      "name": "a port without addresses",
+      "kind": "rejected",
+      "uri": "pidroid://pair?v=1&code=ABCD2345&port=8787",
+      "error": "invalid-pairing-uri"
+    },
+    {
+      "name": "port above range",
+      "kind": "rejected",
+      "uri": "pidroid://pair?v=1&code=ABCD2345&port=70000&lan=192.168.1.10",
+      "error": "invalid-pairing-uri"
+    },
+    {
+      "name": "port zero",
+      "kind": "rejected",
+      "uri": "pidroid://pair?v=1&code=ABCD2345&port=0&lan=192.168.1.10",
+      "error": "invalid-pairing-uri"
+    },
+    {
+      "name": "leading-zero port",
+      "kind": "rejected",
+      "uri": "pidroid://pair?v=1&code=ABCD2345&port=08787&lan=192.168.1.10",
+      "error": "invalid-pairing-uri"
+    },
+    {
+      "name": "https is not a pairing uri",
+      "kind": "rejected",
+      "uri": "https://example.com/?v=1&code=ABCD2345",
+      "error": "not-a-pairing-uri"
+    },
+    {
+      "name": "a different pidroid host is not a pairing uri",
+      "kind": "rejected",
+      "uri": "pidroid://other?v=1&code=ABCD2345",
+      "error": "not-a-pairing-uri"
+    }
+  ]
+}
