@@ -2282,6 +2282,26 @@ void main() {
     },
   );
 
+  testWidgets('a failed pairing attempt shows Pair again', (tester) async {
+    final h = Harness(token: null);
+    h.factory.onDial = () => Exception('connection refused');
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+
+    await tester.enterText(find.byKey(const Key('pairing-host')), '10.0.0.9');
+    await tester.enterText(find.byKey(const Key('pairing-code')), 'ABCD2345');
+    await tester.tap(find.byKey(const Key('pairing-submit')));
+    await tester.pump();
+    h.scheduler.flushNotifications();
+    await tester.pump();
+
+    // The dial failed. The client stays `connecting` while it retries in the
+    // background, so busy must follow the deliberate attempt, not the status:
+    // the button has to read "Pair" again so a retry is possible.
+    expect(find.text('Pair'), findsOneWidget);
+    expect(find.byKey(const Key('pairing-busy')), findsNothing);
+  });
+
   testWidgets(
     'a cold start whose dial never completes shows a usable pairing form',
     (tester) async {
@@ -2624,6 +2644,103 @@ void main() {
     },
   );
 
+  testWidgets(
+    'a deliberate pairing over a stale session error still shows the spinner',
+    (tester) async {
+      final h = Harness(
+        endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787),
+      );
+      await tester.pumpWidget(h.app());
+      await pumpBootstrap(tester);
+      adoptedSocket(h).receive(sessionsFrame([sessionS1]));
+      await settle(tester, h.scheduler);
+
+      // A session-scoped error while the hub stays connected: a failure the
+      // app cannot reach the pairing screen through with a bare reconnect.
+      for (var i = 0; i <= HubClient.maxConsecutiveResyncs; i++) {
+        h.factory.last.receive({
+          'protocolVersion': 1,
+          'type': 'resync-required',
+          'sessionId': 's1',
+          'reason': 'backpressure',
+        });
+      }
+      await settle(tester, h.scheduler);
+      expect(h.client.state.lastError, contains('gave up resyncing'));
+      expect(h.client.state.status, HubConnectionStatus.connected);
+
+      // The pairing screen as a pushed route over the live list.
+      await tester.tap(find.byKey(const Key('pairing')));
+      await tester.pumpAndSettle();
+
+      // Hold the redial so the spinner window can be observed.
+      final held = Completer<HubSocket>();
+      h.factory.onDialFuture = (_) => held.future;
+
+      // Force the candidate: `_dropConnection` cancels the live subscription,
+      // then redials. The cancel future only completes on the real event loop,
+      // not the widget-test clock, so let it run there before pumping on.
+      await tester.tap(
+        find.byKey(const Key('pairing-candidate-10.0.0.5:8787')),
+      );
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await settle(tester, h.scheduler);
+
+      // The stale session error is not connection-scoped, so it must not be
+      // read as this attempt failing: the deliberate pairing is still in
+      // flight and has to show its spinner rather than silently clearing.
+      expect(h.client.state.status, HubConnectionStatus.connecting);
+      expect(h.client.state.lastError, contains('gave up resyncing'));
+      expect(find.byKey(const Key('pairing-busy')), findsOneWidget);
+
+      // It paired: the deliberate attempt pops the pairing route.
+      final next = FakeHubSocket();
+      held.complete(next);
+      await tester.pump();
+      next.receive(sessionsFrame([sessionS1]));
+      await settle(tester, h.scheduler);
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+
+      expect(find.byType(PairingScreen), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'a keystore failure during a forced candidate clears the spinner',
+    (tester) async {
+      final store = ThrowingReadTokenStore(
+        initialEndpoint: const HubEndpoint(host: '10.0.0.5', port: 8787),
+      );
+      final h = Harness(tokenStore: store);
+      await tester.pumpWidget(h.app());
+      await pumpBootstrap(tester);
+
+      // Bootstrap's endpoint read succeeded but its token read threw, so the
+      // pairing form is up with the remembered candidate row.
+      expect(
+        find.textContaining('could not read the saved token'),
+        findsOneWidget,
+      );
+
+      await tester.tap(
+        find.byKey(const Key('pairing-candidate-10.0.0.5:8787')),
+      );
+      await tester.pump();
+      h.scheduler.flushNotifications();
+      await tester.pump();
+
+      // The read throws again inside the forced attempt. That failure must end
+      // the attempt instead of leaving a spinner the dropped socket can never
+      // clear.
+      expect(find.byKey(const Key('pairing-busy')), findsNothing);
+      expect(
+        find.textContaining('could not read the saved token'),
+        findsOneWidget,
+      );
+    },
+  );
+
   testWidgets('a resync give-up is visible while connected, and dismissible', (
     tester,
   ) async {
@@ -2651,6 +2768,41 @@ void main() {
     await tester.pump();
 
     expect(find.textContaining('gave up resyncing'), findsNothing);
+  });
+
+  testWidgets('the status banner is readable in dark mode', (tester) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await pumpWithBrightness(tester, h, Brightness.dark);
+    h.factory.last.receive(sessionsFrame([sessionS1]));
+    await settle(tester, h.scheduler);
+    await openSession(tester, h, 'api refactor');
+
+    for (var i = 0; i <= HubClient.maxConsecutiveResyncs; i++) {
+      h.factory.last.receive({
+        'protocolVersion': 1,
+        'type': 'resync-required',
+        'sessionId': 's1',
+        'reason': 'backpressure',
+      });
+    }
+    await settle(tester, h.scheduler);
+
+    // The banner is painted with the app's (dark) scheme, not the fallback
+    // light scheme above the MaterialApp, and its text is the on-container
+    // colour so it stays legible against that background.
+    final scheme = renderedScheme(tester);
+    expect(scheme.brightness, Brightness.dark);
+    final banner = tester.widget<Container>(
+      find
+          .ancestor(
+            of: find.textContaining('gave up resyncing'),
+            matching: find.byType(Container),
+          )
+          .first,
+    );
+    final text = tester.widget<Text>(find.textContaining('gave up resyncing'));
+    expect(banner.color, scheme.errorContainer);
+    expect(text.style?.color, scheme.onErrorContainer);
   });
 
   testWidgets('a failing endpoint read is visible, not an eternal spinner', (

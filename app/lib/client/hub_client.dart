@@ -635,6 +635,11 @@ class HubClient {
   /// The current snapshot.
   HubClientState get state => _state;
 
+  /// Whether [state]'s [HubClientState.lastError] came from the connection path
+  /// (dial, auth, send) rather than a session/operation. A new deliberate dial
+  /// clears a connection-scoped error and leaves a session notice alone.
+  bool get lastErrorFromConnection => _lastErrorFromConnection;
+
   /// Coalesced notifications: at most one per scheduled frame, regardless of how
   /// many deltas arrived.
   Stream<HubClientState> get changes => _changesController.stream;
@@ -714,6 +719,7 @@ class HubClient {
       }
       _credential = {'token': stored};
     }
+    _clearConnectionError();
     _stopped = false;
     _attempt = 0;
     await _dial();
@@ -2410,13 +2416,21 @@ class HubClient {
     _scheduleNotify();
   }
 
+  /// Clears a connection-scoped error, leaving a session/operation notice where
+  /// it is: a new dial does not fix a session that is gone or a token that would
+  /// not persist. Called when a new deliberate attempt starts, so a stale
+  /// failure cannot outlive the attempt that recorded it.
+  void _clearConnectionError() {
+    if (!_lastErrorFromConnection) return;
+    _lastErrorFromConnection = false;
+    _state = _state.copyWith(lastError: null);
+    _scheduleNotify();
+  }
+
   /// Called once a connection is authenticated. A stale connection error is
   /// cleared; a session/operation notice is left exactly where it was.
   void _markConnected() {
-    if (_lastErrorFromConnection) {
-      _lastErrorFromConnection = false;
-      _state = _state.copyWith(lastError: null);
-    }
+    _clearConnectionError();
     _setStatus(HubConnectionStatus.connected);
   }
 

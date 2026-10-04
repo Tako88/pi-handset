@@ -326,7 +326,12 @@ class _PairingScreenState extends State<PairingScreen> {
                           child: SizedBox(
                             height: 20,
                             width: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2),
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              // The button's background is `primary`, so the
+                              // default (`primary`) indicator is invisible.
+                              color: Theme.of(context).colorScheme.onPrimary,
+                            ),
                           ),
                         )
                       : const Text('Pair'),
