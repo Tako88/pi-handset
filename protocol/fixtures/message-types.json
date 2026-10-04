@@ -25,6 +25,8 @@
   "streamPhases": ["thinking"],
   "sessionOrigins": ["app", "pc"],
   "toolStatuses": ["running", "done", "error"],
+  "agentStates": ["idle", "running", "settled"],
+  "viewTypes": ["diff", "file", "command", "matches", "table", "generic"],
   "agentMessageTypes": ["register", "event", "history", "command-result"],
   "viewerMessageTypes": [
     "subscribe",

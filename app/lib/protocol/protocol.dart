@@ -25,6 +25,12 @@ const List<String> sessionOrigins = ['app', 'pc'];
 /// against the shared `message-types.json` by the fixture suite.
 const List<String> toolStatuses = ['running', 'done', 'error'];
 
+/// The view types a relayed `tool` payload may carry. Canonical; asserted
+/// against the shared `message-types.json` by the fixture suite, and tied to
+/// [parseToolView]'s switch by `tool_view_test.dart`. An unknown type is still
+/// valid on the wire (the app renders its generic fallback).
+const List<String> viewTypes = ['diff', 'file', 'command', 'matches', 'table', 'generic'];
+
 /// The normalized payload kinds an `event` may carry.
 const List<String> eventPayloadKinds = [
   'stream',

@@ -5,11 +5,22 @@
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pi_droid/client/tool_view.dart';
+import 'package:pi_droid/protocol/protocol.dart';
 
 Map<String, Object?> view(String type, [Map<String, Object?> rest = const {}]) =>
     {'type': type, ...rest};
 
 void main() {
+  test('every declared view type parses to a view', () {
+    for (final type in viewTypes) {
+      expect(
+        parseToolView(view(type)),
+        isNotNull,
+        reason: '$type is declared in viewTypes but has no case in parseToolView',
+      );
+    }
+  });
+
   group('parseToolView', () {
     test('parses a diff view with its lines in order', () {
       final parsed = parseToolView(
