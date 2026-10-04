@@ -17,6 +17,7 @@ import { WebSocket } from 'ws';
 // run must fail with an unresolved import, not a loader error.
 import {
   CLOSE_CAPABILITY,
+  CLOSE_INTERNAL,
   CLOSE_PROTOCOL,
   CLOSE_RATE_LIMITED,
   createHub,
@@ -1854,6 +1855,54 @@ test('a spawn rejection returns its message', async () => {
   const result = await viewer.next(2000);
   assert.equal(result.ok, false);
   assert.equal(result.error, 'boom');
+});
+
+test('an escaped handler error is contained to its connection', async () => {
+  const errors: unknown[] = [];
+  const spawner = makeFakeSpawner();
+  // SYNTHETIC CONTRACT VIOLATION: production `spawn` always rejects
+  // (spawner.ts:155-186); this override manufactures the one shape the entry
+  // point has no catch for. It witnesses the guard, not a reachable path.
+  spawner.spawn = () => {
+    throw new Error('spawn exploded');
+  };
+  const hub = await startHub({ spawner, onHandlerError: (e) => errors.push(e) });
+  const viewer = await connect(hub.viewerPort);
+  await helloViewer(viewer);
+
+  viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'start-session', id: 'boom' });
+
+  const { code } = await closed(viewer);
+  assert.equal(code, CLOSE_INTERNAL);
+  assert.equal(errors.length, 1);
+  assert.match((errors[0] as Error).message, /spawn exploded/);
+
+  // The hub is still serving: a second viewer authenticates.
+  const other = await connect(hub.viewerPort);
+  await helloViewer(other);
+});
+
+test('a throwing onHandlerError sink cannot re-introduce the crash', async () => {
+  const spawner = makeFakeSpawner();
+  // Same synthetic contract violation as the containment test above, but the
+  // observability sink itself throws. The inner guard exists so a broken sink
+  // cannot abort the listener; without it this test aborts.
+  spawner.spawn = () => {
+    throw new Error('spawn exploded');
+  };
+  const hub = await startHub({
+    spawner,
+    onHandlerError: () => {
+      throw new Error('sink exploded');
+    },
+  });
+  const viewer = await connect(hub.viewerPort);
+  await helloViewer(viewer);
+
+  viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'start-session', id: 'boom' });
+
+  const { code } = await closed(viewer);
+  assert.equal(code, CLOSE_INTERNAL);
 });
 
 test('a spawn rejection that is not an Error still maps to a string', async () => {
