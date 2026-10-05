@@ -21,9 +21,21 @@
 
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import {
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
+
+import { isProcessAlive } from './discovery.ts';
 
 /** How many app-started sessions may run at once. */
 export const DEFAULT_MAX_SESSIONS = 8;
@@ -58,6 +70,11 @@ export interface SpawnerOptions {
   registrationTimeoutMs?: number;
   /** SIGTERM → SIGKILL grace period in ms. Defaults to 5000. */
   terminateTimeoutMs?: number;
+  /**
+   * The pidfile recording spawned children for the boot reaper. When omitted,
+   * no record is written. See `reapOrphans`.
+   */
+  pidFile?: string;
   /** Optional diagnostic sink. */
   debug?: (text: string) => void;
 }
@@ -103,6 +120,12 @@ interface Entry {
   /** True when this spawner created the dir and may remove it. */
   readonly owned: boolean;
   timer: NodeJS.Timeout | null;
+  /**
+   * The child's `/proc/<pid>/stat` start time (fork-stable), or null when the
+   * stat read failed. Never an exec-dependent value: a real pi re-execs through
+   * `env` and rewrites its argv, so any such value would be wrong at reap.
+   */
+  startTime: number | null;
 }
 
 /**
@@ -112,6 +135,17 @@ interface Entry {
  */
 export function defaultProjectArgs(trust: boolean): readonly string[] {
   return trust ? ['--mode', 'rpc', '--approve'] : ['--mode', 'rpc', '--no-approve'];
+}
+
+/** Signals the whole process group; a dead group is not an error. */
+function signalGroup(pid: number, signal: NodeJS.Signals, debug?: (text: string) => void): void {
+  try {
+    process.kill(-pid, signal);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ESRCH') {
+      debug?.(`could not signal group -${pid}: ${String(error)}`);
+    }
+  }
 }
 
 export function createSpawner(options: SpawnerOptions = {}): Spawner {
@@ -125,27 +159,36 @@ export function createSpawner(options: SpawnerOptions = {}): Spawner {
     options.registrationTimeoutMs ?? DEFAULT_REGISTRATION_TIMEOUT_MS;
   const terminateTimeoutMs = options.terminateTimeoutMs ?? 5_000;
   const debug = options.debug;
+  const pidFile = options.pidFile;
+  const bootId = pidFile === undefined ? null : readBootId();
 
   const children = new Map<number, Entry>();
   const exitListeners = new Set<(event: ChildExitEvent) => void>();
   let closed = false;
+
+  /**
+   * Rewrites the pidfile from the live child map. Only fork-stable identity is
+   * recorded: pid, the owned dir (null for a project spawn) and the start time.
+   * Never throws (see `writeChildren`), so it cannot disturb a reap.
+   */
+  function persistChildren(): void {
+    if (pidFile === undefined) return;
+    const records: ChildRecord[] = [];
+    for (const [childPid, entry] of children) {
+      records.push({
+        pid: childPid,
+        dir: entry.owned ? entry.dir : null,
+        startTime: entry.startTime,
+      });
+    }
+    writeChildren(pidFile, tempRoot, bootId, records);
+  }
 
   function removeDir(dir: string): void {
     try {
       rmSync(dir, { recursive: true, force: true });
     } catch (error) {
       debug?.(`could not remove ${dir}: ${String(error)}`);
-    }
-  }
-
-  /** Signals the whole process group; a dead group is not an error. */
-  function signalGroup(pid: number, signal: NodeJS.Signals): void {
-    try {
-      process.kill(-pid, signal);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') {
-        debug?.(`could not signal group -${pid}: ${String(error)}`);
-      }
     }
   }
 
@@ -161,6 +204,7 @@ export function createSpawner(options: SpawnerOptions = {}): Spawner {
     children.delete(pid);
     if (entry.timer !== null) clearTimeout(entry.timer);
     if (entry.owned) removeDir(entry.dir);
+    persistChildren();
     return true;
   }
 
@@ -177,7 +221,7 @@ export function createSpawner(options: SpawnerOptions = {}): Spawner {
 
   function armRegistration(pid: number): void {
     const timer = setTimeout(() => {
-      signalGroup(pid, 'SIGKILL');
+      signalGroup(pid, 'SIGKILL', debug);
       if (reap(pid)) notifyExit(pid, 'deadline');
     }, registrationTimeoutMs);
     timer.unref();
@@ -230,13 +274,33 @@ export function createSpawner(options: SpawnerOptions = {}): Spawner {
           return;
         }
         if (closed) {
-          signalGroup(spawnedPid, 'SIGKILL');
+          signalGroup(spawnedPid, 'SIGKILL', debug);
           if (owned) removeDir(dir);
           reject(new Error('spawner is closed'));
           return;
         }
         pid = spawnedPid;
-        children.set(pid, { dir, child, owned, timer: null });
+        const stat = readProcStat(spawnedPid);
+        children.set(pid, {
+          dir,
+          child,
+          owned,
+          timer: null,
+          startTime: stat?.startTime ?? null,
+        });
+        persistChildren();
+        if (stat === null) {
+          // A transient /proc failure at spawn: one bounded retry refreshes the
+          // record. Still null means the guard declines (the non-Linux case).
+          setImmediate(() => {
+            const entry = children.get(spawnedPid);
+            if (entry === undefined) return;
+            const refreshed = readProcStat(spawnedPid);
+            if (refreshed === null) return;
+            entry.startTime = refreshed.startTime;
+            persistChildren();
+          });
+        }
         armRegistration(pid);
         resolve(pid);
       });
@@ -272,9 +336,9 @@ export function createSpawner(options: SpawnerOptions = {}): Spawner {
   function kill(pid: number): void {
     const entry = children.get(pid);
     if (entry === undefined) return;
-    signalGroup(pid, 'SIGTERM');
+    signalGroup(pid, 'SIGTERM', debug);
     const timer = setTimeout(() => {
-      if (children.has(pid)) signalGroup(pid, 'SIGKILL');
+      if (children.has(pid)) signalGroup(pid, 'SIGKILL', debug);
     }, terminateTimeoutMs);
     timer.unref();
   }
@@ -294,10 +358,10 @@ export function createSpawner(options: SpawnerOptions = {}): Spawner {
       }
       child.once('exit', () => resolve());
     });
-    signalGroup(pid, 'SIGTERM');
+    signalGroup(pid, 'SIGTERM', debug);
     const escalated = new Promise<void>((resolve) => {
       const timer = setTimeout(() => {
-        signalGroup(pid, 'SIGKILL');
+        signalGroup(pid, 'SIGKILL', debug);
         resolve();
       }, terminateTimeoutMs);
       timer.unref();
@@ -315,6 +379,7 @@ export function createSpawner(options: SpawnerOptions = {}): Spawner {
     if (closed) return;
     closed = true;
     await Promise.all([...children.keys()].map((pid) => terminate(pid)));
+    persistChildren();
   }
 
   return {
@@ -331,3 +396,312 @@ export function createSpawner(options: SpawnerOptions = {}): Spawner {
     close,
   };
 }
+// --- M2: pidfile + boot reaper ---
+
+export interface ChildRecord {
+  pid: number;
+  dir: string | null;
+  startTime: number | null;
+}
+
+export interface ChildrenFile {
+  version: 1;
+  tempRoot: string;
+  bootId: string | null;
+  children: ChildRecord[];
+}
+
+export interface ProcStat {
+  state: string;
+  startTime: number;
+}
+
+/** The per-boot identity, or null when neither source is readable. */
+export function readBootId(): string | null {
+  try {
+    const id = readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
+    if (id.length > 0) return id;
+  } catch {
+    // Fall through to `btime`.
+  }
+  try {
+    const match = /^btime\s+(\d+)\s*$/m.exec(readFileSync('/proc/stat', 'utf8'));
+    if (match !== null) return `btime:${match[1]}`;
+  } catch {
+    // Not Linux, or /proc is unavailable: no per-boot identity.
+  }
+  return null;
+}
+
+/**
+ * Parses `/proc/<pid>/stat`. The last `)` is the anchor: `comm` (field 2) may
+ * contain spaces and parentheses, but it is the only parenthesized field. The
+ * token after the last `)` is field 3 (`state`); field 22 (`starttime`, in
+ * clock ticks since boot) is token 19. Returns null on anything malformed.
+ */
+export function parseProcStat(raw: string): ProcStat | null {
+  const close = raw.lastIndexOf(')');
+  if (close === -1) return null;
+  const tokens = raw.slice(close + 1).trim().split(/\s+/);
+  if (tokens.length < 20) return null;
+  const state = tokens[0]!;
+  const startTime = Number(tokens[19]);
+  if (!Number.isSafeInteger(startTime) || startTime < 0) return null;
+  return { state, startTime };
+}
+
+/** Reads and parses `/proc/<pid>/stat`; null when it cannot be read/parsed. */
+export function readProcStat(pid: number): ProcStat | null {
+  try {
+    return parseProcStat(readFileSync(`/proc/${pid}/stat`, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Atomically writes the children record: a fresh temp file at `0600`, then a
+ * `rename` over the target, so a reader never sees a partial file. Never
+ * throws — a failed write must not disturb a reap or startup.
+ */
+export function writeChildren(
+  pidFile: string,
+  tempRoot: string,
+  bootId: string | null,
+  records: readonly ChildRecord[],
+): void {
+  try {
+    const file: ChildrenFile = { version: 1, tempRoot, bootId, children: [...records] };
+    mkdirSync(dirname(pidFile), { recursive: true, mode: 0o700 });
+    const temp = `${pidFile}.tmp.${randomBytes(6).toString('hex')}`;
+    writeFileSync(temp, JSON.stringify(file), { mode: 0o600 });
+    renameSync(temp, pidFile);
+  } catch {
+    // Best-effort: the record is a hint for the next boot, never authority.
+  }
+}
+
+/**
+ * True iff the record's fork-stable identity matches a live process's stat.
+ *
+ * `recordedBootId` is the file-level per-boot identity captured when the
+ * record was written; `currentBootId` is this boot's. They must both exist and
+ * agree — a record from another boot cannot name a live process of this one.
+ * (`bootId` is deliberately file-level, not a child field: the child record
+ * carries only `pid`/`dir`/`startTime`.) `startTime` is assigned at fork and
+ * is unchanged by `execve` or `process.title`, so comparing a spawn-time record
+ * to a reap-time read is sound.
+ */
+export function verifyChild(
+  record: ChildRecord,
+  recordedBootId: string | null,
+  currentBootId: string | null,
+  stat: ProcStat | null,
+): boolean {
+  return (
+    record.startTime !== null &&
+    recordedBootId !== null &&
+    currentBootId !== null &&
+    recordedBootId === currentBootId &&
+    stat !== null &&
+    stat.startTime === record.startTime
+  );
+}
+
+/**
+ * True iff `dir` is a temp dir this project owns: a `pi-droid-session-*`
+ * basename directly under the recorded `tempRoot`. The recorded root — not the
+ * boot-time `os.tmpdir()` — is what closes the TMPDIR-changed case.
+ */
+export function isOwnedTempDir(dir: string, tempRoot: string): boolean {
+  return basename(dir).startsWith('pi-droid-session-') && dirname(dir) === tempRoot;
+}
+
+/** How long to wait for a SIGKILLed orphan to actually leave, per child. */
+const REAP_KILL_WAIT_MS = 1_000;
+/** Poll interval while waiting for a SIGKILLed orphan to die. */
+const REAP_POLL_MS = 5;
+
+/**
+ * Blocks (bounded) until `pid` is gone. `Atomics.wait` is the stdlib's only
+ * synchronous sleep and leaves the event loop otherwise unusable for the wait,
+ * which is fine: the reaper runs once, before the hub accepts connections.
+ */
+function waitForDeath(pid: number, timeoutMs: number): void {
+  const sleeper = new Int32Array(new SharedArrayBuffer(4));
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!isProcessAlive(pid)) return;
+    // A SIGKILLed process becomes a zombie until its parent reaps it, and
+    // `kill(pid, 0)` reports a zombie as alive. Blocking here would prevent
+    // this process from reaping its own child, so a zombie is treated as gone.
+    const stat = readProcStat(pid);
+    if (stat === null || stat.state === 'Z') return;
+    Atomics.wait(sleeper, 0, 0, REAP_POLL_MS);
+  }
+}
+
+/** Unlinks `path` only when it is a regular file; never follows a symlink. */
+function removeRegularFile(path: string): void {
+  try {
+    if (!lstatSync(path).isFile()) return;
+    unlinkSync(path);
+  } catch {
+    // Already gone or unreadable: nothing to do.
+  }
+}
+
+/** One child record, or null when it is malformed (such an entry is skipped). */
+function parseChildRecord(value: unknown): ChildRecord | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const { pid, dir, startTime } = record;
+  if (typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid <= 0) return null;
+  if (dir !== null && typeof dir !== 'string') return null;
+  if (
+    startTime !== null &&
+    (typeof startTime !== 'number' || !Number.isSafeInteger(startTime) || startTime < 0)
+  ) {
+    return null;
+  }
+  return { pid, dir, startTime };
+}
+
+/** The parsed file, or null when it is not valid; a malformed entry is skipped. */
+function parseChildren(raw: string): ChildrenFile | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (record.version !== 1) return null;
+  if (typeof record.tempRoot !== 'string') return null;
+  const bootId = record.bootId;
+  if (bootId !== null && typeof bootId !== 'string') return null;
+  if (!Array.isArray(record.children)) return null;
+  const children: ChildRecord[] = [];
+  for (const entry of record.children) {
+    const parsed = parseChildRecord(entry);
+    if (parsed !== null) children.push(parsed);
+  }
+  return { version: 1, tempRoot: record.tempRoot, bootId, children };
+}
+
+/**
+ * Reads the children file. Only a regular file is read: a missing path, a
+ * directory and a symlink all resolve to null and are left untouched. A
+ * corrupt or wrong-version file is deleted (it can never be reaped) and
+ * resolves to null. Never throws.
+ */
+function readChildrenFile(
+  pidFile: string,
+  debug?: (text: string) => void,
+): ChildrenFile | null {
+  let stats;
+  try {
+    stats = lstatSync(pidFile);
+  } catch {
+    return null;
+  }
+  if (!stats.isFile()) return null;
+
+  let raw: string;
+  try {
+    raw = readFileSync(pidFile, 'utf8');
+  } catch (error) {
+    debug?.(`could not read ${pidFile}: ${String(error)}`);
+    return null;
+  }
+  const parsed = parseChildren(raw);
+  if (parsed === null) {
+    debug?.(`ignoring a corrupt children file at ${pidFile}`);
+    removeRegularFile(pidFile);
+    return null;
+  }
+  return parsed;
+}
+
+/** Removes a recorded dir, but only when it is one this project owns. */
+function removeOwnedDir(
+  record: ChildRecord,
+  tempRoot: string,
+  debug?: (text: string) => void,
+): void {
+  if (record.dir === null || !isOwnedTempDir(record.dir, tempRoot)) return;
+  try {
+    rmSync(record.dir, { recursive: true, force: true });
+  } catch (error) {
+    debug?.(`could not remove ${record.dir}: ${String(error)}`);
+  }
+}
+
+/**
+ * Reaps one record. Returns true only when the process was verified and killed.
+ * Dir removal is gated on the same verdict as the kill, plus a certainly-dead,
+ * foreign-boot or zombie child.
+ */
+function reapOne(
+  record: ChildRecord,
+  file: ChildrenFile,
+  currentBootId: string | null,
+  debug?: (text: string) => void,
+): boolean {
+  // 1. A record from another boot cannot name a live process of this boot:
+  //    decline to signal, but its dir is certainly orphaned.
+  if (file.bootId !== null && currentBootId !== null && file.bootId !== currentBootId) {
+    removeOwnedDir(record, file.tempRoot, debug);
+    return false;
+  }
+  // 2. Not alive: the dir is certainly orphaned.
+  if (!isProcessAlive(record.pid)) {
+    removeOwnedDir(record, file.tempRoot, debug);
+    return false;
+  }
+  const stat = readProcStat(record.pid);
+  // 3. Unreadable stat: spare both. The safe direction is never to signal.
+  if (stat === null) return false;
+  // 4. A zombie is not a live orphan; a SIGKILL would be discarded anyway.
+  if (stat.state === 'Z') {
+    removeOwnedDir(record, file.tempRoot, debug);
+    return false;
+  }
+  // 5. Unverified identity (reused pid, null record, or unknown boot): spare.
+  if (!verifyChild(record, file.bootId, currentBootId, stat)) return false;
+  // 6. Verified: kill the group, wait bounded, then remove the owned dir.
+  signalGroup(record.pid, 'SIGKILL', debug);
+  waitForDeath(record.pid, REAP_KILL_WAIT_MS);
+  removeOwnedDir(record, file.tempRoot, debug);
+  return true;
+}
+
+/**
+ * Reaps the still-live children a previous, hard-killed hub spawned, from the
+ * pidfile it left at `pidFile`, and removes their owned temp dirs. Returns the
+ * number of processes killed.
+ *
+ * Never throws and never aborts startup: a missing file is a no-op, a corrupt
+ * or wrong-version file is deleted, a directory or symlink path is neither
+ * followed nor unlinked, and a malformed entry is skipped. Only fork-stable
+ * identity is trusted (see `verifyChild`); an unverifiable record is spared.
+ */
+export function reapOrphans(pidFile: string, debug?: (text: string) => void): number {
+  const file = readChildrenFile(pidFile, debug);
+  if (file === null) return 0;
+  const currentBootId = readBootId();
+  let killed = 0;
+  for (const record of file.children) {
+    try {
+      if (reapOne(record, file, currentBootId, debug)) killed++;
+    } catch (error) {
+      debug?.(`skipping an unreadable child record: ${String(error)}`);
+    }
+  }
+  // The record is consumed: whatever was spared will re-register with the new
+  // hub as an ordinary PC session, and a stale file must not be re-reaped.
+  removeRegularFile(pidFile);
+  return killed;
+}
+

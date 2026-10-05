@@ -89,6 +89,15 @@ export function supervisorPath(runtimeDir: string): string {
 }
 
 /**
+ * The children pidfile path under a runtime dir, beside the discovery record and
+ * lock. Path construction only: `spawner.ts` owns the format (writer and
+ * reader together).
+ */
+export function childrenPath(runtimeDir: string): string {
+  return join(runtimeDir, 'pi-droid', 'children.json');
+}
+
+/**
  * True when `pid` exists. `EPERM` means the process exists but belongs to
  * another user, so it is alive. `ESRCH` (and anything else) means dead.
  */
