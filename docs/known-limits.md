@@ -217,8 +217,18 @@ rather than guess at it.
   not of the whole directory, and `truncated` says so — so a directory large enough to
   hit the scan cap can hide an entry that sorts before one that is shown.
 
-- **A hard-killed hub reaps its orphaned children on the next boot, from a pidfile whose
-  guard is a fork-stable identity: `startTime` plus a per-boot `bootId`.** The record
+- **A hard-killed hub leaves a temp directory and a stale pidfile behind, not normally a
+  running child; the next boot reaps both, from a pidfile whose guard is a fork-stable
+  identity: `startTime` plus a per-boot `bootId`.** Measured on the dev host against the
+  real binary: a `pi --mode rpc --no-session` child exits by itself within about 2 s of the
+  hub's `SIGKILL` — its stdin pipe closes with the hub and the rpc loop ends — while a
+  `sh -c 'sleep 300'` child in the identical spawn shape survives, which is what proves the
+  measurement rather than the harness. So the process leak this limit originally described
+  does **not** reproduce for the production spawn shape: the residue is an empty
+  `pi-droid-session-*` directory plus the stale file. An idle child was measured; a
+  mid-turn child could outlive the kill and was not, so the reaper's *kill* branch is
+  witnessed by a surviving-child fixture (a shell shim) rather than by a real `pi`, and the
+  live pass exercised its *not-alive* branch. The record
   (`<runtimeDir>/pi-droid/children.json`, `{version, tempRoot, bootId, children}`) is
   written at the spawner's `'spawn'` event and stores **only** `pid`, `dir` (null for a
   project spawn) and `startTime` — deliberately **no `cmdline` and no `exe`**. Those are
