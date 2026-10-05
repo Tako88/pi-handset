@@ -253,6 +253,11 @@
     "type": "paired",
     "token": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   },
+  "spawn-failed.json": {
+    "type": "spawn-failed",
+    "id": "pending-1",
+    "error": "the session exited before it started"
+  },
   "sessions.json": {
     "type": "sessions",
     "sessions": [
@@ -269,6 +274,18 @@
         "origin": "pc"
       }
     ]
+  },
+  "sessions-pending.json": {
+    "type": "sessions",
+    "sessions": [
+      {
+        "sessionId": "sess-1",
+        "label": "my session",
+        "agentState": "idle",
+        "origin": "app"
+      }
+    ],
+    "pending": [{ "id": "pending-1", "label": "New session" }]
   },
   "start-session.json": {
     "type": "start-session",

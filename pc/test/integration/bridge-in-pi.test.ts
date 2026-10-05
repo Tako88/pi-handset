@@ -1487,6 +1487,7 @@ test('a spawned bare pi registers, prompts and dies on kill-session', async () =
     owns: (pid) => real.owns(pid),
     confirm: (pid) => real.confirm(pid),
     kill: (pid) => real.kill(pid),
+    onChildExit: (listener) => real.onChildExit(listener),
     close: () => real.close(),
   };
 

@@ -240,6 +240,7 @@ test('every message type in the canonical lists decodes from a minimal body', ()
       truncated: false,
     },
     'resync-required': { protocolVersion: 1, type: 'resync-required', sessionId: 'sess', reason: 'r' },
+    'spawn-failed': { protocolVersion: 1, type: 'spawn-failed', id: 'pending-1', error: 'failed' },
     'session-gone': { protocolVersion: 1, type: 'session-gone', sessionId: 'sess' },
     'agent-settled': {
       protocolVersion: 1,

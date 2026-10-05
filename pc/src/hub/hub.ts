@@ -48,6 +48,7 @@ import type {
   AgentState,
   SessionOrigin,
   SessionsMessage,
+  SpawnFailedMessage,
 } from '../protocol/protocol.ts';
 import { compareToken } from './auth.ts';
 import { ByteBudget } from './backpressure.ts';
@@ -67,7 +68,7 @@ import {
 } from './folders.ts';
 import type { DirectoryListing } from './folders.ts';
 import type { TicketStore } from './pairing.ts';
-import type { Spawner } from './spawner.ts';
+import type { ChildExitEvent, ChildExitReason, Spawner } from './spawner.ts';
 
 /**
  * Application close codes (4000–4999). The full table and the message shapes
@@ -224,6 +225,16 @@ interface Session {
   readonly pendingCommands: Map<string, Connection[]>;
 }
 
+/**
+ * A spawn the hub created but that has not registered yet. `id` is hub-generated
+ * and viewer-safe (`pending-<n>`); `pid` keys the spawner's exit notification.
+ */
+interface PendingSpawn {
+  readonly id: string;
+  readonly label: string;
+  readonly pid: number;
+}
+
 interface State {
   readonly config: {
     token: string;
@@ -244,6 +255,12 @@ interface State {
     onHandlerError?: (error: unknown) => void;
   };
   readonly sessions: Map<string, Session>;
+  /** Spawns the hub created but that have not registered yet, keyed by id. */
+  readonly pendingSpawns: Map<string, PendingSpawn>;
+  /** Monotonic source for the viewer-safe `pending-<n>` ids. */
+  pendingSeq: number;
+  /** Unsubscribes this hub's `onChildExit` listener; set when a spawner exists. */
+  unsubscribeChildExit?: () => void;
   /** Authenticated viewer connections; the broadcast audience for `sessions`. */
   readonly viewers: Set<Connection>;
 }
@@ -310,6 +327,10 @@ function registerLabel(
  * per token; a viewer that needs a watermark asks for a `snapshot`.
  */
 function sessionsMessage(state: State): SessionsMessage {
+  const pending = [...state.pendingSpawns.values()].map((spawn) => ({
+    id: spawn.id,
+    label: spawn.label,
+  }));
   return {
     protocolVersion: PROTOCOL_VERSION,
     type: 'sessions',
@@ -326,6 +347,9 @@ function sessionsMessage(state: State): SessionsMessage {
           ? {}
           : { replacesSessionId: session.replacesSessionId }),
       })),
+    // Absent when there are none (the common case), so an old app's exact
+    // comparisons and the auth push are unchanged.
+    ...(pending.length === 0 ? {} : { pending }),
     // Advertised so a viewer can gate folder browsing on it; a pre-capabilities
     // hub omits the field, and the app then never sends the new frames.
     capabilities: [...HUB_CAPABILITIES],
@@ -336,6 +360,76 @@ function sessionsMessage(state: State): SessionsMessage {
 function pushSessions(state: State, connection: Connection): void {
   if (connection.listener !== 'viewer') return;
   sendToViewer(connection, sessionsMessage(state), null);
+}
+
+/** The pending spawn a pid belongs to, or null. */
+function findPendingByPid(state: State, pid: number): PendingSpawn | null {
+  for (const spawn of state.pendingSpawns.values()) {
+    if (spawn.pid === pid) return spawn;
+  }
+  return null;
+}
+
+/** Removes the pending spawn for a pid, returning whether one was removed. */
+function removePendingByPid(state: State, pid: number): boolean {
+  const pending = findPendingByPid(state, pid);
+  if (pending === null) return false;
+  state.pendingSpawns.delete(pending.id);
+  return true;
+}
+
+/**
+ * Registers a pending spawn and republishes the list. A real session id
+ * collision with `pending-<n>` is negligible, and `handleKillSession` checks the
+ * pending list first, so the namespace is safe either way.
+ */
+function beginPendingSpawn(state: State, pid: number): void {
+  const id = `pending-${++state.pendingSeq}`;
+  state.pendingSpawns.set(id, { id, label: 'New session', pid });
+  broadcastSessions(state);
+}
+
+/** The viewer-facing failure text for each reason a child can leave. */
+const SPAWN_FAILURE_TEXT: Record<ChildExitReason, string> = {
+  exit: 'the session exited before it started',
+  error: 'the session failed to start',
+  deadline: 'the session did not start in time',
+};
+
+function spawnFailedMessage(id: string, error: string): SpawnFailedMessage {
+  return { protocolVersion: PROTOCOL_VERSION, type: 'spawn-failed', id, error };
+}
+
+/**
+ * Tells every authenticated viewer a pending spawn failed, then removes the
+ * placeholder. The order is load-bearing: the app ignores a failure for an id it
+ * no longer holds, so the failure must arrive before the row vanishes. Both
+ * frames share one socket, so their order is guaranteed. `send()` is unbudgeted
+ * on purpose — a silently dropped failure would recreate exactly the bug #13 is
+ * about.
+ */
+function broadcastSpawnFailed(
+  state: State,
+  pending: PendingSpawn,
+  reason: ChildExitReason,
+): void {
+  const message = spawnFailedMessage(pending.id, SPAWN_FAILURE_TEXT[reason]);
+  for (const viewer of state.viewers) {
+    if (viewer.authenticated) send(viewer, message);
+  }
+  state.pendingSpawns.delete(pending.id);
+  broadcastSessions(state);
+}
+
+/**
+ * A spawned child left before it registered: if a placeholder is still holding
+ * its pid, fail it to every viewer; otherwise it already registered and there is
+ * nothing to say.
+ */
+function handleChildExit(state: State, event: ChildExitEvent): void {
+  const pending = findPendingByPid(state, event.pid);
+  if (pending === null) return;
+  broadcastSpawnFailed(state, pending, event.reason);
 }
 
 /** Pushes the current list to every authenticated viewer. */
@@ -539,6 +633,10 @@ function handleRegister(
   const owned = pid !== undefined && spawner !== undefined && spawner.owns(pid);
   const origin: SessionOrigin = owned ? 'app' : 'pc';
   if (owned && pid !== undefined) spawner!.confirm(pid);
+  // The child that was pending has now registered; forget its placeholder. A
+  // re-register that changes nothing else must still republish, or the
+  // placeholder row would stay on screen forever.
+  const clearedPending = pid !== undefined && removePendingByPid(state, pid);
   const label = registerLabel(message, sessionId, origin);
   // The successor of a `/new` or `/fork` names the id it replaced; carried so
   // the app can follow the replacement instead of dropping to the session list.
@@ -563,7 +661,7 @@ function handleRegister(
     // re-registers on every reconnect, and non-bridge agents may re-register
     // unchanged too. An origin change matters because it flips whether the app
     // offers a kill affordance.
-    if (existing.label !== label || existing.origin !== origin) {
+    if (existing.label !== label || existing.origin !== origin || clearedPending) {
       existing.label = label;
       existing.origin = origin;
       broadcastSessions(state);
@@ -711,7 +809,10 @@ function handleStartSession(
   const rawCwd = message.cwd;
   if (rawCwd === undefined) {
     spawner.spawn().then(
-      () => sendToViewer(connection, commandOk(id), null),
+      (pid) => {
+        sendToViewer(connection, commandOk(id), null);
+        beginPendingSpawn(state, pid);
+      },
       (error: unknown) =>
         sendToViewer(connection, commandResult(id, false, errorMessage(error)), null),
     );
@@ -755,7 +856,10 @@ function handleStartSession(
     return;
   }
   spawner.spawn({ cwd: resolved, trust: effective }).then(
-    () => sendToViewer(connection, commandOk(id), null),
+    (pid) => {
+      sendToViewer(connection, commandOk(id), null);
+      beginPendingSpawn(state, pid);
+    },
     (error: unknown) =>
       sendToViewer(connection, commandResult(id, false, errorMessage(error)), null),
   );
@@ -835,6 +939,18 @@ function handleKillSession(
   const sessionId = asString(message.sessionId);
   if (id === null || sessionId === null) {
     closeWith(connection, CLOSE_PROTOCOL);
+    return;
+  }
+  // A pending spawn has no session yet, so the pending registry is consulted
+  // first. A cancel is not a failure: it is acked, the row is removed and the
+  // child is killed, with no `spawn-failed`. A second viewer cancel then finds
+  // neither a pending nor a session and is refused 'unknown session'.
+  const pending = state.pendingSpawns.get(sessionId);
+  if (pending !== undefined) {
+    sendToViewer(connection, commandOk(id), null);
+    state.pendingSpawns.delete(sessionId);
+    broadcastSessions(state);
+    state.config.spawner?.kill(pending.pid);
     return;
   }
   const session = state.sessions.get(sessionId);
@@ -1153,8 +1269,16 @@ export async function createHub(options: HubOptions): Promise<Hub> {
       ...(options.onHandlerError === undefined ? {} : { onHandlerError: options.onHandlerError }),
     },
     sessions: new Map(),
+    pendingSpawns: new Map(),
+    pendingSeq: 0,
     viewers: new Set(),
   };
+
+  if (options.spawner !== undefined) {
+    state.unsubscribeChildExit = options.spawner.onChildExit((event) =>
+      handleChildExit(state, event),
+    );
+  }
 
   const sockets = new Set<WebSocket>();
   for (const [server, listener] of [
@@ -1245,6 +1369,11 @@ export async function createHub(options: HubOptions): Promise<Hub> {
     agentPort: addressPort(agent),
     viewerPort: addressPort(viewer),
     async close(): Promise<void> {
+      // Unsubscribe before terminating the children: `terminate` does not
+      // notify, but a racing real child `exit` during shutdown must not reach a
+      // hub that is already tearing down.
+      state.unsubscribeChildExit?.();
+      state.unsubscribeChildExit = undefined;
       for (const socket of sockets) socket.terminate();
       sockets.clear();
       await Promise.all([closeServer(agent), closeServer(viewer)]);

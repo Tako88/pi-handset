@@ -1,0 +1,6 @@
+{
+  "protocolVersion": 1,
+  "type": "spawn-failed",
+  "id": "pending-1",
+  "error": "the session exited before it started"
+}

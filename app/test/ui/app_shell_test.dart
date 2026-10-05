@@ -511,6 +511,38 @@ void main() {
     expect(find.text('pi sessions · 10.0.0.5:8787'), findsOneWidget);
   });
 
+  testWidgets('a pending spawn row is replaced by the failure banner', (
+    tester,
+  ) async {
+    final h = Harness(endpoint: const HubEndpoint(host: '10.0.0.5', port: 8787));
+    await tester.pumpWidget(h.app());
+    await pumpBootstrap(tester);
+    h.factory.last.receive(sessionsFrame([]));
+    await settle(tester, h.scheduler);
+
+    h.factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'sessions',
+      'sessions': <Object?>[],
+      'pending': [
+        {'id': 'p1', 'label': 'New session'},
+      ],
+    });
+    await settle(tester, h.scheduler);
+    expect(find.byKey(const Key('cancel-p1')), findsOneWidget);
+
+    h.factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'spawn-failed',
+      'id': 'p1',
+      'error': 'the session exited before it started',
+    });
+    await settle(tester, h.scheduler);
+
+    expect(find.text('the session exited before it started'), findsOneWidget);
+    expect(find.byKey(const Key('cancel-p1')), findsNothing);
+  });
+
   testWidgets('the header names the first candidate and counts the rest', (
     tester,
   ) async {

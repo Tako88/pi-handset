@@ -45,6 +45,22 @@ class SessionSummary {
   );
 }
 
+/// One pending spawn the hub is tracking: a child it created but that has not
+/// registered yet. `id` is hub-generated and opaque (`pending-<n>`); the app
+/// cancels by that id. Deliberately not a `SessionSummary`.
+class PendingSessionSummary {
+  final String id;
+  final String label;
+
+  const PendingSessionSummary({required this.id, required this.label});
+
+  factory PendingSessionSummary.fromJson(Map<String, Object?> json) =>
+      PendingSessionSummary(
+        id: json['id']! as String,
+        label: json['label']! as String,
+      );
+}
+
 /// One `agent-settled` broadcast: a session settled and the app may notify.
 /// Viewer-scoped rather than subscriber-scoped, so it may name a session the
 /// client is not viewing. Carries the bridge's snippet and its truncation flag.
@@ -207,6 +223,11 @@ class HubClientState {
   final String? activeSessionId;
   final String? lastError;
 
+  /// Spawns the hub is tracking but that have not registered yet, read from
+  /// the `sessions` frame. Empty for a hub that predates the field, and for a
+  /// hub with no pending spawns (the common case).
+  final List<PendingSessionSummary> pendingSessions;
+
   /// The hub's advertised capabilities, read from the post-auth `sessions`
   /// frame. Empty for a hub that predates the field, which hides folder
   /// browsing and its `start-session{cwd}` form rather than sending a frame an
@@ -224,6 +245,7 @@ class HubClientState {
     this.transcripts = const {},
     this.activeSessionId,
     this.lastError,
+    this.pendingSessions = const [],
     this.capabilities = const {},
     this.commands = const {},
   });
@@ -234,12 +256,14 @@ class HubClientState {
     Map<String, SessionTranscript>? transcripts,
     Object? activeSessionId = _unset,
     Object? lastError = _unset,
+    List<PendingSessionSummary>? pendingSessions,
     Set<String>? capabilities,
     Map<String, List<SlashCommand>>? commands,
   }) => HubClientState(
     status: status ?? this.status,
     sessions: sessions ?? this.sessions,
     transcripts: transcripts ?? this.transcripts,
+    pendingSessions: pendingSessions ?? this.pendingSessions,
     capabilities: capabilities ?? this.capabilities,
     commands: commands ?? this.commands,
     activeSessionId: identical(activeSessionId, _unset)

@@ -153,4 +153,140 @@ void main() {
     );
     expect(constructed.origin, 'pc');
   });
+
+  // --- pending spawns: the placeholder row and its failure delivery ---
+
+  test('a pending spawn is exposed in the state', () async {
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'sessions',
+      'sessions': <Object?>[],
+      'pending': [
+        {'id': 'p1', 'label': 'New session'},
+      ],
+    });
+    await pumpEventQueue();
+
+    expect(client.state.pendingSessions, hasLength(1));
+    expect(client.state.pendingSessions.single.id, 'p1');
+    expect(client.state.pendingSessions.single.label, 'New session');
+  });
+
+  test('a register clears the pending row', () async {
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'sessions',
+      'sessions': <Object?>[],
+      'pending': [
+        {'id': 'p1', 'label': 'New session'},
+      ],
+    });
+    await pumpEventQueue();
+    expect(client.state.pendingSessions, hasLength(1));
+
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'sessions',
+      'sessions': [
+        {'sessionId': 's1', 'label': 'New session', 'agentState': 'idle', 'origin': 'app'},
+      ],
+    });
+    await pumpEventQueue();
+
+    expect(client.state.pendingSessions, isEmpty);
+    expect(client.state.sessions, hasLength(1));
+  });
+
+  test('a spawn-failed clears the row and records the error', () async {
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'sessions',
+      'sessions': <Object?>[],
+      'pending': [
+        {'id': 'p1', 'label': 'New session'},
+      ],
+    });
+    await pumpEventQueue();
+
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'spawn-failed',
+      'id': 'p1',
+      'error': 'the session exited before it started',
+    });
+    await pumpEventQueue();
+
+    expect(client.state.pendingSessions, isEmpty);
+    expect(client.state.lastError, 'the session exited before it started');
+    expect(client.lastErrorFromConnection, isFalse);
+  });
+
+  test('a spawn-failed for an unknown id is ignored', () async {
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'spawn-failed',
+      'id': 'ghost',
+      'error': 'the session exited before it started',
+    });
+    await pumpEventQueue();
+
+    expect(client.state.lastError, isNull);
+  });
+
+  test('a spawn-failed after the pending row is already gone is ignored', () async {
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'sessions',
+      'sessions': <Object?>[],
+      'pending': [
+        {'id': 'p1', 'label': 'New session'},
+      ],
+    });
+    await pumpEventQueue();
+    // The child registers first, so the placeholder is replaced before the
+    // failure arrives.
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'sessions',
+      'sessions': [
+        {'sessionId': 's1', 'label': 'x', 'agentState': 'idle', 'origin': 'app'},
+      ],
+    });
+    await pumpEventQueue();
+
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'spawn-failed',
+      'id': 'p1',
+      'error': 'the session exited before it started',
+    });
+    await pumpEventQueue();
+
+    expect(client.state.lastError, isNull);
+  });
+
+  // PIN: a late second result on a completed start id is dropped silently, which
+  // is exactly why the failure needs its own frame type.
+  test('a second command-result on a completed start id is dropped', () async {
+    final future = client.startSession();
+    final id = factory.last.lastSent['id'];
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'command-result',
+      'id': id,
+      'ok': true,
+    });
+    expect((await future).ok, isTrue);
+
+    factory.last.receive({
+      'protocolVersion': 1,
+      'type': 'command-result',
+      'id': id,
+      'ok': false,
+      'error': 'the session exited before it started',
+    });
+    await pumpEventQueue();
+
+    expect(client.state.lastError, isNull);
+  });
 }

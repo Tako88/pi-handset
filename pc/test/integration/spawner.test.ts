@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { afterEach, test } from 'node:test';
 
 import { createSpawner, defaultProjectArgs } from '../../src/hub/spawner.ts';
-import type { Spawner } from '../../src/hub/spawner.ts';
+import type { ChildExitEvent, Spawner } from '../../src/hub/spawner.ts';
 
 const spawners: Spawner[] = [];
 const scratchDirs: string[] = [];
@@ -62,6 +62,47 @@ function alive(pid: number): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Subscribes to the spawner's child-exit notifications and reads them one at a
+ * time. A notification that arrives before anyone awaits is buffered, so no
+ * test depends on timing.
+ */
+function exitCollector(spawner: Spawner): {
+  events: ChildExitEvent[];
+  unsubscribe: () => void;
+  next: (timeoutMs?: number) => Promise<ChildExitEvent>;
+} {
+  const events: ChildExitEvent[] = [];
+  let waiter: ((event: ChildExitEvent) => void) | null = null;
+  const unsubscribe = spawner.onChildExit((event) => {
+    if (waiter !== null) {
+      const resolve = waiter;
+      waiter = null;
+      resolve(event);
+      return;
+    }
+    events.push(event);
+  });
+  return {
+    events,
+    unsubscribe,
+    next(timeoutMs = 5000): Promise<ChildExitEvent> {
+      const queued = events.shift();
+      if (queued !== undefined) return Promise.resolve(queued);
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          waiter = null;
+          reject(new Error('timed out waiting for a child-exit notification'));
+        }, timeoutMs);
+        waiter = (event) => {
+          clearTimeout(timer);
+          resolve(event);
+        };
+      });
+    },
+  };
 }
 
 test('a spawned child runs in a fresh empty directory under tempRoot, and owns(pid) is true', async () => {
@@ -396,4 +437,98 @@ test('a synchronous spawn throw leaves a project dir alone', async () => {
 
   await assert.rejects(() => spawner.spawn({ cwd: dir }));
   assertProjectIntact(dir);
+});
+
+// --- child-exit notifications: the lifecycle surface the hub builds on ---
+
+test('onChildExit reports a child that exits on its own', async () => {
+  const tempRoot = scratch();
+  const spawner = createSpawner({
+    command: 'sh',
+    args: ['-c', 'exit 0'],
+    tempRoot,
+    // Long enough that the deadline cannot be mistaken for the child's exit.
+    registrationTimeoutMs: 60_000,
+  });
+  spawners.push(spawner);
+  const exits = exitCollector(spawner);
+
+  const pid = await spawner.spawn();
+  const event = await exits.next();
+
+  assert.deepEqual(event, { pid, reason: 'exit' });
+});
+
+test('onChildExit reports the registration deadline', async () => {
+  const tempRoot = scratch();
+  const spawner = createSpawner({
+    command: 'sh',
+    args: ['-c', 'sleep 30'],
+    tempRoot,
+    registrationTimeoutMs: 200,
+  });
+  spawners.push(spawner);
+  const exits = exitCollector(spawner);
+
+  const pid = await spawner.spawn();
+
+  assert.deepEqual(await exits.next(3000), { pid, reason: 'deadline' });
+});
+
+test("onChildExit still reports an already-confirmed child's later exit", async () => {
+  const tempRoot = scratch();
+  const spawner = createSpawner({
+    command: 'sh',
+    args: ['-c', 'sleep 30'],
+    tempRoot,
+    registrationTimeoutMs: 60_000,
+  });
+  spawners.push(spawner);
+  const exits = exitCollector(spawner);
+
+  const pid = await spawner.spawn();
+  spawner.confirm(pid);
+  spawner.kill(pid);
+
+  assert.deepEqual(await exits.next(3000), { pid, reason: 'exit' });
+});
+
+test('a deadline reap reports exactly once', async () => {
+  const tempRoot = scratch();
+  const spawner = createSpawner({
+    command: 'sh',
+    args: ['-c', 'sleep 30'],
+    tempRoot,
+    registrationTimeoutMs: 200,
+  });
+  spawners.push(spawner);
+  const exits = exitCollector(spawner);
+
+  const pid = await spawner.spawn();
+  assert.deepEqual(await exits.next(3000), { pid, reason: 'deadline' });
+
+  // The SIGKILLed child's own `exit` arrives later; because the deadline reap
+  // already removed the entry, it must not re-report.
+  await delay(300);
+  assert.deepEqual(exits.events, []);
+});
+
+test('unsubscribing stops notifications', async () => {
+  const tempRoot = scratch();
+  const spawner = createSpawner({
+    command: 'sh',
+    args: ['-c', 'sleep 30'],
+    tempRoot,
+    registrationTimeoutMs: 60_000,
+  });
+  spawners.push(spawner);
+  const exits = exitCollector(spawner);
+  exits.unsubscribe();
+
+  const pid = await spawner.spawn();
+  spawner.kill(pid);
+  await waitFor(() => !alive(pid), 'the killed child to die');
+  await delay(100);
+
+  assert.deepEqual(exits.events, []);
 });
