@@ -710,6 +710,19 @@ rather than guess at it.
 - **`pair` is same-machine only.** It talks over a Unix socket, so it cannot mint a code
   for a hub on another host; there the `kill -USR1` route (or running `pair` on that host)
   is still the way.
+- **Every device shares one token, it is never rotated, and nothing can rotate it.**
+  `loadOrCreateToken` mints one 256-bit token on first use and keeps it, both listeners
+  authenticate against that single value, and a redeemed ticket hands the same value to
+  each new device — so a lost or lent phone cannot be un-paired on its own. `rotateToken()`
+  exists and is tested but has no production caller, and the CLI dispatches only `serve`
+  and `pair`, so the only revocation is deleting `<configDir>/pi-droid/token` and
+  restarting, which de-pairs every device at once. Tracked as issue #66.
+- **The viewer listener serves plain `ws://` and the token travels in the `hello`
+  frame.** Anyone able to observe the connection — a shared or untrusted network, a
+  network whose PSK the attacker holds, a proxy, a wired segment — has the hub's only
+  credential and everything it grants: prompting any registered session, whose shell
+  commands run as the user who started the hub. A tailnet or any WireGuard-backed link
+  removes that exposure; a network you do not own does not.
 
 ## QR scanning
 

@@ -9,7 +9,8 @@ It is not a terminal mirror, and not a chat wrapper. A hub on the PC attaches to
 pi sessions already running there, and the phone shows the real thing: the same
 transcript, the same thinking, the same tool calls, rendered properly and updating
 live. Pair once over your LAN or a tailnet, and every `pi` you start afterwards shows
-up in the list.
+up in the list. The hub serves plain `ws://`, so prefer a tailnet on any network you do
+not own — see [`docs/known-limits.md`](docs/known-limits.md#pairing).
 
 `pc/` is Node + TypeScript, `app/` is Flutter + Dart, and `protocol/` holds the golden
 fixtures both sides assert against.
@@ -55,7 +56,9 @@ What is not built — and what is deliberately left out — is in the
 You need [pi](https://github.com/earendil-works/pi) and Node ≥ 22.19 on the PC. To
 build the app you also need Flutter 3.47.5, the Android SDK, and a JDK; the exact
 setup used here is in [`docs/development.md`](docs/development.md). The phone and the
-PC have to be able to reach each other — same network, or a tailnet.
+PC have to be able to reach each other. A tailnet is preferred over a shared network:
+the hub serves plain `ws://`, so anything that can read the connection's frames has the
+pairing token and everything it grants.
 
 ```sh
 git clone https://github.com/Tako88/PI-Droid
