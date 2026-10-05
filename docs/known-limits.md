@@ -872,9 +872,14 @@ was measured rather than assumed.
 - **A blank query matches nothing** — `0/0`, with both steppers disabled. This is
   deliberately the *opposite* of the model picker, which lists every model for a blank
   query; do not "align" the two.
-- **Scroll-to-match is approximate.** A match far outside the built window is reached by
-  bounded seek steps under `ListView.builder`'s lazy extent estimation (the same class as
-  the documented prepend anchor), so the view can settle a row or two short; the row tint
-  still marks the match once it is in view.
+- **Scroll-to-match is deterministic but can still give up.** A match outside the built
+  window is reached by a binary search over the scroll offset, using the built index
+  window as the oracle (the extent is re-read every probe, so a downward search reaches
+  a target past the initial lazy estimate). A frame cap bounds
+  the search; hitting it, a collapsed bracket, or a match whose row leaves the
+  transcript ends the seek and the view stays put rather than spinning. A give-up is
+  *not* retried for the same match — the reveal re-fires only when the current match
+  changes — so the match stays untinted until you step again or reopen the search. The
+  row tint still marks the match once it is built.
 - **Search resets on a session switch.** A query belongs to the session it was typed in;
   switching or closing a session closes and clears it.

@@ -31,7 +31,6 @@
 library;
 
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 
 import '../client/hub_models.dart';
@@ -132,6 +131,14 @@ class _TranscriptViewState extends State<TranscriptView> {
   /// forever.
   static const int _maxJumpAttempts = 10;
 
+  /// Frames one reveal may probe before giving up. The bisection normally
+  /// converges in O(log extent) frames (≈15 for a 30k-px transcript), but this
+  /// bound is genuinely reachable: a stalled or oscillating bracket, or repeated
+  /// no-measurement frames, can spend frames without halving. Hitting it ends
+  /// the seek (see [_endSeek]) rather than
+  /// spinning; the row tint still marks the match if it is ever built.
+  static const int _maxSeekFrames = 40;
+
   /// Whether the viewer is following the bottom. It is *not* recomputed from
   /// the offset after content growth (in a forward list that would read as "not
   /// at the bottom" the instant `maxScrollExtent` grew), so it must be read
@@ -149,6 +156,11 @@ class _TranscriptViewState extends State<TranscriptView> {
   final Map<String, GlobalKey> _rowKeys = {};
 
   GlobalKey _rowKey(String id) => _rowKeys.putIfAbsent(id, () => GlobalKey());
+
+  String? _seekId; // the match this seek belongs to
+  double? _seekLow; // an offset known to be before the target row
+  double? _seekHigh; // an offset known to be at or past the target row
+  int _seekFrames = 0; // total frames this seek has probed
 
   /// The id of the tool row whose body is expanded, or null when every tool row
   /// is collapsed. There is exactly one: the derivation below owns it while a
@@ -175,7 +187,7 @@ class _TranscriptViewState extends State<TranscriptView> {
       // The search is already open with a current match: reveal it rather than
       // opening at the newest row.
       WidgetsBinding.instance.addPostFrameCallback(
-        (_) => _settleToMatch(matchId, 0),
+        (_) => _settleToMatch(matchId),
       );
     } else {
       // A tall transcript must open at its newest row, not its oldest.
@@ -207,7 +219,7 @@ class _TranscriptViewState extends State<TranscriptView> {
     final matchId = widget.search.currentMatch?.id;
     if (matchId != null && matchId != oldWidget.search.currentMatch?.id) {
       WidgetsBinding.instance.addPostFrameCallback(
-        (_) => _settleToMatch(matchId, 0),
+        (_) => _settleToMatch(matchId),
       );
     }
     // Collapse what is no longer current: the in-flight call moved on, or the
@@ -300,19 +312,32 @@ class _TranscriptViewState extends State<TranscriptView> {
     });
   }
 
-  /// Reveal the row [id] for the current match: if it is built, bring it into
-  /// view; otherwise slide the built window toward it, one viewport at a time,
-  /// until it is built (or the bound is hit — the tint still marks it).
+  /// Reveal the row [id] for the current match.
   ///
-  /// **Measured and convergent, not idempotent.** The target offset is derived
-  /// from the rows actually laid out ([_targetOffsetFor]), so each step moves
-  /// the window toward the target instead of re-estimating the same pixel — the
-  /// draft re-estimated and could never converge on a variable-height list.
-  void _settleToMatch(String id, int attempt) {
-    // Covers an empty transcript: no list, so no controller clients.
+  /// The row can only be measured once built, and `ListView.builder` builds a
+  /// contiguous index window around the current offset. That window is the
+  /// oracle: probe the middle of the offset range, see whether the target index
+  /// is above or below the window, and halve. `maxScrollExtent` is re-read every
+  /// probe because it is an estimate that grows as more rows are built, and a
+  /// growing estimate is what lets a *downward* search reach a target past the
+  /// initial one (measured: 25511 at the top of a 30476 px list). Once the
+  /// target is built, [Scrollable.ensureVisible] places it.
+  ///
+  /// **Stranded-state policy.** After a give-up the seek is abandoned for that
+  /// match id and is not retried until the current match changes or the search
+  /// is reopened; a stream append changes the transcript but not the match id,
+  /// so it does not re-arm the seek. The row tint still marks the match.
+  void _settleToMatch(String id) {
     if (!mounted || !_controller.hasClients) return;
+    // A newer reveal superseded this one (or the search closed).
+    if (widget.search.currentMatch?.id != id) {
+      if (_seekId == id) _endSeek();
+      return;
+    }
+    // Fast path: already built — unchanged from before.
     final ctx = _rowKeys[id]?.currentContext;
     if (ctx != null) {
+      _endSeek();
       Scrollable.ensureVisible(
         ctx,
         alignment: 0.3,
@@ -320,90 +345,110 @@ class _TranscriptViewState extends State<TranscriptView> {
       );
       return;
     }
-    if (attempt >= _maxJumpAttempts) return;
-    final target = _targetOffsetFor(id);
-    if (target == null) return;
-    _controller.jumpTo(
-      target.clamp(0.0, _controller.position.maxScrollExtent),
-    );
-    WidgetsBinding.instance.addPostFrameCallback(
-      (_) => _settleToMatch(id, attempt + 1),
-    );
-  }
-
-  /// The offset to jump to so that [id] becomes built, measured from the rows
-  /// currently laid out rather than re-derived from the same estimate.
-  double? _targetOffsetFor(String id) {
-    final blocks = widget.transcript.blocks;
-    final blockIndex = blocks.indexWhere((b) => b.id == id);
-    if (blockIndex < 0) return null;
-    // The list prepends the truncated notice, so a block's list index is offset
-    // by one while the history is truncated.
-    final listOffset = widget.transcript.truncated ? 1 : 0;
-    final targetIndex = blockIndex + listOffset;
-
-    // Measured offsets of the committed rows currently built, by list index.
-    final built = <int, double>{};
-    for (var i = 0; i < blocks.length; i++) {
-      final offset = _measuredOffset(blocks[i].id);
-      if (offset != null) built[i + listOffset] = offset;
+    final targetIndex = _listIndexOf(id);
+    if (targetIndex == null) {
+      // The block this match names is gone from the transcript (a prepend or
+      // replacement changed the ids). Nothing to reveal.
+      _endSeek();
+      return;
     }
+    if (_seekId != id) {
+      _seekId = id;
+      _seekLow = null;
+      _seekHigh = null;
+      _seekFrames = 0;
+    }
+    if (_seekFrames >= _maxSeekFrames) {
+      // Give up explicitly. _endSeek clears the seek so no later frame resumes
+      // a bracket with stale bounds. It is not retried for this match id; see
+      // the stranded-state policy in the class docs / known-limits.
+      _endSeek();
+      return;
+    }
+    _seekFrames++;
 
-    if (built.isEmpty) {
-      // Nothing to measure: the lazy list's proportional estimate.
+    final offset = _controller.offset;
+    final range = _builtIndexRange();
+
+    if (range == null) {
+      // Nothing laid out to measure: aim at the proportional estimate, retry.
       final count = _itemCount();
-      if (count <= 1) return null;
-      return _controller.position.maxScrollExtent * targetIndex / (count - 1);
-    }
-
-    int? above; // Largest built index at or before the target.
-    int? below; // Smallest built index at or after the target.
-    for (final index in built.keys) {
-      if (index <= targetIndex && (above == null || index > above)) {
-        above = index;
+      if (count <= 1) {
+        _endSeek();
+        return;
       }
-      if (index >= targetIndex && (below == null || index < below)) {
-        below = index;
-      }
+      _seekJump(_controller.position.maxScrollExtent * targetIndex / (count - 1));
+      return;
     }
 
-    if (above != null && below != null) {
-      // The target lies within the built window: interpolate between the two
-      // measured offsets by index. (above == below means the target itself is
-      // built, which _settleToMatch handles first.)
-      //
-      // Defensive fallback for a sparsely-measured frame: the built window of a
-      // ListView.builder is a contiguous index range, so a target strictly
-      // between two built rows should not occur. This is not the convergence
-      // mechanism — that is the one-sided viewport stepping below.
-      if (above == below) return built[above];
-      final before = built[above]!;
-      final after = built[below]!;
-      final t = (targetIndex - above) / (below - above);
-      return before + (after - before) * t;
+    if (targetIndex > range.max) {
+      // Target below the window: this offset is before it.
+      _seekLow = _seekLow == null ? offset : (_seekLow! > offset ? _seekLow! : offset);
+    } else if (targetIndex < range.min) {
+      // Target above the window: this offset is at or past it.
+      _seekHigh = _seekHigh == null ? offset : (_seekHigh! < offset ? _seekHigh! : offset);
+    } else {
+      // Inside the window but not built. Contiguity says this cannot happen; a
+      // frame caught mid-teardown could still show it. Retry next frame rather
+      // than strand — the frame cap is the backstop.
+      _seekAgain();
+      return;
     }
 
-    final step = _controller.position.viewportDimension * 0.8;
-    if (above != null) {
-      // Only rows above the target are built: slide down toward it.
-      return built[above]! + step;
+    var low = _seekLow ?? 0.0;
+    var high = _seekHigh ?? _controller.position.maxScrollExtent;
+    final max = _controller.position.maxScrollExtent;
+    if (low > max) low = max;
+    if (high > max) high = max;
+    if (high < low) high = low;
+    if (high - low < 1.0) {
+      // The bracket collapsed without building the target (contradictory
+      // oracle readings or a stale estimate). Give up explicitly, never strand.
+      _endSeek();
+      return;
     }
-    // Only rows below the target are built: slide up toward it.
-    return built[below]! - step;
+    _seekJump((low + high) / 2);
   }
 
-  /// The scroll offset that would put the row [id] at the top of the viewport,
-  /// or null when it is not built. RenderAbstractViewport.getOffsetToReveal is
-  /// the framework's own measurement, so the estimate agrees with
-  /// Scrollable.ensureVisible.
-  double? _measuredOffset(String id) {
-    final ctx = _rowKeys[id]?.currentContext;
-    if (ctx == null) return null;
-    final renderObject = ctx.findRenderObject();
-    if (renderObject is! RenderBox || !renderObject.attached) return null;
-    return RenderAbstractViewport.of(
-      renderObject,
-    ).getOffsetToReveal(renderObject, 0.0).offset;
+  void _seekJump(double offset) {
+    _controller.jumpTo(offset.clamp(0.0, _controller.position.maxScrollExtent));
+    _seekAgain();
+  }
+
+  /// Schedule one more probe for the in-flight seek next frame.
+  void _seekAgain() {
+    final id = _seekId;
+    if (id == null) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_controller.hasClients) return;
+      _settleToMatch(id);
+    });
+  }
+
+  void _endSeek() {
+    _seekId = null;
+    _seekLow = null;
+    _seekHigh = null;
+    _seekFrames = 0;
+  }
+
+  int? _listIndexOf(String id) => transcriptListIndexOf(widget.transcript, id);
+
+  /// The smallest and largest list indices among the committed rows currently
+  /// built, or null when none is. `ListView.builder` builds a contiguous index
+  /// window, so this is that window's extent.
+  ({int min, int max})? _builtIndexRange() {
+    final blocks = widget.transcript.blocks;
+    final listOffset = widget.transcript.truncated ? 1 : 0;
+    int? min;
+    int? max;
+    for (var i = 0; i < blocks.length; i++) {
+      if (_rowKeys[blocks[i].id]?.currentContext == null) continue;
+      final index = i + listOffset;
+      if (min == null || index < min) min = index;
+      if (max == null || index > max) max = index;
+    }
+    return min == null ? null : (min: min, max: max!);
   }
 
   /// The number of list items the builder would produce for this transcript.
@@ -630,6 +675,16 @@ class _TranscriptViewState extends State<TranscriptView> {
         return ImageBlock(block: block);
     }
   }
+}
+
+/// The list index of [id] in [transcript]'s builder, including the synthetic
+/// truncated-history notice row, or null when [id] names no block. Exposed so
+/// the search's index space and the builder's can be asserted to match.
+@visibleForTesting
+int? transcriptListIndexOf(SessionTranscript transcript, String id) {
+  final blockIndex = transcript.blocks.indexWhere((b) => b.id == id);
+  if (blockIndex < 0) return null;
+  return blockIndex + (transcript.truncated ? 1 : 0);
 }
 
 /// Whether [now] is [old] with entries prepended: the suffix of [now] equals
