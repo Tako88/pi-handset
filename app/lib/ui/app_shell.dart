@@ -27,9 +27,9 @@ import '../protocol/protocol.dart';
 import 'attachment_actions.dart';
 import 'command_suggestions.dart';
 import 'compose_bar.dart';
-import 'folder_browser.dart';
 import 'model_actions.dart';
 import 'pairing_screen.dart';
+import 'session_actions.dart';
 import 'session_list.dart';
 import 'session_menu.dart';
 import 'status_indicator.dart';
@@ -173,6 +173,7 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
   /// point of use rather than at construction.
   late final AttachmentActions _attachmentActions;
   late final ModelActions _modelActions;
+  late final SessionActions _sessionActions;
   late final TreeActions _treeActions;
 
   @override
@@ -184,6 +185,12 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
       isMounted: () => mounted,
       transcriptOf: (id) =>
           _state.transcripts[id] ?? const SessionTranscript(),
+    );
+    _sessionActions = SessionActions(
+      client: widget.client,
+      isMounted: () => mounted,
+      activeSessionId: () => _state.activeSessionId,
+      labelOf: _sessionLabel,
     );
     _treeActions = TreeActions(client: widget.client, isMounted: () => mounted);
     _pendingOpenSessionId = widget.initialSessionId;
@@ -577,150 +584,6 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
 
   void _open(SessionSummary session) => _queueOpen(session.sessionId);
 
-  /// Starts an app-started session. With the folder capabilities the FAB first
-  /// offers a choice between a quick temp-dir session and browsing to a project;
-  /// otherwise it starts directly, exactly as it always has. [context] is the
-  /// sessions-view context, below `MaterialApp`, so its `ScaffoldMessenger` and
-  /// `Navigator` are ancestors.
-  void _start(BuildContext context) {
-    if (_state.capabilities.contains(capabilityListDirs) &&
-        _state.capabilities.contains(capabilityProjectSession)) {
-      unawaited(_chooseStart(context));
-      return;
-    }
-    _quickStart(context);
-  }
-
-  /// The old-hub path: start immediately, no chooser.
-  void _quickStart(BuildContext context) {
-    final messenger = ScaffoldMessenger.of(context);
-    unawaited(
-      widget.client.startSession().then((result) {
-        if (!result.ok) {
-          messenger.showSnackBar(
-            SnackBar(
-              content: Text(result.error ?? 'could not start a session'),
-            ),
-          );
-        }
-      }),
-    );
-  }
-
-  /// The capability path: a bottom-sheet chooser. The messenger and navigator
-  /// are captured before the sheet's async gap, because the sheet's own context
-  /// is gone once it closes; the sheet is popped and only then is the browser
-  /// route pushed.
-  Future<void> _chooseStart(BuildContext context) async {
-    final messenger = ScaffoldMessenger.of(context);
-    final navigator = Navigator.of(context);
-    final choice = await showModalBottomSheet<String>(
-      context: context,
-      builder: (sheetContext) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              key: const Key('quick-session'),
-              leading: const Icon(Icons.add),
-              title: const Text('Quick session'),
-              onTap: () => Navigator.pop(sheetContext, 'quick'),
-            ),
-            ListTile(
-              key: const Key('open-project'),
-              leading: const Icon(Icons.folder_open),
-              title: const Text('Open a project'),
-              onTap: () => Navigator.pop(sheetContext, 'project'),
-            ),
-          ],
-        ),
-      ),
-    );
-    if (!mounted) return;
-    if (choice == 'quick') {
-      final result = await widget.client.startSession();
-      if (!mounted) return;
-      if (!result.ok) {
-        messenger.showSnackBar(
-          SnackBar(content: Text(result.error ?? 'could not start a session')),
-        );
-      }
-    } else if (choice == 'project') {
-      await navigator.push(
-        MaterialPageRoute<void>(
-          builder: (_) => FolderBrowserScreen(client: widget.client),
-        ),
-      );
-    }
-  }
-
-  /// Kills an app-started session. A refusal is shown in a SnackBar.
-  void _kill(SessionSummary session, BuildContext context) {
-    final messenger = ScaffoldMessenger.of(context);
-    unawaited(
-      widget.client.killSession(session.sessionId).then((result) {
-        if (!result.ok) {
-          messenger.showSnackBar(
-            SnackBar(
-              content: Text(result.error ?? 'could not kill the session'),
-            ),
-          );
-        }
-      }),
-    );
-  }
-
-  /// Compacts the session after a confirmation. The messenger and session id
-  /// are captured before the dialog's await, because the dialog's own context
-  /// is gone once it closes.
-  Future<void> _compact(BuildContext context) async {
-    final messenger = ScaffoldMessenger.of(context);
-    final activeId = _state.activeSessionId;
-    if (activeId == null) return;
-    final confirmed = await confirmCompact(context);
-    if (!mounted || !confirmed) return;
-    final result = await widget.client.sendCommand(activeId, 'compact');
-    if (!mounted || result.ok) return;
-    messenger.showSnackBar(
-      SnackBar(content: Text(result.error ?? 'could not compact')),
-    );
-  }
-
-  /// Replaces the session with a fresh one after a confirmation. The messenger
-  /// and session id are captured before the dialog's await, because the dialog's
-  /// own context is gone once it closes.
-  ///
-  /// The returned future settles on the replacement, not the ack, so a refusal
-  /// is the only failure that reaches the SnackBar here.
-  Future<void> _newSession(BuildContext context) async {
-    final messenger = ScaffoldMessenger.of(context);
-    final activeId = _state.activeSessionId;
-    if (activeId == null) return;
-    final confirmed = await confirmNewSession(context);
-    if (!mounted || !confirmed) return;
-    final result = await widget.client.sessionNew(activeId);
-    if (!mounted || result.ok) return;
-    messenger.showSnackBar(
-      SnackBar(content: Text(result.error ?? 'could not start a new session')),
-    );
-  }
-
-  /// Renames the session. The display updates when pi reports the new label.
-  Future<void> _rename(String activeId, BuildContext context) async {
-    final messenger = ScaffoldMessenger.of(context);
-    final name = await promptRename(context, _sessionLabel(activeId));
-    if (!mounted || name == null) return;
-    final result = await widget.client.sendCommand(
-      activeId,
-      'setSessionName',
-      args: {'name': name.trim()},
-    );
-    if (!mounted || result.ok) return;
-    messenger.showSnackBar(
-      SnackBar(content: Text(result.error ?? 'could not rename the session')),
-    );
-  }
-
   void _close() {
     final active = _state.activeSessionId;
     if (active != null) widget.client.unsubscribe(active);
@@ -821,13 +684,17 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
         SessionList(
           sessions: _state.sessions,
           onOpen: _open,
-          onKill: (session) => _kill(session, context),
+          onKill: (session) => _sessionActions.kill(session, context),
         ),
       ),
       floatingActionButton: FloatingActionButton(
         key: const Key('start-session'),
         tooltip: 'Start a session',
-        onPressed: () => _start(context),
+        onPressed: () => _sessionActions.start(
+          context,
+          canBrowse: _state.capabilities.contains(capabilityListDirs) &&
+              _state.capabilities.contains(capabilityProjectSession),
+        ),
         child: const Icon(Icons.add),
       ),
     );
@@ -911,8 +778,8 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
             onToggleNotify: () => _toggleNotify(activeId),
             thinkingLevel: transcript.thinkingLevel,
             model: transcript.currentModel?.name,
-            onCompact: () => _compact(context),
-            onRename: () => _rename(activeId, context),
+            onCompact: () => _sessionActions.compact(context),
+            onRename: () => _sessionActions.rename(activeId, context),
             onThinkingLevel: () =>
                 _modelActions.setThinkingLevel(activeId, context),
             onModel: () => _modelActions.setModel(activeId, context),
@@ -920,7 +787,7 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
             // capability can, and without it the items are omitted rather than
             // offered and refused.
             onNewSession: _state.capabilities.contains(capabilitySessionControl)
-                ? () => _newSession(context)
+                ? () => _sessionActions.newSession(context)
                 : null,
             onFork: _state.capabilities.contains(capabilitySessionControl)
                 ? () => _treeActions.fork(activeId, context)
