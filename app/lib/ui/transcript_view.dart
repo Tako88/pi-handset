@@ -31,6 +31,7 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../client/hub_models.dart';
 import '../client/stick_to_bottom.dart';
@@ -38,12 +39,23 @@ import '../client/transcript.dart';
 import 'transcript_blocks.dart';
 import 'theme.dart';
 
+/// Puts [text] on the system clipboard. Injectable so a widget test can
+/// assert the copy wiring without a platform channel (as `onOpenLink` is).
+Future<void> copyToClipboard(String text) async {
+  try {
+    await Clipboard.setData(ClipboardData(text: text));
+  } catch (_) {
+    // Nothing the viewer can do; same policy as openExternalLink.
+  }
+}
+
 class TranscriptView extends StatefulWidget {
   const TranscriptView({
     super.key,
     required this.transcript,
     required this.onLoadOlder,
     this.onOpenLink = openExternalLink,
+    this.onCopyText = copyToClipboard,
   });
 
   final SessionTranscript transcript;
@@ -55,6 +67,15 @@ class TranscriptView extends StatefulWidget {
   /// How a tapped link is opened, threaded to every [TextBlock]. Injectable so
   /// a widget test can assert the wiring without a platform channel.
   final Future<void> Function(Uri uri) onOpenLink;
+
+  /// How a row's whole-message copy is delivered. Injectable so a widget test
+  /// can assert the wiring without a platform channel; production writes to
+  /// the system clipboard.
+  final void Function(String text) onCopyText;
+
+  /// The toolbar item that copies the whole row, as opposed to the system's
+  /// own Copy, which copies only the selected substring.
+  static const String copyMessageLabel = 'Copy message';
 
   static const String emptyMessage = 'No messages yet.';
 
@@ -323,7 +344,7 @@ class _TranscriptViewState extends State<TranscriptView> {
             final block = blocks[blockIndex];
             return RepaintBoundary(
               key: ValueKey(block.id),
-              child: _block(block),
+              child: _selectable(block, _block(block)),
             );
           },
         ),
@@ -344,6 +365,31 @@ class _TranscriptViewState extends State<TranscriptView> {
             ),
           ),
       ],
+    );
+  }
+
+  /// Wraps one committed row in a [SelectionArea] whose toolbar also offers
+  /// the whole row. Per row, not per list: rows are lazily unmounted, and the
+  /// copy item needs the row it belongs to.
+  Widget _selectable(TranscriptBlock block, Widget child) {
+    final text = copyTextForBlock(block);
+    if (text == null || text.isEmpty) return child;
+    return SelectionArea(
+      contextMenuBuilder: (context, state) =>
+          AdaptiveTextSelectionToolbar.buttonItems(
+        anchors: state.contextMenuAnchors,
+        buttonItems: [
+          ...state.contextMenuButtonItems,
+          ContextMenuButtonItem(
+            label: TranscriptView.copyMessageLabel,
+            onPressed: () {
+              state.hideToolbar();
+              widget.onCopyText(text);
+            },
+          ),
+        ],
+      ),
+      child: child,
     );
   }
 
