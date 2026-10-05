@@ -277,4 +277,17 @@ void main() {
       expect(toolSummary(null), isNull);
     });
   });
+
+  test('diffViewText marks every line and joins on newlines', () {
+    final view = DiffView(
+      path: 'p',
+      lines: [
+        const DiffLine(diffLineCtx, 'a'),
+        const DiffLine(diffLineDel, 'b'),
+        const DiffLine(diffLineAdd, 'c'),
+      ],
+    );
+    expect(diffViewText(view), ' a\n-b\n+c');
+    expect(diffViewText(const DiffView(path: 'p', lines: [])), '');
+  });
 }
