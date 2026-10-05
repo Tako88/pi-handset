@@ -10,8 +10,6 @@
 /// `RepaintBoundary` there, so a streamed frame repaints only the streaming row.
 library;
 
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -366,13 +364,7 @@ const int toolArgumentsLabelMaxChars = 200;
 /// Renders tool arguments compactly for the header line: JSON when structured,
 /// the raw string otherwise, capped with an ellipsis.
 String argumentsLabel(Object? args) {
-  final raw = args == null
-      ? ''
-      : args is String
-      ? args
-      : args is Map
-      ? jsonEncode(args)
-      : args.toString();
+  final raw = toolArgumentsText(args);
   if (raw.length <= toolArgumentsLabelMaxChars) return raw;
   return '${raw.substring(0, toolArgumentsLabelMaxChars)}…';
 }

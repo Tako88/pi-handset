@@ -51,7 +51,7 @@ class ToolViewBody extends StatelessWidget {
   final bool isError;
 
   /// Shown when the bridge bounded the view to its byte budget.
-  static const String truncationMarker = '[view truncated]';
+  static const String truncationMarker = toolViewTruncationMarker;
 
   @override
   Widget build(BuildContext context) {

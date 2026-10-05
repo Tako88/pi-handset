@@ -784,3 +784,37 @@ String _resultText(Map<Object?, Object?> source) {
   }
   return parts.join('\n');
 }
+
+/// The tool-argument text, uncapped. The header caps it for layout
+/// (`argumentsLabel`); a copy must not.
+String toolArgumentsText(Object? args) => args == null
+    ? ''
+    : args is String
+    ? args
+    : args is Map
+    ? jsonEncode(args)
+    : args.toString();
+
+/// The exact text a Copy action puts on the clipboard for [block], or null
+/// when the row has nothing to copy (an image).
+String? copyTextForBlock(TranscriptBlock block) {
+  switch (block.kind) {
+    case TranscriptBlockKind.text:
+    case TranscriptBlockKind.thinking:
+    case TranscriptBlockKind.notice:
+      return block.text;
+    case TranscriptBlockKind.image:
+      return null;
+    case TranscriptBlockKind.tool:
+      final view = block.toolView;
+      final body = view is DiffView ? diffViewText(view) : block.text;
+      final args = toolArgumentsText(block.toolArgs);
+      return [
+        block.toolName ?? 'tool',
+        if (args.isNotEmpty) args,
+        if (body.isNotEmpty) body,
+        // A bounded diff is only part of the change: say so in the copy.
+        if (view is DiffView && view.truncated) toolViewTruncationMarker,
+      ].join('\n');
+  }
+}

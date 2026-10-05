@@ -11,6 +11,18 @@ const String diffLineAdd = 'add';
 const String diffLineDel = 'del';
 const String diffLineCtx = 'ctx';
 
+/// Shown on a copy when the bridge bounded this view to its byte budget, so a
+/// partial body is never pasted as if it were whole. The renderer draws the
+/// same text (`ToolViewBody.truncationMarker` delegates here).
+const String toolViewTruncationMarker = '[view truncated]';
+
+/// The unified-diff body of [view]: one line per [DiffLine], each prefixed
+/// with its marker. Line numbers cannot be recovered — the bridge's parse
+/// discarded them (see `pc/src/bridge/tool-views.ts` `parseDiff`).
+String diffViewText(DiffView view) => view.lines
+    .map((l) => '${l.isAdd ? '+' : l.isDel ? '-' : ' '}${l.text}')
+    .join('\n');
+
 /// One line of a [DiffView]. A line whose kind is none of the three is treated
 /// as context, so a future kind degrades to unhighlighted text.
 class DiffLine {

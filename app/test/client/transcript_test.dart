@@ -1036,4 +1036,125 @@ void main() {
     expect(blocks.single.text, isNot(contains('second result')));
     expect((blocks.single.toolView as DiffView).path, 'last.dart');
   });
+
+  group('copy text', () {
+    test('toolArgumentsText serializes structured args and passes strings', () {
+      expect(
+        toolArgumentsText({'path': '/etc/hostname'}),
+        '{"path":"/etc/hostname"}',
+      );
+      expect(toolArgumentsText('raw'), 'raw');
+      expect(toolArgumentsText(null), '');
+    });
+
+    test('copyTextForBlock copies the raw text of a prose row', () {
+      for (final kind in [
+        TranscriptBlockKind.text,
+        TranscriptBlockKind.thinking,
+        TranscriptBlockKind.notice,
+      ]) {
+        expect(
+          copyTextForBlock(TranscriptBlock(kind: kind, id: 'b', text: 'hello')),
+          'hello',
+        );
+      }
+    });
+
+    test('copyTextForBlock has nothing to copy for an image', () {
+      expect(
+        copyTextForBlock(
+          TranscriptBlock(
+            kind: TranscriptBlockKind.image,
+            id: 'b',
+            imageBytes: Uint8List(0),
+          ),
+        ),
+        isNull,
+      );
+    });
+
+    test('a tool row copies name, arguments and the result body', () {
+      expect(
+        copyTextForBlock(
+          TranscriptBlock(
+            kind: TranscriptBlockKind.tool,
+            id: 'b',
+            text: 'output',
+            toolName: 'bash',
+            toolArgs: {'command': 'ls'},
+          ),
+        ),
+        'bash\n{"command":"ls"}\noutput',
+      );
+    });
+
+    test('a diff tool row copies the diff, not the summary', () {
+      expect(
+        copyTextForBlock(
+          TranscriptBlock(
+            kind: TranscriptBlockKind.tool,
+            id: 'b',
+            text: 'Successfully replaced 1 block(s).',
+            toolName: 'edit',
+            toolArgs: {'path': 'app/foo.dart'},
+            toolView: const DiffView(
+              path: 'app/foo.dart',
+              lines: [
+                DiffLine(diffLineCtx, 'a'),
+                DiffLine(diffLineDel, 'b'),
+                DiffLine(diffLineAdd, 'c'),
+              ],
+            ),
+          ),
+        ),
+        'edit\n{"path":"app/foo.dart"}\n a\n-b\n+c',
+      );
+    });
+
+    test('a truncated diff appends the renderer marker', () {
+      expect(
+        copyTextForBlock(
+          TranscriptBlock(
+            kind: TranscriptBlockKind.tool,
+            id: 'b',
+            toolName: 'edit',
+            toolArgs: {'path': 'app/foo.dart'},
+            toolView: const DiffView(
+              path: 'app/foo.dart',
+              lines: [DiffLine(diffLineAdd, 'c')],
+              truncated: true,
+            ),
+          ),
+        ),
+        'edit\n{"path":"app/foo.dart"}\n+c\n[view truncated]',
+      );
+    });
+
+    test('a tool row with no args falls back to "tool" for a missing name', () {
+      expect(
+        copyTextForBlock(
+          TranscriptBlock(
+            kind: TranscriptBlockKind.tool,
+            id: 'b',
+            text: 'output',
+            toolArgs: null,
+          ),
+        ),
+        'tool\noutput',
+      );
+      expect(
+        copyTextForBlock(
+          TranscriptBlock(
+            kind: TranscriptBlockKind.tool,
+            id: 'b',
+            text: 'output',
+            toolName: 'bash',
+            toolArgs: null,
+          ),
+        ),
+        'bash\noutput',
+      );
+    });
+  });
 }
+
