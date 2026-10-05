@@ -833,3 +833,48 @@ was measured rather than assumed.
 - **A copy of a `write` is the app's all-addition rendering, not the file.** The bridge
   drops one trailing newline from `args.content`, so a pasted `write` can differ from the
   file by that newline.
+
+## Finding text
+
+- **Search covers only the loaded window.** The matches are drawn from the transcript
+  blocks the app already holds, never from the session on disk, and the search never reaches
+  beyond what the app holds. Loading an older page widens the loaded window and therefore
+  widens the search to the newly held blocks, so a row that arrives with a page becomes
+  findable without retyping; a row outside the loaded window still cannot be found.
+- **A match is highlighted as a whole row, not as glyphs.** The dominant prose renderer is
+  `MarkdownBody`, whose `builders` map is keyed by markdown tag and replaces whole text
+  nodes, so there is no hook to style a substring; the whole matching row is tinted
+  instead, and the stepper counts rows (n/N), not occurrences.
+- **On a tool row the tint covers the state fill.** The tint is alpha-blended over the
+  row's own surface, so a hit's amber wash overtakes the running/succeeded/failed fill; the
+  row's state stays legible from the unchanged left rule. The alternative — leaving tool
+  rows untinted and marking them by rule only — was rejected to keep one highlight
+  mechanism.
+- **The tint is visible rather than AA-neutral, and ordinary row text keeps AA.** Every hit
+  is perceptibly different from its base (tint-vs-base contrast at least 1.39 dark / 1.30
+  light at the ordinary-hit alpha, 1.85 / 1.64 at the stronger current-hit alpha) and the
+  row's own text stays at or above AA on either (≈ 4.5:1 dark / ≈ 5.1:1 light at the
+  current-hit alpha — the worst case is `text` on a current hit over `toolSuccessBg` dark
+  and over `toolPendingBg` light). 0.40 keeps the row's own text at AA on every base;
+  raising it to 0.50 drops dark to 3.91, and larger values were not probed. **Secondary
+  tool-output text under the tint does dip below AA** — ≈ 2.4–3.5:1 over the tool surfaces
+  in the two palettes — and that dip is the accepted cost of a visible hit.
+- **The corpus is the row's copy text.** For a tool row that is the tool name + its
+  arguments + the result body, including the `[view truncated]` marker and any text hidden
+  while the row is collapsed; for a collapsed thinking row it is the hidden body. A committed
+  `notice` row is searched by its own text — only the synthetic truncated-history notice
+  (built by the view, not held in `blocks`) is not. A query can therefore mark a row whose
+  visible text shows nothing.
+- **Image rows are not searchable** (they carry no text), and the **streaming reply, the
+  live-reasoning row, the `Load older messages` control and the truncated-history notice
+  are not searched** — only committed transcript blocks are matched; those rows are built
+  by the view rather than held in it.
+- **A blank query matches nothing** — `0/0`, with both steppers disabled. This is
+  deliberately the *opposite* of the model picker, which lists every model for a blank
+  query; do not "align" the two.
+- **Scroll-to-match is approximate.** A match far outside the built window is reached by
+  bounded seek steps under `ListView.builder`'s lazy extent estimation (the same class as
+  the documented prepend anchor), so the view can settle a row or two short; the row tint
+  still marks the match once it is in view.
+- **Search resets on a session switch.** A query belongs to the session it was typed in;
+  switching or closing a session closes and clears it.

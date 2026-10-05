@@ -21,6 +21,8 @@ fixtures both sides assert against.
 - **Reads and writes pi sessions from the phone.** The transcript is a document: your
   messages, the agent's thinking, tool calls and their results, rendered as typed
   blocks rather than a wall of text.
+- **Find text in the transcript.** A search button in the app bar matches text in the
+  transcript rows already loaded and steps through the hits, tinting each matching row.
 - **Streams live.** Replies arrive token by token and the reasoning streams into its
   own row above the reply. A content-free phase frame means a slow first token is
   never mislabelled as thinking.
