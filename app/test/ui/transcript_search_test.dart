@@ -125,6 +125,64 @@ void main() {
     return tester.getRect(row).overlaps(tester.getRect(find.byType(ListView)));
   }
 
+  /// Pumps the transcript with no search, settles it at the bottom, THEN opens
+  /// the search — the on-device ordering (`app_shell._openSearch` → rebuild →
+  /// didUpdateWidget). Opening on the first pump takes `initState`, which
+  /// skips `_jumpToBottom` and starts at the top, hiding this bug.
+  Future<void> pumpSearching(
+    WidgetTester tester,
+    SessionTranscript transcript, {
+    required List<TranscriptBlock> matches,
+    int current = 0,
+  }) async {
+    await tester.pumpWidget(wrap(transcript));
+    await tester.pumpAndSettle();
+    expect(atBottom(tester), isTrue, reason: 'warm-up must reach the bottom');
+    await tester.pumpWidget(
+      wrap(
+        transcript,
+        search: TranscriptSearch(
+          open: true,
+          matches: matches,
+          current: current,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+  }
+
+  /// Warm up at the bottom, scroll back to the top, THEN open the search — a
+  /// user who scrolled up and searched. The reveal must work in the *downward*
+  /// direction too: the target is reached from above, where the extent estimate
+  /// is 16% short (measured: 25511 vs 30476).
+  Future<void> pumpSearchingFromTop(
+    WidgetTester tester,
+    SessionTranscript transcript, {
+    required List<TranscriptBlock> matches,
+    int current = 0,
+  }) async {
+    await tester.pumpWidget(wrap(transcript));
+    await tester.pumpAndSettle();
+    tester.state<ScrollableState>(find.byType(Scrollable)).position.jumpTo(0);
+    await tester.pump();
+    expect(
+      scrollOffset(tester),
+      0,
+      reason: 'the transcript must start at the top',
+    );
+    await tester.pumpWidget(
+      wrap(
+        transcript,
+        search: TranscriptSearch(
+          open: true,
+          matches: matches,
+          current: current,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+  }
+
   testWidgets('a view with no search tints no row', (tester) async {
     await tester.pumpWidget(
       wrap(
@@ -260,32 +318,95 @@ void main() {
   });
 
   testWidgets(
+    'the first block is revealed from the bottom of a long variable-height transcript',
+    (tester) async {
+      final transcript = mixed(400);
+      await pumpSearching(tester, transcript, matches: [transcript.blocks[0]]);
+
+      expect(
+        rowVisible(tester, 'b0'),
+        isTrue,
+        reason: 'the first block must be scrolled into view from the bottom',
+      );
+      expect(
+        rowFor(tester, 'b0').highlight,
+        isNotNull,
+        reason: 'a built current-match row must carry the tint',
+      );
+    },
+  );
+
+  testWidgets('a mid-transcript match is revealed from the bottom', (
+    tester,
+  ) async {
+    final transcript = mixed(400);
+    await pumpSearching(tester, transcript, matches: [transcript.blocks[200]]);
+
+    expect(
+      rowVisible(tester, 'b200'),
+      isTrue,
+      reason: 'a mid-transcript match must be reached from the bottom',
+    );
+  });
+
+  testWidgets('stepping between two far matches reveals the new one', (
+    tester,
+  ) async {
+    final transcript = mixed(400);
+    // b395 is inside the measured bottom window (blocks 394..399), so it takes
+    // the fast path; stepping to b5 then forces a far upward seek.
+    await pumpSearching(
+      tester,
+      transcript,
+      matches: [transcript.blocks[395], transcript.blocks[5]],
+    );
+    expect(rowVisible(tester, 'b395'), isTrue);
+
+    final before = scrollOffset(tester);
+    await tester.pumpWidget(
+      wrap(
+        transcript,
+        search: TranscriptSearch(
+          open: true,
+          matches: [transcript.blocks[395], transcript.blocks[5]],
+          current: 1,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      rowVisible(tester, 'b5'),
+      isTrue,
+      reason: 'stepping to a far match must reveal it',
+    );
+    expect(rowFor(tester, 'b5').highlight, isNotNull);
+    expect(
+      scrollOffset(tester),
+      isNot(before),
+      reason: 'the view must move to the new match',
+    );
+  });
+
+  testWidgets(
     'a late match is revealed, and stepping to another moves the view',
     (tester) async {
       final transcript = tall(60);
-      final late = transcript.blocks[55];
-      await tester.pumpWidget(
-        wrap(
-          transcript,
-          search: TranscriptSearch(open: true, matches: [late], current: 0),
-        ),
-      );
-      await tester.pumpAndSettle();
-
+      final first = transcript.blocks[5];
+      await pumpSearching(tester, transcript, matches: [first]);
       expect(
-        rowVisible(tester, 'b55'),
+        rowVisible(tester, 'b5'),
         isTrue,
         reason: 'the current match must be scrolled into view',
       );
 
-      final early = transcript.blocks[5];
       final revealed = scrollOffset(tester);
       await tester.pumpWidget(
         wrap(
           transcript,
           search: TranscriptSearch(
             open: true,
-            matches: [late, early],
+            matches: [first, transcript.blocks[0]],
             current: 1,
           ),
         ),
@@ -293,7 +414,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(
-        rowVisible(tester, 'b5'),
+        rowVisible(tester, 'b0'),
         isTrue,
         reason: 'stepping to another match must reveal it',
       );
@@ -309,28 +430,151 @@ void main() {
     tester,
   ) async {
     final transcript = mixed(60);
-    final late = transcript.blocks[50];
-    await tester.pumpWidget(
-      wrap(
-        transcript,
-        search: TranscriptSearch(open: true, matches: [late], current: 0),
-      ),
-    );
-    await tester.pumpAndSettle();
+    await pumpSearching(tester, transcript, matches: [transcript.blocks[0]]);
 
     expect(
-      rowVisible(tester, 'b50'),
+      rowVisible(tester, 'b0'),
       isTrue,
       reason:
-          'the bounded, convergent seek must reach a match in a variable-height '
+          'the anchored binary search must reach a match in a variable-height '
           'transcript (a one-shot estimate lands short)',
     );
     expect(
-      rowFor(tester, 'b50').highlight,
+      rowFor(tester, 'b0').highlight,
       isNotNull,
       reason: 'a built current-match row must carry the tint',
     );
   });
+
+  testWidgets('an empty transcript with a match does not throw', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      wrap(
+        const SessionTranscript(),
+        search: TranscriptSearch(
+          open: true,
+          matches: [textBlock('ghost', 'x')],
+          current: 0,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text(TranscriptView.emptyMessage), findsOneWidget);
+  });
+
+  testWidgets(
+    'a current match whose row has left the transcript leaves the view alone',
+    (tester) async {
+      final transcript = tall(60);
+      final ghost = textBlock('ghost', 'hello');
+      await tester.pumpWidget(wrap(transcript));
+      await tester.pumpAndSettle();
+      expect(atBottom(tester), isTrue);
+      final before = scrollOffset(tester);
+      await tester.pumpWidget(
+        wrap(
+          transcript,
+          search: TranscriptSearch(
+            open: true,
+            matches: [transcript.blocks[59], ghost],
+            current: 1,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(scrollOffset(tester), before); // no reveal, no jump
+      expect(rowFor(tester, 'b59').highlight, isNotNull); // tint is build-time
+    },
+  );
+
+  testWidgets('a far match below the top of a long transcript is revealed', (
+    tester,
+  ) async {
+    final transcript = mixed(400);
+    await pumpSearchingFromTop(
+      tester,
+      transcript,
+      matches: [transcript.blocks[300]],
+    );
+
+    expect(
+      rowVisible(tester, 'b300'),
+      isTrue,
+      reason: 'a downward seek must reach a mid-transcript target from the '
+          'top, not merely the bottom row',
+    );
+    expect(rowFor(tester, 'b300').highlight, isNotNull);
+  });
+
+  testWidgets('a match above a truncated history is revealed', (tester) async {
+    final transcript = SessionTranscript(
+      blocks: mixed(400).blocks,
+      truncated: true,
+    );
+    await pumpSearching(tester, transcript, matches: [transcript.blocks[0]]);
+
+    expect(
+      rowVisible(tester, 'b0'),
+      isTrue,
+      reason: 'the truncated notice row must not shift the seek off the target',
+    );
+  });
+
+  test('the list index accounts for the truncated-history notice row', () {
+    final b0 = textBlock('b0', 'zero');
+    final b1 = textBlock('b1', 'one');
+    expect(
+      transcriptListIndexOf(
+        SessionTranscript(blocks: [b0, b1], truncated: true),
+        'b1',
+      ),
+      2,
+    );
+    expect(transcriptListIndexOf(SessionTranscript(blocks: [b0, b1]), 'b1'), 1);
+  });
+
+  testWidgets(
+    'stepping to a new match before the previous seek settles reveals the new one',
+    (tester) async {
+      final transcript = mixed(400);
+      await tester.pumpWidget(wrap(transcript));
+      await tester.pumpAndSettle();
+      expect(atBottom(tester), isTrue);
+
+      await tester.pumpWidget(
+        wrap(
+          transcript,
+          search: TranscriptSearch(
+            open: true,
+            matches: [transcript.blocks[380], transcript.blocks[5]],
+            current: 0,
+          ),
+        ),
+      );
+      // One frame only: A's seek has probed and scheduled its next frame.
+      await tester.pump();
+      await tester.pumpWidget(
+        wrap(
+          transcript,
+          search: TranscriptSearch(
+            open: true,
+            matches: [transcript.blocks[380], transcript.blocks[5]],
+            current: 1,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        rowVisible(tester, 'b5'),
+        isTrue,
+        reason: 'the newest seek must win the shared execution slot',
+      );
+    },
+  );
 
   testWidgets('an open search pauses following, and closing it resumes', (
     tester,
