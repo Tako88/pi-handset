@@ -300,10 +300,6 @@ rather than guess at it.
   drop with no signal to close it. The bridge's shape-refusal cannot detect an old
   bridge; deploy discipline (restart the hub *and* reload pi) is the only defence.
   Against an old hub the app shows no `+` at all.
-- **One gallery image per send, and no camera capture in the gallery path.** The chip
-  holds at most one image and picking again replaces it; a chip list, drag-reorder and
-  camera capture are not built. The gallery path deliberately avoids the camera (the
-  `CAMERA` permission in the main manifest belongs to QR scanning, not image picking).
 - **The 350 KiB local cap is the only guaranteed size defence, and it is coupled to
   the hub's 1 MiB `maxPayload`.** A picked image over `maxAttachmentBytes` (350 KiB) is
   refused locally with `'That image is too large to send'` — never sent as a frame the
