@@ -1,0 +1,8 @@
+{
+  "protocolVersion": 1,
+  "type": "sessions",
+  "sessions": [],
+  "pending": [
+    { "id": "pending-1" }
+  ]
+}

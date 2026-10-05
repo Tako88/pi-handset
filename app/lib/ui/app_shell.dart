@@ -683,8 +683,10 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
         context,
         SessionList(
           sessions: _state.sessions,
+          pendingSessions: _state.pendingSessions,
           onOpen: _open,
           onKill: (session) => _sessionActions.kill(session, context),
+          onCancel: (pending) => _sessionActions.cancelPending(pending, context),
         ),
       ),
       floatingActionButton: FloatingActionButton(

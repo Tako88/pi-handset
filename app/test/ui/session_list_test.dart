@@ -180,4 +180,50 @@ void main() {
 
     expect(find.byKey(const Key('kill-s2')), findsNothing);
   });
+
+  testWidgets('a pending row renders under the app header with a cancel button', (
+    tester,
+  ) async {
+    PendingSessionSummary? cancelled;
+    await tester.pumpWidget(
+      host(
+        SessionList(
+          sessions: const [],
+          pendingSessions: const [
+            PendingSessionSummary(id: 'p1', label: 'New session'),
+          ],
+          onOpen: (_) {},
+          onCancel: (pending) => cancelled = pending,
+        ),
+      ),
+    );
+
+    expect(find.text(SessionList.appSectionHeader), findsOneWidget);
+    expect(find.text(SessionList.emptyMessage), findsNothing);
+    expect(find.text('starting…'), findsOneWidget);
+    expect(find.byKey(const Key('cancel-p1')), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('cancel-p1')));
+    await tester.pump();
+    expect(cancelled?.id, 'p1');
+  });
+
+  testWidgets('a pending row is not openable', (tester) async {
+    var opened = false;
+    await tester.pumpWidget(
+      host(
+        SessionList(
+          sessions: const [],
+          pendingSessions: const [
+            PendingSessionSummary(id: 'p1', label: 'New session'),
+          ],
+          onOpen: (_) => opened = true,
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('New session'));
+    await tester.pump();
+    expect(opened, isFalse);
+  });
 }

@@ -70,6 +70,14 @@ export interface SpawnOptions {
   trust?: boolean;
 }
 
+export type ChildExitReason = 'exit' | 'error' | 'deadline';
+
+/** One child-exit notification: the pid that left and why. */
+export interface ChildExitEvent {
+  readonly pid: number;
+  readonly reason: ChildExitReason;
+}
+
 export interface Spawner {
   /** Spawns one child, resolving its process-group pid. Rejects over cap/ENOENT. */
   spawn(options?: SpawnOptions): Promise<number>;
@@ -79,6 +87,12 @@ export interface Spawner {
   confirm(pid: number): void;
   /** SIGTERMs the process group, escalating to SIGKILL after a bounded wait. */
   kill(pid: number): void;
+  /**
+   * Registers a listener fired once per child the spawner reaps, with the
+   * reason. Returns an unsubscribe function. A listener that throws is
+   * contained and reported to `debug`; it never breaks the reap.
+   */
+  onChildExit(listener: (event: ChildExitEvent) => void): () => void;
   /** Kills every child, removes every temp dir, clears every timer. Idempotent. */
   close(): Promise<void>;
 }
@@ -113,6 +127,7 @@ export function createSpawner(options: SpawnerOptions = {}): Spawner {
   const debug = options.debug;
 
   const children = new Map<number, Entry>();
+  const exitListeners = new Set<(event: ChildExitEvent) => void>();
   let closed = false;
 
   function removeDir(dir: string): void {
@@ -134,19 +149,36 @@ export function createSpawner(options: SpawnerOptions = {}): Spawner {
     }
   }
 
-  /** Forgets a child, clears its deadline and removes its dir if it owns it. */
-  function reap(pid: number): void {
+  /**
+   * Forgets a child, clears its deadline and removes its dir if it owns it.
+   * Returns true when it actually removed an entry: the exit notification is
+   * gated on that, so a deadline reap followed by the child's own `exit` (or a
+   * `terminate` followed by its `exit`) reports exactly once.
+   */
+  function reap(pid: number): boolean {
     const entry = children.get(pid);
-    if (entry === undefined) return;
+    if (entry === undefined) return false;
     children.delete(pid);
     if (entry.timer !== null) clearTimeout(entry.timer);
     if (entry.owned) removeDir(entry.dir);
+    return true;
+  }
+
+  /** Fires every child-exit listener; a throwing listener is contained. */
+  function notifyExit(pid: number, reason: ChildExitReason): void {
+    for (const listener of [...exitListeners]) {
+      try {
+        listener({ pid, reason });
+      } catch (error) {
+        debug?.(`child-exit listener failed: ${String(error)}`);
+      }
+    }
   }
 
   function armRegistration(pid: number): void {
     const timer = setTimeout(() => {
       signalGroup(pid, 'SIGKILL');
-      reap(pid);
+      if (reap(pid)) notifyExit(pid, 'deadline');
     }, registrationTimeoutMs);
     timer.unref();
     const entry = children.get(pid);
@@ -214,13 +246,16 @@ export function createSpawner(options: SpawnerOptions = {}): Spawner {
         if (pid === null) {
           if (owned) removeDir(dir);
           reject(error);
-        } else {
-          reap(pid);
+        } else if (reap(pid)) {
+          notifyExit(pid, 'error');
         }
       });
       child.once('exit', () => {
-        if (pid !== null) reap(pid);
-        else if (owned) removeDir(dir);
+        if (pid !== null) {
+          if (reap(pid)) notifyExit(pid, 'exit');
+        } else if (owned) {
+          removeDir(dir);
+        }
       });
     });
   }
@@ -287,6 +322,12 @@ export function createSpawner(options: SpawnerOptions = {}): Spawner {
     owns: (pid) => typeof pid === 'number' && children.has(pid),
     confirm,
     kill,
+    onChildExit: (listener) => {
+      exitListeners.add(listener);
+      return () => {
+        exitListeners.delete(listener);
+      };
+    },
     close,
   };
 }

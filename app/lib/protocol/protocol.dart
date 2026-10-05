@@ -109,6 +109,7 @@ const List<String> hubToViewerMessageTypes = [
   'session-gone',
   'agent-settled',
   'dir-listing',
+  'spawn-failed',
 ];
 
 /// Every message type the protocol defines. The fixture suite asserts one valid
@@ -649,6 +650,21 @@ DecodeResult decode(String text) {
           );
         }
       }
+      final pending = message['pending'];
+      if (message.containsKey('pending')) {
+        if (pending is! List ||
+            pending.any((entry) {
+              if (entry is! Map) return true;
+              final summary = entry.cast<String, Object?>();
+              return _nonEmptyString(summary['id']) == null ||
+                  _nonEmptyString(summary['label']) == null;
+            })) {
+          return const DecodeResult.fail(
+            'bad-field',
+            'sessions pending must be {id,label} non-empty strings',
+          );
+        }
+      }
       final capabilities = message['capabilities'];
       if (message.containsKey('capabilities') &&
           (capabilities is! List ||
@@ -713,6 +729,20 @@ DecodeResult decode(String text) {
         return const DecodeResult.fail(
           'bad-field',
           'session-gone sessionId must be a non-empty string',
+        );
+      }
+      return DecodeResult.ok(message);
+    case 'spawn-failed':
+      if (_nonEmptyString(message['id']) == null) {
+        return const DecodeResult.fail(
+          'bad-field',
+          'spawn-failed id must be a non-empty string',
+        );
+      }
+      if (_nonEmptyString(message['error']) == null) {
+        return const DecodeResult.fail(
+          'bad-field',
+          'spawn-failed error must be a non-empty string',
         );
       }
       return DecodeResult.ok(message);

@@ -131,6 +131,23 @@ class SessionActions {
     );
   }
 
+  /// Cancels a pending spawn by its placeholder id. A success is silent — the
+  /// row disappears on the next push; a refusal is shown in a SnackBar.
+  void cancelPending(PendingSessionSummary pending, BuildContext context) {
+    final messenger = ScaffoldMessenger.of(context);
+    unawaited(
+      client.killSession(pending.id).then((result) {
+        if (!result.ok) {
+          messenger.showSnackBar(
+            SnackBar(
+              content: Text(result.error ?? 'could not cancel the session'),
+            ),
+          );
+        }
+      }),
+    );
+  }
+
   /// Compacts the session after a confirmation. The messenger and session id
   /// are captured before the dialog's await, because the dialog's own context
   /// is gone once it closes.

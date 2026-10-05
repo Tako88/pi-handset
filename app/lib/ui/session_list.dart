@@ -26,6 +26,8 @@ class SessionList extends StatelessWidget {
     required this.sessions,
     required this.onOpen,
     this.onKill,
+    this.pendingSessions = const [],
+    this.onCancel,
   });
 
   final List<SessionSummary> sessions;
@@ -34,6 +36,14 @@ class SessionList extends StatelessWidget {
   /// Kill an app-started session. Optional: when null, no kill affordance is
   /// shown even for app sessions.
   final void Function(SessionSummary session)? onKill;
+
+  /// Spawns the hub is tracking but that have not registered yet. Rendered as a
+  /// non-openable row under the app header; when [onCancel] is supplied the row
+  /// carries a cancel affordance.
+  final List<PendingSessionSummary> pendingSessions;
+
+  /// Cancel a pending spawn by its placeholder id. Optional, like [onKill].
+  final void Function(PendingSessionSummary pending)? onCancel;
 
   static const String emptyMessage =
       'No sessions yet. Start pi on your PC and open a session.';
@@ -48,7 +58,7 @@ class SessionList extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final roles = Theme.of(context).extension<PiRoles>()!;
-    if (sessions.isEmpty) {
+    if (sessions.isEmpty && pendingSessions.isEmpty) {
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(24),
@@ -63,8 +73,9 @@ class SessionList extends StatelessWidget {
     final appSessions = sessions.where((s) => s.origin == 'app').toList();
     final pcSessions = sessions.where((s) => s.origin != 'app').toList();
     final children = <Widget>[];
-    if (appSessions.isNotEmpty) {
+    if (appSessions.isNotEmpty || pendingSessions.isNotEmpty) {
       children.add(_header(context, appSectionHeader));
+      children.addAll(pendingSessions.map((p) => _pendingRow(context, p)));
       children.addAll(appSessions.map((s) => _row(context, s)));
     }
     if (pcSessions.isNotEmpty) {
@@ -83,6 +94,44 @@ class SessionList extends StatelessWidget {
       child: Text(
         label,
         style: piMono(fontSize: 11, color: roles.muted, letterSpacing: 1.2),
+      ),
+    );
+  }
+
+  /// A spawn that has not registered yet: no `onTap`, so it cannot be opened.
+  /// Its state text is `starting…`, and [onCancel] would remove it.
+  Widget _pendingRow(BuildContext context, PendingSessionSummary pending) {
+    final roles = Theme.of(context).extension<PiRoles>()!;
+    return DocumentRow(
+      rule: roles.dim,
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  pending.label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: roles.text, fontSize: 15),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'starting…',
+                  style: piMono(fontSize: 11, color: roles.muted),
+                ),
+              ],
+            ),
+          ),
+          if (onCancel != null)
+            IconButton(
+              key: Key('cancel-${pending.id}'),
+              icon: Icon(Icons.close, size: 18, color: roles.dim),
+              tooltip: 'Cancel',
+              onPressed: () => onCancel!(pending),
+            ),
+        ],
       ),
     );
   }

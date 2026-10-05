@@ -61,6 +61,10 @@
     { "file": "command-result-bad-tree-no-role.json", "code": "bad-field" },
     { "file": "event-bad-leaf.json", "code": "bad-field" },
     { "file": "event-leaf-missing-leafId.json", "code": "bad-field" },
-    { "file": "command-result-bad-leaf.json", "code": "bad-field" }
+    { "file": "command-result-bad-leaf.json", "code": "bad-field" },
+    { "file": "spawn-failed-bad-id.json", "code": "bad-field" },
+    { "file": "spawn-failed-bad-error.json", "code": "bad-field" },
+    { "file": "sessions-bad-pending.json", "code": "bad-field" },
+    { "file": "sessions-bad-pending-entry.json", "code": "bad-field" }
   ]
 }

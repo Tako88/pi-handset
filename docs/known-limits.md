@@ -389,18 +389,22 @@ rather than guess at it.
 ## App-started sessions
 
 
-- **A spawned child cannot be killed before it registers.** `kill-session` is keyed by
-  `sessionId`, which does not exist until the child's `register`; the app has no row
-  for it either. The window is bounded by the registration deadline (60 s), after which
-  the reaper kills it.
+- **A spawned child is now visible — and cancellable — before it registers.** The hub
+  publishes a placeholder row (`sessions.pending`) for a spawn as soon as the process
+  exists, and `kill-session` accepts the placeholder's hub-generated id, so the child
+  can be cancelled during the window before its `register`. The placeholder resolves to
+  the real session when the child registers, or to a surfaced failure on an early exit,
+  a spawn error, or the registration deadline (60 s). A cancelled spawn is a deliberate
+  stop, not a failure: it produces no error.
 - **`pi` must be on the supervisor's `PATH`.** `spawn('pi', …)` resolves through the
   supervisor process's environment; a systemd/launchd-managed hub may not have it.
 - **The bridge must be globally configured.** Production relies on the user's
   `<agent-dir>/settings.json` having the `pc/` package installed — `pi install
   <checkout>/pc`; the older `"extensions": ["…/pc/extensions"]` form still works
   too (both verified on the dev host). If neither is present, a spawned pi never
-  registers; the registration reaper kills it and the start silently yields no row.
-  The hermetic capstone proves the mechanism with an equivalent settings file.
+  registers; the registration reaper kills it, and the start now surfaces as a failed
+  placeholder (`spawn-failed`) rather than silently yielding no row. The hermetic
+  capstone proves the mechanism with an equivalent settings file.
 - **The old-hub compatibility gate is a capability array, not a version.** The first
   post-auth `sessions` frame carries
   `capabilities: ["list-dirs","project-session","session-control","attachments"]`;
@@ -468,6 +472,22 @@ rather than guess at it.
   `.pi/APPEND_SYSTEM.md`, or a non-user `.agents/skills` directory exists.
   `AGENTS.md` never triggers it: context files load whether the project is trusted or
   not.
+
+- **A pending-spawn failure is broadcast to every authenticated viewer, unbudgeted.**
+  `spawn-failed` carries the placeholder id and a reason; it is sent via the unbudgeted
+  `send()` — a throttled viewer must not miss the only notice it will get for a row that
+  is about to vanish — and is followed by the pending-removing `sessions` broadcast, in
+  that order (the app ignores a failure for an id it no longer holds). A second viewer
+  may therefore see a failure for a row it did not start; this is accepted because the
+  session list is global. A viewer that never saw the pending push is never bannered for
+  a row it never saw.
+- **A dropped `sessions` push is silent — there is no resync for it.**
+  `pushSessions`/`broadcastSessions` pass a null session id, and `sendToViewer` only
+  announces a `resync-required` for non-null session data. So under backpressure a
+  placeholder whose register push is dropped stays visible as `starting…` until the next
+  `sessions` broadcast (any registry change) or a reconnect; and a spawn failure whose
+  pending push was dropped is not bannered, exactly because no row was ever seen. The
+  failure path itself converges, because `spawn-failed` is unbudgeted.
 
 ## Session control
 

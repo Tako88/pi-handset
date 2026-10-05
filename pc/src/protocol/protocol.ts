@@ -539,6 +539,32 @@ export interface PairedMessage {
 }
 
 /**
+ * A hub notice that a spawn it was tracking failed: the child exited before it
+ * registered, a spawn error followed a known pid, or the registration deadline
+ * passed. `id` is the hub-generated placeholder id the viewer saw in
+ * `SessionsMessage.pending`; an id the viewer does not hold is ignored, so a
+ * viewer that missed the pending push is never bannered for a row it never saw.
+ */
+export interface SpawnFailedMessage {
+  protocolVersion: number;
+  type: 'spawn-failed';
+  id: string;
+  error: string;
+}
+
+/**
+ * One pending spawn, summarised for a phone's session list: a child the hub
+ * created but that has not registered yet. Deliberately not a `SessionSummary`
+ * — no synthetic id ever enters `sessions`, replacement-follow or subscription
+ * logic. `id` is hub-generated and opaque (`pending-<n>`); `label` is the
+ * spawn's display label.
+ */
+export interface PendingSessionSummary {
+  id: string;
+  label: string;
+}
+
+/**
  * One registered session, summarised for a phone's session list. `label` is
  * the bridge's explicit `name` when pi has one, else the last user prompt,
  * else a viewer-safe basename of `sessionFile`/`cwd`, else the `sessionId`.
@@ -563,6 +589,12 @@ export interface SessionsMessage {
   protocolVersion: number;
   type: 'sessions';
   sessions: SessionSummary[];
+  /**
+   * Spawns the hub is tracking but that have not registered yet, absent when
+   * there are none (the common case) so an old app's exact comparisons and the
+   * auth push are unchanged. Validated-if-present, like `capabilities`.
+   */
+  pending?: PendingSessionSummary[];
   /**
    * The hub's capabilities, absent on a pre-capabilities hub (which a viewer
    * must treat as the empty set). Validated-if-present, like `SessionSummary.origin`.
@@ -657,6 +689,7 @@ export const HUB_TO_VIEWER_MESSAGE_TYPES = [
   'session-gone',
   'agent-settled',
   'dir-listing',
+  'spawn-failed',
 ] as const;
 export type HubToViewerMessageType = (typeof HUB_TO_VIEWER_MESSAGE_TYPES)[number];
 
@@ -699,7 +732,8 @@ export type HubToViewerMessage =
   | ResyncRequiredMessage
   | SessionGoneMessage
   | AgentSettledMessage
-  | DirListingMessage;
+  | DirListingMessage
+  | SpawnFailedMessage;
 
 /** Every message type `decode` understands. */
 export type Message =
@@ -721,7 +755,8 @@ export type Message =
   | SessionGoneMessage
   | AgentSettledMessage
   | ListDirsMessage
-  | DirListingMessage;
+  | DirListingMessage
+  | SpawnFailedMessage;
 
 /** True when `type` is a message the agent listener accepts. */
 export function isAgentMessageType(type: unknown): type is AgentMessageType {
@@ -1151,6 +1186,18 @@ export function decode(text: string): DecodeResult {
           return fail('bad-field', 'sessions replacesSessionId must be a string');
         }
       }
+      if (message.pending !== undefined) {
+        if (
+          !Array.isArray(message.pending) ||
+          message.pending.some((entry) => {
+            if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return true;
+            const pending = entry as Record<string, unknown>;
+            return asString(pending.id) === null || asString(pending.label) === null;
+          })
+        ) {
+          return fail('bad-field', 'sessions pending must be {id,label} non-empty strings');
+        }
+      }
       if (
         message.capabilities !== undefined &&
         (!Array.isArray(message.capabilities) ||
@@ -1201,6 +1248,15 @@ export function decode(text: string): DecodeResult {
         return fail('bad-field', 'session-gone sessionId must be a non-empty string');
       }
       return { ok: true, value: parsed as SessionGoneMessage };
+    }
+    case 'spawn-failed': {
+      if (asString(message.id) === null) {
+        return fail('bad-field', 'spawn-failed id must be a non-empty string');
+      }
+      if (asString(message.error) === null) {
+        return fail('bad-field', 'spawn-failed error must be a non-empty string');
+      }
+      return { ok: true, value: parsed as SpawnFailedMessage };
     }
     case 'agent-settled': {
       if (asString(message.sessionId) === null) {

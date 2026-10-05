@@ -231,6 +231,12 @@ void main() {
         'sessionId': 'sess',
         'reason': 'r',
       },
+      'spawn-failed': {
+        'protocolVersion': 1,
+        'type': 'spawn-failed',
+        'id': 'pending-1',
+        'error': 'failed',
+      },
       'session-gone': {'protocolVersion': 1, 'type': 'session-gone', 'sessionId': 'sess'},
       'agent-settled': {
         'protocolVersion': 1,

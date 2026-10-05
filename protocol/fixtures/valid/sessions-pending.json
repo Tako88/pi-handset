@@ -1,0 +1,15 @@
+{
+  "protocolVersion": 1,
+  "type": "sessions",
+  "sessions": [
+    {
+      "sessionId": "sess-1",
+      "label": "my session",
+      "agentState": "idle",
+      "origin": "app"
+    }
+  ],
+  "pending": [
+    { "id": "pending-1", "label": "New session" }
+  ]
+}

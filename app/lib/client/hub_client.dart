@@ -1435,7 +1435,25 @@ class HubClient implements HubClientView {
         _onSessionGone(message['sessionId']! as String);
       case 'agent-settled':
         _onAgentSettled(message);
+      case 'spawn-failed':
+        _onSpawnFailed(message);
     }
+  }
+
+  /// A spawn the hub was tracking failed. The unknown-id guard comes first: a
+  /// viewer that never received the pending push (or already saw the row go)
+  /// must not be bannered for a row it never saw. Otherwise the placeholder is
+  /// removed and the failure is surfaced as a session notice, never a
+  /// connection error — a hub failure does not mean this connection is broken.
+  void _onSpawnFailed(Map<String, Object?> message) {
+    final id = message['id']! as String;
+    if (!_state.pendingSessions.any((pending) => pending.id == id)) return;
+    _state = _state.copyWith(
+      pendingSessions: _state.pendingSessions
+          .where((pending) => pending.id != id)
+          .toList(),
+    );
+    _setError(message['error']! as String, connection: false);
   }
 
   /// Surfaces a settle for notification. Deliberately no state change and no
@@ -1478,6 +1496,18 @@ class HubClient implements HubClientView {
               SessionSummary.fromJson((entry as Map).cast<String, Object?>()),
         )
         .toList();
+    // Absent means a hub with no pending spawns (or one that predates the
+    // field): the empty list, so the placeholder section never renders.
+    final rawPending = message['pending'];
+    final pendingSessions = rawPending is List
+        ? rawPending
+              .map(
+                (entry) => PendingSessionSummary.fromJson(
+                  (entry as Map).cast<String, Object?>(),
+                ),
+              )
+              .toList()
+        : const <PendingSessionSummary>[];
     // Absent means a hub that predates the field: an empty set, so the folder
     // feature is hidden rather than probed with a frame that would disconnect.
     final rawCapabilities = message['capabilities'];
@@ -1487,6 +1517,7 @@ class HubClient implements HubClientView {
     _state = _state.copyWith(
       sessions: summaries,
       capabilities: capabilities,
+      pendingSessions: pendingSessions,
     );
     // The hub pushes `sessions` on authentication; its arrival is how a
     // token-authenticated connection is confirmed (there is no `paired`).
