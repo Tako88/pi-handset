@@ -7,6 +7,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pi_droid/client/hub_models.dart';
+import 'package:pi_droid/client/stick_to_bottom.dart';
 import 'package:pi_droid/client/transcript.dart';
 import 'package:pi_droid/ui/theme.dart';
 import 'package:pi_droid/ui/transcript_view.dart';
@@ -75,6 +76,54 @@ void main() {
       matching: find.byType(DocumentRow),
     ),
   );
+
+  /// Uniform-height text rows, ids `b0..b{count-1}` — taller than the 600px
+  /// test viewport.
+  SessionTranscript tall(int count) => SessionTranscript(
+    blocks: [
+      for (var i = 0; i < count; i++)
+        TranscriptBlock(
+          kind: TranscriptBlockKind.text,
+          id: 'b$i',
+          text: 'message $i',
+        ),
+    ],
+  );
+
+  /// Variable-height rows: every fifth is a tall multiline block. Copied from
+  /// `scroll_test.dart`, where it proves a one-shot jump targets an estimate
+  /// and lands short — the shape the convergent seek must handle.
+  SessionTranscript mixed(int count) => SessionTranscript(
+    blocks: [
+      for (var i = 0; i < count; i++)
+        TranscriptBlock(
+          kind: TranscriptBlockKind.text,
+          id: 'b$i',
+          text: i % 5 == 4
+              ? List.generate(30, (l) => 'tall $i line $l').join('\n')
+              : 'message $i',
+        ),
+    ],
+  );
+
+  double scrollOffset(WidgetTester tester) =>
+      tester.state<ScrollableState>(find.byType(Scrollable)).position.pixels;
+
+  /// Uses the app's own definition of "following the bottom" (the
+  /// [atBottomThreshold] slack the follow-jump rests within), not exact pixels.
+  bool atBottom(WidgetTester tester) {
+    final position = tester
+        .state<ScrollableState>(find.byType(Scrollable))
+        .position;
+    return isAtBottom(position.pixels, position.maxScrollExtent);
+  }
+
+  /// Whether the row keyed by [id] is built and its rect intersects the list's.
+  bool rowVisible(WidgetTester tester, String id) {
+    final row = find.byKey(ValueKey(id));
+    if (row.evaluate().isEmpty) return false;
+    return tester.getRect(row).overlaps(tester.getRect(find.byType(ListView)));
+  }
 
   testWidgets('a view with no search tints no row', (tester) async {
     await tester.pumpWidget(
@@ -208,5 +257,137 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(copied, [copyTextForBlock(block)]);
+  });
+
+  testWidgets(
+    'a late match is revealed, and stepping to another moves the view',
+    (tester) async {
+      final transcript = tall(60);
+      final late = transcript.blocks[55];
+      await tester.pumpWidget(
+        wrap(
+          transcript,
+          search: TranscriptSearch(open: true, matches: [late], current: 0),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        rowVisible(tester, 'b55'),
+        isTrue,
+        reason: 'the current match must be scrolled into view',
+      );
+
+      final early = transcript.blocks[5];
+      final revealed = scrollOffset(tester);
+      await tester.pumpWidget(
+        wrap(
+          transcript,
+          search: TranscriptSearch(
+            open: true,
+            matches: [late, early],
+            current: 1,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        rowVisible(tester, 'b5'),
+        isTrue,
+        reason: 'stepping to another match must reveal it',
+      );
+      expect(
+        scrollOffset(tester),
+        isNot(revealed),
+        reason: 'the view must move to the new match',
+      );
+    },
+  );
+
+  testWidgets('the seek converges on a variable-height transcript', (
+    tester,
+  ) async {
+    final transcript = mixed(60);
+    final late = transcript.blocks[50];
+    await tester.pumpWidget(
+      wrap(
+        transcript,
+        search: TranscriptSearch(open: true, matches: [late], current: 0),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      rowVisible(tester, 'b50'),
+      isTrue,
+      reason:
+          'the bounded, convergent seek must reach a match in a variable-height '
+          'transcript (a one-shot estimate lands short)',
+    );
+    expect(
+      rowFor(tester, 'b50').highlight,
+      isNotNull,
+      reason: 'a built current-match row must carry the tint',
+    );
+  });
+
+  testWidgets('an open search pauses following, and closing it resumes', (
+    tester,
+  ) async {
+    final transcript = tall(60);
+    final match = transcript.blocks[10];
+
+    await tester.pumpWidget(wrap(transcript));
+    await tester.pump();
+    expect(atBottom(tester), isTrue);
+
+    // Open the search on a match away from the bottom.
+    await tester.pumpWidget(
+      wrap(
+        SessionTranscript(
+          blocks: transcript.blocks,
+          streaming: true,
+          streamingText: 'partial one',
+        ),
+        search: TranscriptSearch(open: true, matches: [match], current: 0),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final revealed = scrollOffset(tester);
+    expect(find.byIcon(Icons.arrow_downward), findsNothing);
+
+    // A stream delta must not yank the view while the search is open.
+    await tester.pumpWidget(
+      wrap(
+        SessionTranscript(
+          blocks: transcript.blocks,
+          streaming: true,
+          streamingText: 'partial one\npartial two',
+        ),
+        search: TranscriptSearch(open: true, matches: [match], current: 0),
+      ),
+    );
+    await tester.pump();
+
+    expect(
+      scrollOffset(tester),
+      revealed,
+      reason: 'streaming while searching must not move the view',
+    );
+    expect(find.byIcon(Icons.arrow_downward), findsNothing);
+
+    // Closing the search restores following and returns to the bottom.
+    await tester.pumpWidget(
+      wrap(
+        SessionTranscript(
+          blocks: transcript.blocks,
+          streaming: true,
+          streamingText: 'partial one\npartial two',
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(atBottom(tester), isTrue);
   });
 }

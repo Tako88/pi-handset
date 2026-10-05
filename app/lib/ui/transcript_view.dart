@@ -31,6 +31,7 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 
 import '../client/hub_models.dart';
@@ -137,6 +138,18 @@ class _TranscriptViewState extends State<TranscriptView> {
   /// before the new content is laid out.
   bool _following = true;
 
+  /// Whether the viewer was following when the search opened, so closing the
+  /// search can restore it (rules R1/R2). Following is paused while the search
+  /// is open: a stream append must not yank the view off the current match.
+  bool _searchWasFollowing = true;
+
+  /// A [GlobalKey] per committed row, so a reveal can measure and scroll to a
+  /// row that is outside the built window. Bounded by the loaded block count
+  /// and dropped with this per-session [State].
+  final Map<String, GlobalKey> _rowKeys = {};
+
+  GlobalKey _rowKey(String id) => _rowKeys.putIfAbsent(id, () => GlobalKey());
+
   /// The id of the tool row whose body is expanded, or null when every tool row
   /// is collapsed. There is exactly one: the derivation below owns it while a
   /// turn runs, and a tap replaces it.
@@ -152,8 +165,22 @@ class _TranscriptViewState extends State<TranscriptView> {
     super.initState();
     _controller.addListener(_onScroll);
     _adoptDerived(_currentToolId(widget.transcript));
-    // A tall transcript must open at its newest row, not its oldest.
-    WidgetsBinding.instance.addPostFrameCallback((_) => _jumpToBottom());
+    // R3: an already-open search starts paused, not following.
+    if (widget.search.open) {
+      _searchWasFollowing = _following;
+      _following = false;
+    }
+    final matchId = widget.search.currentMatch?.id;
+    if (matchId != null) {
+      // The search is already open with a current match: reveal it rather than
+      // opening at the newest row.
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _settleToMatch(matchId, 0),
+      );
+    } else {
+      // A tall transcript must open at its newest row, not its oldest.
+      WidgetsBinding.instance.addPostFrameCallback((_) => _jumpToBottom());
+    }
   }
 
   @override
@@ -166,6 +193,23 @@ class _TranscriptViewState extends State<TranscriptView> {
   @override
   void didUpdateWidget(TranscriptView oldWidget) {
     super.didUpdateWidget(oldWidget);
+    // R1/R2: snapshot following when the search opens and restore it when it
+    // closes, *before* the prepend/follow logic below so the restored flag is
+    // what drives the single follow-jump (never a second, independent jump).
+    if (!oldWidget.search.open && widget.search.open) {
+      _searchWasFollowing = _following;
+      _following = false;
+    } else if (oldWidget.search.open && !widget.search.open) {
+      _following = _searchWasFollowing;
+    }
+    // R5: reveal only when the current match id changes (including the open
+    // edge), never per frame, and never touching _following.
+    final matchId = widget.search.currentMatch?.id;
+    if (matchId != null && matchId != oldWidget.search.currentMatch?.id) {
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _settleToMatch(matchId, 0),
+      );
+    }
     // Collapse what is no longer current: the in-flight call moved on, or the
     // turn settled. A no-op while the derivation is unchanged.
     _adoptDerived(_currentToolId(widget.transcript));
@@ -222,6 +266,9 @@ class _TranscriptViewState extends State<TranscriptView> {
   }
 
   void _onScroll() {
+    // R4: a user scroll during a search must not re-enable following and let
+    // the next append yank the view off the current match.
+    if (widget.search.open) return;
     if (!_controller.hasClients) return;
     final atBottom = isAtBottom(
       _controller.offset,
@@ -251,6 +298,121 @@ class _TranscriptViewState extends State<TranscriptView> {
         _settleToBottom(attempt + 1);
       }
     });
+  }
+
+  /// Reveal the row [id] for the current match: if it is built, bring it into
+  /// view; otherwise slide the built window toward it, one viewport at a time,
+  /// until it is built (or the bound is hit — the tint still marks it).
+  ///
+  /// **Measured and convergent, not idempotent.** The target offset is derived
+  /// from the rows actually laid out ([_targetOffsetFor]), so each step moves
+  /// the window toward the target instead of re-estimating the same pixel — the
+  /// draft re-estimated and could never converge on a variable-height list.
+  void _settleToMatch(String id, int attempt) {
+    // Covers an empty transcript: no list, so no controller clients.
+    if (!mounted || !_controller.hasClients) return;
+    final ctx = _rowKeys[id]?.currentContext;
+    if (ctx != null) {
+      Scrollable.ensureVisible(
+        ctx,
+        alignment: 0.3,
+        duration: const Duration(milliseconds: 150),
+      );
+      return;
+    }
+    if (attempt >= _maxJumpAttempts) return;
+    final target = _targetOffsetFor(id);
+    if (target == null) return;
+    _controller.jumpTo(
+      target.clamp(0.0, _controller.position.maxScrollExtent),
+    );
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => _settleToMatch(id, attempt + 1),
+    );
+  }
+
+  /// The offset to jump to so that [id] becomes built, measured from the rows
+  /// currently laid out rather than re-derived from the same estimate.
+  double? _targetOffsetFor(String id) {
+    final blocks = widget.transcript.blocks;
+    final blockIndex = blocks.indexWhere((b) => b.id == id);
+    if (blockIndex < 0) return null;
+    // The list prepends the truncated notice, so a block's list index is offset
+    // by one while the history is truncated.
+    final listOffset = widget.transcript.truncated ? 1 : 0;
+    final targetIndex = blockIndex + listOffset;
+
+    // Measured offsets of the committed rows currently built, by list index.
+    final built = <int, double>{};
+    for (var i = 0; i < blocks.length; i++) {
+      final offset = _measuredOffset(blocks[i].id);
+      if (offset != null) built[i + listOffset] = offset;
+    }
+
+    if (built.isEmpty) {
+      // Nothing to measure: the lazy list's proportional estimate.
+      final count = _itemCount();
+      if (count <= 1) return null;
+      return _controller.position.maxScrollExtent * targetIndex / (count - 1);
+    }
+
+    int? above; // Largest built index at or before the target.
+    int? below; // Smallest built index at or after the target.
+    for (final index in built.keys) {
+      if (index <= targetIndex && (above == null || index > above)) {
+        above = index;
+      }
+      if (index >= targetIndex && (below == null || index < below)) {
+        below = index;
+      }
+    }
+
+    if (above != null && below != null) {
+      // The target lies within the built window: interpolate between the two
+      // measured offsets by index. (above == below means the target itself is
+      // built, which _settleToMatch handles first.)
+      //
+      // Defensive fallback for a sparsely-measured frame: the built window of a
+      // ListView.builder is a contiguous index range, so a target strictly
+      // between two built rows should not occur. This is not the convergence
+      // mechanism — that is the one-sided viewport stepping below.
+      if (above == below) return built[above];
+      final before = built[above]!;
+      final after = built[below]!;
+      final t = (targetIndex - above) / (below - above);
+      return before + (after - before) * t;
+    }
+
+    final step = _controller.position.viewportDimension * 0.8;
+    if (above != null) {
+      // Only rows above the target are built: slide down toward it.
+      return built[above]! + step;
+    }
+    // Only rows below the target are built: slide up toward it.
+    return built[below]! - step;
+  }
+
+  /// The scroll offset that would put the row [id] at the top of the viewport,
+  /// or null when it is not built. RenderAbstractViewport.getOffsetToReveal is
+  /// the framework's own measurement, so the estimate agrees with
+  /// Scrollable.ensureVisible.
+  double? _measuredOffset(String id) {
+    final ctx = _rowKeys[id]?.currentContext;
+    if (ctx == null) return null;
+    final renderObject = ctx.findRenderObject();
+    if (renderObject is! RenderBox || !renderObject.attached) return null;
+    return RenderAbstractViewport.of(
+      renderObject,
+    ).getOffsetToReveal(renderObject, 0.0).offset;
+  }
+
+  /// The number of list items the builder would produce for this transcript.
+  int _itemCount() {
+    final t = widget.transcript;
+    return t.blocks.length +
+        (t.truncated ? 1 : 0) +
+        (t.streamingThinking.isNotEmpty ? 1 : 0) +
+        (t.streaming && t.streamingText.isNotEmpty ? 1 : 0);
   }
 
   Future<void> _returnToBottom() async {
@@ -358,16 +520,23 @@ class _TranscriptViewState extends State<TranscriptView> {
               );
             }
             final block = blocks[blockIndex];
+            // The ValueKey stays outermost: existing tests (and the
+            // RepaintBoundary contract) depend on it. The GlobalKey sits inside
+            // it so the reveal can measure a row without changing that key.
             return RepaintBoundary(
               key: ValueKey(block.id),
-              child: _selectable(
-                block,
-                _block(block, _highlightFor(block.id, matchIds, currentId)),
+              child: KeyedSubtree(
+                key: _rowKey(block.id),
+                child: _selectable(
+                  block,
+                  _block(block, _highlightFor(block.id, matchIds, currentId)),
+                ),
               ),
             );
           },
         ),
-        if (!_following)
+        // R4: no jump-to-latest affordance while a search owns the view.
+        if (!_following && !widget.search.open)
           Positioned(
             right: 16,
             bottom: 16,
