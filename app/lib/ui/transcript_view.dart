@@ -32,7 +32,7 @@ library;
 
 import 'package:flutter/material.dart';
 
-import '../client/hub_client.dart';
+import '../client/hub_models.dart';
 import '../client/stick_to_bottom.dart';
 import '../client/transcript.dart';
 import 'transcript_blocks.dart';

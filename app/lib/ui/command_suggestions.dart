@@ -8,7 +8,7 @@ library;
 
 import 'package:flutter/material.dart';
 
-import '../client/hub_client.dart';
+import '../client/hub_models.dart';
 
 /// Matches the whitespace that ends a command draft. Compiled once: the shell
 /// evaluates [isCommandDraft] on every keystroke.

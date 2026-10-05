@@ -17,7 +17,7 @@ import 'package:flutter/material.dart';
 import '../client/endpoint_store.dart';
 import '../client/attachment.dart';
 import '../client/context_usage.dart';
-import '../client/hub_client.dart';
+import '../client/hub_client_view.dart';
 import '../client/notification_policy.dart';
 import '../client/notification_presenter.dart';
 import '../client/settle_notification.dart';
@@ -46,7 +46,7 @@ class PiDroidApp extends StatefulWidget {
     this.scanQr = scanPairingQr,
   });
 
-  final HubClient client;
+  final HubClientView client;
   final TokenStore tokenStore;
 
   /// The platform notification surface. `main.dart` passes the real one; tests

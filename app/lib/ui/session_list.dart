@@ -17,7 +17,7 @@ library;
 
 import 'package:flutter/material.dart';
 
-import '../client/hub_client.dart';
+import '../client/hub_models.dart';
 import 'theme.dart';
 
 class SessionList extends StatelessWidget {

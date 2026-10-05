@@ -11,7 +11,7 @@ library;
 import 'package:flutter/material.dart';
 
 import '../client/attachment.dart';
-import '../client/hub_client.dart';
+import '../client/hub_models.dart';
 import 'theme.dart';
 
 class ComposeBar extends StatefulWidget {

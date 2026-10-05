@@ -12,7 +12,7 @@ library;
 
 import 'package:flutter/material.dart';
 
-import '../client/hub_client.dart';
+import '../client/hub_models.dart';
 import '../client/transcript.dart';
 import 'theme.dart';
 
