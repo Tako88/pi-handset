@@ -534,6 +534,11 @@ ThemeData piTheme(Brightness brightness) {
       elevation: 0,
     ),
     dividerTheme: DividerThemeData(color: roles.dim, space: 1, thickness: 1),
+    textSelectionTheme: TextSelectionThemeData(
+      selectionColor: roles.accent.withValues(alpha: 0.35),
+      selectionHandleColor: roles.accent,
+      cursorColor: roles.accent,
+    ),
   );
 }
 

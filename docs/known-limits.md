@@ -816,3 +816,20 @@ was measured rather than assumed.
   theme role is not on the wire, and putting it there would be a protocol change for no
   real gain. So a phone in light mode shows pi's light palette even when pi itself is
   running `dark`.
+
+## Copying
+
+- **The system selection Copy does not preserve line breaks across a row's separate text
+  widgets.** Flutter's `SelectableRegion` concatenates per-widget selections with no
+  separator, so a multi-paragraph reply or a per-line tool body copies as run-together
+  text; the row's **Copy message** action copies the exact source instead.
+- **A selection is confined to one committed row.** There is one selection area per
+  message, so text cannot be selected across two messages; the history-truncation notice
+  and the load-older control are not selectable (a consequence of the transcript being a
+  lazy list).
+- **A copy of a bridge-truncated diff ends with `[view truncated]`.** The bridge bounds a
+  view to its byte budget; the marker is appended so a partial diff is never pasted as if
+  it were the whole change.
+- **A copy of a `write` is the app's all-addition rendering, not the file.** The bridge
+  drops one trailing newline from `args.content`, so a pasted `write` can differ from the
+  file by that newline.

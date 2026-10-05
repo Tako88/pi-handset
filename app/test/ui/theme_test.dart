@@ -153,4 +153,18 @@ void main() {
       }
     }
   });
+
+  test('text selection is painted from pi, not Material defaults', () {
+    for (final brightness in [Brightness.dark, Brightness.light]) {
+      final theme = piTheme(brightness);
+      final roles = theme.extension<PiRoles>()!;
+      final selection = theme.textSelectionTheme;
+      expect(selection.selectionHandleColor, roles.accent);
+      expect(selection.cursorColor, roles.accent);
+      expect(selection.selectionColor, isNotNull);
+      expect(selection.selectionColor!.a, greaterThan(0.0));
+      expect(selection.selectionColor!.a, lessThan(1.0),
+          reason: 'a fully opaque highlight hides the text it marks');
+    }
+  });
 }
