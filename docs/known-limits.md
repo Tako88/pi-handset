@@ -217,6 +217,37 @@ rather than guess at it.
   not of the whole directory, and `truncated` says so — so a directory large enough to
   hit the scan cap can hide an entry that sorts before one that is shown.
 
+- **A hard-killed hub reaps its orphaned children on the next boot, from a pidfile whose
+  guard is a fork-stable identity: `startTime` plus a per-boot `bootId`.** The record
+  (`<runtimeDir>/pi-droid/children.json`, `{version, tempRoot, bootId, children}`) is
+  written at the spawner's `'spawn'` event and stores **only** `pid`, `dir` (null for a
+  project spawn) and `startTime` — deliberately **no `cmdline` and no `exe`**. Those are
+  exec-dependent: a real `pi` re-execs through `env` and rewrites its own argv with
+  `process.title`, so a spawn-time read could never match the reap-time read and the guard
+  would silently spare every real orphan (measured: `["/usr/bin/env","node",…]` vs
+  `["pi","",…]`, length 52). Because the record exists from spawn, there is **no
+  `[spawn, register]` leak window**; the only residual write gap is the sub-millisecond
+  span between `uv_spawn` returning and the synchronous `'spawn'` handler, and a SIGKILL
+  inside it leaks one child. At reap, a boot-id mismatch declines to signal (the child
+  cannot be alive on this boot) but still removes its owned dir. A dir is removed only on a
+  branch where the child is certainly gone, and only when its basename starts with
+  `pi-droid-session-` **and** its parent is the *recorded* `tempRoot` — not the boot-time
+  `os.tmpdir()`, which closes the TMPDIR-changed case. `kill(pid,0)` reports a zombie as
+  alive, so a `state === 'Z'` stat is treated as not alive: the dir is removed and no
+  signal is sent. The real-zombie integration cannot be constructed deterministically under
+  `node:test` (libuv reaps this process's children) and is an accepted limit; the outcome
+  is correct either way. A live pid that fails verification (reused pid, or null/unreadable
+  identity) is spared, and its dir is spared too; on non-Linux, or a transient `/proc`
+  failure, `readProcStat` is null and the guard declines — the reaper is a no-op. Pid reuse
+  is unreachable in practice: a false positive needs the same pid **and** the same 10 ms
+  `startTime` tick, while the allocator must cycle the whole id space (host `pid_max`
+  measured at 4 194 304) to return a pid; the safe direction holds regardless. The reaper
+  never throws and never aborts startup: a missing file is a no-op, a corrupt or
+  wrong-version file is deleted, a directory or symlink pidfile path is neither followed
+  nor unlinked, and a malformed entry is skipped. `--take-over` skips the reaper
+  entirely, because the previous hub may still be alive and its children are then not
+  orphans.
+
 ## Images
 
 - **A large image is not rendered; its part is replaced in place and the text

@@ -26,6 +26,7 @@ import type { ControlServer } from '../hub/control.ts';
 import { loadOrCreateToken, resolveConfigDir } from '../hub/auth.ts';
 import {
   acquireLock,
+  childrenPath,
   holdsLock,
   readDiscovery,
   releaseLock,
@@ -36,7 +37,7 @@ import {
 import type { LockResult } from '../hub/discovery.ts';
 import { createHub } from '../hub/hub.ts';
 import { TICKET_TTL_MS, createTicketStore, normalizeTicket } from '../hub/pairing.ts';
-import { DEFAULT_MAX_SESSIONS, createSpawner } from '../hub/spawner.ts';
+import { DEFAULT_MAX_SESSIONS, createSpawner, reapOrphans } from '../hub/spawner.ts';
 import { PROTOCOL_VERSION } from '../protocol/protocol.ts';
 
 /** The viewer listener's default port. */
@@ -273,6 +274,17 @@ export async function runServe(argv: readonly string[]): Promise<number> {
     );
   }
 
+  // Reap the children a previous, hard-killed hub left behind, before this
+  // boot's spawner can add its own records. Skipped under `--take-over`: the
+  // previous hub may still be alive, so its children are not orphans. The
+  // reaper never throws and never aborts startup.
+  if (!args.takeOver) {
+    const reaped = reapOrphans(childrenPath(runtimeDir), warn);
+    if (reaped > 0) {
+      warn(`reaped ${reaped} orphaned session(s) from a previous run`);
+    }
+  }
+
   let token: string;
   try {
     const loaded = loadOrCreateToken(resolveConfigDir());
@@ -296,7 +308,10 @@ export async function runServe(argv: readonly string[]): Promise<number> {
   const tickets = createTicketStore();
   // One supervisor per serve: the hub owns the spawner and closes it on a
   // graceful stop, group-killing every app-started child.
-  const spawner = createSpawner({ maxSessions: args.maxSessions });
+  const spawner = createSpawner({
+    maxSessions: args.maxSessions,
+    pidFile: childrenPath(runtimeDir),
+  });
   try {
     hub = await createHub({
       token,

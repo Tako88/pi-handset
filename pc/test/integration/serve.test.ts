@@ -22,6 +22,11 @@ import { WebSocket } from 'ws';
 import { PROTOCOL_VERSION } from '../../src/protocol/protocol.ts';
 import { acquireLock } from '../../src/hub/discovery.ts';
 import { abortStartup, finishShutdown } from '../../src/cli/serve.ts';
+import {
+  TITLE_REWRITER_ARGV_ENV,
+  TITLE_REWRITER_PID_ENV,
+  writeTitleRewriter,
+} from './title_rewriter.ts';
 
 const pcRoot = fileURLToPath(new URL('../..', import.meta.url));
 const serveEntry = fileURLToPath(new URL('../../src/cli/serve.ts', import.meta.url));
@@ -869,4 +874,118 @@ test('--max-sessions caps the number of app-started sessions', async () => {
   serve.child.kill('SIGTERM');
   await exited;
   await waitFor(() => !alive(shimPid), 'the shim to die with the supervisor', 5000);
+});
+
+// --- M2: the boot reaper over a real hard-killed hub ---
+
+/** The children pidfile the supervisor writes beside its discovery record. */
+function childrenFile(): string {
+  return join(runtimeDir, 'pi-droid', 'children.json');
+}
+
+/** The live `/proc/<pid>/cmdline`, NUL-split with the padding removed. */
+function readCmdline(pid: number): string[] {
+  try {
+    return readFileSync(`/proc/${pid}/cmdline`, 'utf8')
+      .split('\0')
+      .filter((part) => part.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+/** Writes the title-rewriting `pi` shim and its env; returns the env to pass. */
+function rewriterShim(): { dir: string; env: Record<string, string> } {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-droid-serve-rewriter-'));
+  scratchShimDirs.push(dir);
+  writeTitleRewriter(dir);
+  return {
+    dir,
+    env: {
+      PATH: `${dir}:${process.env.PATH ?? ''}`,
+      [TITLE_REWRITER_PID_ENV]: join(dir, 'rewriter.pid'),
+      [TITLE_REWRITER_ARGV_ENV]: join(dir, 'rewriter.argv'),
+    },
+  };
+}
+
+/** Starts a session through the hub and waits until the shim is running. */
+async function startRewriterSession(port: number, shimDir: string): Promise<number> {
+  const viewer = await authViewer(port);
+  viewer.send(
+    JSON.stringify({
+      protocolVersion: PROTOCOL_VERSION,
+      type: 'start-session',
+      id: 'start-rewriter',
+    }),
+  );
+  const result = await awaitMessage(viewer, 'command-result');
+  assert.equal(result.ok, true, `start was refused: ${String(result.error)}`);
+  const pidFile = join(shimDir, 'rewriter.pid');
+  await waitFor(() => existsSync(pidFile), 'the title-rewriter shim to run');
+  return Number(readFileSync(pidFile, 'utf8').trim());
+}
+
+test('a SIGKILLed hub leaves its title-rewriting child, and the next boot reaps it', async () => {
+  const port = await freePort();
+  const shim = rewriterShim();
+  const env = shim.env;
+
+  const first = startServe(['--port', String(port)], env);
+  await waitFor(() => readPid() === first.child.pid, 'the first discovery file');
+
+  const shimPid = await startRewriterSession(port, shim.dir);
+  assert.equal(alive(shimPid), true, 'the shim must be running');
+
+  // The proof this witness can see the fault the old one could not: the live
+  // argv is the title, not the pre-exec original.
+  await waitFor(() => readCmdline(shimPid)[0] === 'pi', 'the child to rewrite its argv');
+  const original = JSON.parse(readFileSync(join(shim.dir, 'rewriter.argv'), 'utf8')) as string[];
+  assert.notDeepEqual(readCmdline(shimPid), original);
+
+  await waitFor(() => existsSync(childrenFile()), 'the children record');
+
+  // A hard kill runs no cleanup at all.
+  const firstExit = waitExit(first.child);
+  first.child.kill('SIGKILL');
+  await firstExit;
+  assert.equal(alive(shimPid), true, 'the orphan must survive the hard kill');
+  assert.equal(existsSync(childrenFile()), true, 'its record must survive too');
+
+  // The next boot reaps it, even though it rewrote its own argv.
+  const second = startServe(['--port', String(await freePort())], env);
+  await waitFor(() => readPid() === second.child.pid, 'the second hub');
+  await waitFor(() => !alive(shimPid), 'the next boot to reap the orphan');
+  await waitFor(() => !existsSync(childrenFile()), 'the consumed record to be removed');
+
+  const secondExit = waitExit(second.child);
+  second.child.kill('SIGTERM');
+  await secondExit;
+});
+
+test('a --take-over boot does not reap the previous hub\'s child', async () => {
+  const port = await freePort();
+  const shim = rewriterShim();
+  const env = shim.env;
+
+  const first = startServe(['--port', String(port)], env);
+  await waitFor(() => readPid() === first.child.pid, 'the first hub');
+  const shimPid = await startRewriterSession(port, shim.dir);
+
+  const second = startServe(['--take-over', '--port', String(await freePort())], env);
+  await waitFor(() => readPid() === second.child.pid, 'the takeover hub');
+
+  assert.equal(
+    alive(shimPid),
+    true,
+    '--take-over must not signal a still-live hub child',
+  );
+
+  const secondExit = waitExit(second.child);
+  second.child.kill('SIGTERM');
+  await secondExit;
+  const firstExit = waitExit(first.child);
+  first.child.kill('SIGTERM');
+  await firstExit;
+  await waitFor(() => !alive(shimPid), 'the shim to die with its own hub', 5000);
 });
