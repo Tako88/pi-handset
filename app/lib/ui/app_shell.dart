@@ -35,6 +35,7 @@ import 'session_menu.dart';
 import 'status_indicator.dart';
 import 'theme.dart';
 import 'transcript_view.dart';
+import 'tree_actions.dart';
 
 class PiDroidApp extends StatefulWidget {
   const PiDroidApp({
@@ -160,7 +161,7 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
   /// navigated to it. Single-slot: a newer tap, a session switch, or a refusal
   /// clears it. The prefill runs from the leaf signal, never the ack, because
   /// the ack means accepted — not navigated.
-  _PendingTreeTap? _pendingTreeTap;
+  PendingTreeTap? _pendingTreeTap;
 
   /// Whether the composer currently holds a command draft (a leading `/` with
   /// no whitespace). The shell refetches the command list on the transition
@@ -172,6 +173,7 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
   /// point of use rather than at construction.
   late final AttachmentActions _attachmentActions;
   late final ModelActions _modelActions;
+  late final TreeActions _treeActions;
 
   @override
   void initState() {
@@ -183,6 +185,7 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
       transcriptOf: (id) =>
           _state.transcripts[id] ?? const SessionTranscript(),
     );
+    _treeActions = TreeActions(client: widget.client, isMounted: () => mounted);
     _pendingOpenSessionId = widget.initialSessionId;
     _subscription = widget.client.changes.listen(_onState);
     _openRequests = widget.notifications.openSessionRequests.listen(_queueOpen);
@@ -702,85 +705,6 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
     );
   }
 
-  /// Lists the session tree, shows only user nodes, and forks at the picked one.
-  /// `context.mounted` after the list await, because the picker needs the
-  /// descendant context alive — the same check `_setModel` makes.
-  Future<void> _fork(String activeId, BuildContext context) async {
-    final messenger = ScaffoldMessenger.of(context);
-    final listed = await widget.client.listTree(activeId);
-    if (!context.mounted) return;
-    if (!listed.ok) {
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text(listed.error ?? 'could not read the session tree'),
-        ),
-      );
-      return;
-    }
-    final picked = await pickTreeNode(
-      context,
-      listed.tree ?? const <TreeNodeSummary>[],
-      userOnly: true,
-      truncated: listed.treeTruncated ?? false,
-    );
-    if (!mounted || picked == null) return;
-    final result = await widget.client.sessionFork(activeId, picked.id);
-    if (!mounted || result.ok) return;
-    messenger.showSnackBar(
-      SnackBar(content: Text(result.error ?? 'could not fork the session')),
-    );
-  }
-
-  /// Lists the whole session tree, marks pi's current leaf, and moves the leaf
-  /// to the picked node. `context.mounted` after the list await, because the
-  /// picker needs the descendant context alive — the same check `_fork` makes.
-  ///
-  /// The `sessionTree` ack means accepted, not navigated, so this never
-  /// prefills and never re-requests history here: [_onLeaf] does both when pi's
-  /// `leaf` event arrives. A request issued now would race the move and could
-  /// return the old branch.
-  Future<void> _navigateTree(String activeId, BuildContext context) async {
-    final messenger = ScaffoldMessenger.of(context);
-    final listed = await widget.client.listTree(activeId);
-    if (!context.mounted) return;
-    if (!listed.ok) {
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text(listed.error ?? 'could not read the session tree'),
-        ),
-      );
-      return;
-    }
-    final picked = await pickTreeNode(
-      context,
-      listed.tree ?? const <TreeNodeSummary>[],
-      userOnly: false,
-      truncated: listed.treeTruncated ?? false,
-      leafId: listed.leafId,
-    );
-    if (!mounted || picked == null) return;
-    // pi returns early for a same-leaf target before it emits, so a tap sent
-    // for the current point would produce no `leaf` event and look like a
-    // failure. Answer it locally instead.
-    if (picked.id == listed.leafId) {
-      messenger.showSnackBar(
-        const SnackBar(content: Text('Already at this point')),
-      );
-      return;
-    }
-    _pendingTreeTap = _PendingTreeTap(sessionId: activeId, node: picked);
-    final result = await widget.client.sessionTree(activeId, picked.id);
-    if (!mounted) return;
-    if (!result.ok) {
-      // A dispatch-time refusal never navigates, so drop the armed tap rather
-      // than let a later, unrelated leaf prefill it.
-      _pendingTreeTap = null;
-      messenger.showSnackBar(
-        SnackBar(content: Text(result.error ?? 'could not navigate the tree')),
-      );
-    }
-  }
-
   /// Renames the session. The display updates when pi reports the new label.
   Future<void> _rename(String activeId, BuildContext context) async {
     final messenger = ScaffoldMessenger.of(context);
@@ -999,10 +923,15 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
                 ? () => _newSession(context)
                 : null,
             onFork: _state.capabilities.contains(capabilitySessionControl)
-                ? () => _fork(activeId, context)
+                ? () => _treeActions.fork(activeId, context)
                 : null,
             onTree: _state.capabilities.contains(capabilitySessionControl)
-                ? () => _navigateTree(activeId, context)
+                ? () => _treeActions.navigate(
+                    activeId,
+                    context,
+                    arm: (tap) => _pendingTreeTap = tap,
+                    disarm: () => _pendingTreeTap = null,
+                  )
                 : null,
           ),
         ],
@@ -1207,14 +1136,4 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
     }
     return 'session';
   }
-}
-
-/// A tree node the user tapped, waiting for the `leaf` event that proves pi
-/// navigated to it. Carries its session so a leaf for another session cannot
-/// consume it.
-class _PendingTreeTap {
-  final String sessionId;
-  final TreeNodeSummary node;
-
-  const _PendingTreeTap({required this.sessionId, required this.node});
 }
