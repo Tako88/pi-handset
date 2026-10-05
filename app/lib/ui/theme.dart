@@ -563,6 +563,7 @@ class DocumentRow extends StatelessWidget {
     super.key,
     this.rule,
     this.background,
+    this.highlight,
     this.onTap,
     required this.child,
   });
@@ -572,6 +573,14 @@ class DocumentRow extends StatelessWidget {
 
   /// The row's full-bleed surface, or null for the page itself.
   final Color? background;
+
+  /// A find-in-transcript tint, alpha-blended *over* [background], or null for
+  /// no tint.
+  ///
+  /// Because it is blended on top, the tint wins the surface: for a tool row a
+  /// search hit overtakes the state fill. The row's state stays legible from the
+  /// unchanged left [rule], so a hit can never erase running/succeeded/failed.
+  final Color? highlight;
 
   /// Makes the whole row a tap target. The surface is carried by a [Material]
   /// rather than a plain box so the ink response is painted *above* it — an
@@ -604,6 +613,10 @@ class DocumentRow extends StatelessWidget {
       ),
     );
     if (onTap != null) row = InkWell(onTap: onTap, child: row);
-    return Material(color: background ?? Colors.transparent, child: row);
+    final base = background ?? Colors.transparent;
+    final surface = highlight == null
+        ? base
+        : Color.alphaBlend(highlight!, base);
+    return Material(color: surface, child: row);
   }
 }

@@ -110,10 +110,15 @@ class TextBlock extends StatelessWidget {
   const TextBlock({
     super.key,
     required this.block,
+    this.highlight,
     this.onOpenLink = openExternalLink,
   });
 
   final TranscriptBlock block;
+
+  /// A find-in-transcript tint, blended over the row's surface by
+  /// [DocumentRow].
+  final Color? highlight;
 
   /// How a tapped link is opened. Injectable so a widget test can assert the
   /// wiring without a platform channel; production uses [openExternalLink].
@@ -127,6 +132,7 @@ class TextBlock extends StatelessWidget {
     return DocumentRow(
       rule: mine ? roles.accent : null,
       background: mine ? roles.userMessageBg : null,
+      highlight: highlight,
       child: block.complete
           ? MarkdownBody(
               data: block.text,
@@ -203,9 +209,14 @@ class ThinkingBlock extends StatefulWidget {
     super.key,
     required this.block,
     required this.thinkingLevel,
+    this.highlight,
   });
 
   final TranscriptBlock block;
+
+  /// A find-in-transcript tint, blended over the row's surface by
+  /// [DocumentRow].
+  final Color? highlight;
 
   /// pi's current thinking level, or null when the session has not reported one
   /// (a fresh session, or a bridge older than the level).
@@ -247,6 +258,7 @@ class _ThinkingBlockState extends State<ThinkingBlock> {
     );
     return DocumentRow(
       rule: roles.dim,
+      highlight: widget.highlight,
       child: widget.block.complete
           ? InkWell(
               onTap: () => setState(() => _expanded = !_expanded),
@@ -274,11 +286,17 @@ class ToolBlock extends StatelessWidget {
     required this.block,
     required this.expanded,
     required this.onToggle,
+    this.highlight,
   });
 
   final TranscriptBlock block;
   final bool expanded;
   final VoidCallback onToggle;
+
+  /// A find-in-transcript tint, blended over the state surface by
+  /// [DocumentRow]. The rule still carries the state colour, so the row's
+  /// running/succeeded/failed signal survives the tint.
+  final Color? highlight;
 
   @override
   Widget build(BuildContext context) {
@@ -315,6 +333,7 @@ class ToolBlock extends StatelessWidget {
     return DocumentRow(
       rule: state,
       background: surface,
+      highlight: highlight,
       onTap: onToggle,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -372,14 +391,18 @@ String argumentsLabel(Object? args) {
 /// A truncation or status notice: the document's footnote, with no rule and no
 /// surface of its own.
 class NoticeBlock extends StatelessWidget {
-  const NoticeBlock({super.key, required this.block});
+  const NoticeBlock({super.key, required this.block, this.highlight});
 
   final TranscriptBlock block;
+
+  /// A find-in-transcript tint, blended over the page by [DocumentRow].
+  final Color? highlight;
 
   @override
   Widget build(BuildContext context) {
     final roles = Theme.of(context).extension<PiRoles>()!;
     return DocumentRow(
+      highlight: highlight,
       child: Text(
         block.text,
         style: TextStyle(
