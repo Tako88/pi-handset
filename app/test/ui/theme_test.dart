@@ -11,6 +11,7 @@ library;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pi_droid/ui/theme.dart';
+import 'package:pi_droid/ui/transcript_view.dart';
 
 void main() {
   test('every thinking level has its own colour on the ramp', () {
@@ -149,6 +150,57 @@ void main() {
           reason:
               '$label: ${fg.toARGB32().toRadixString(16)} on '
               '${bg.toARGB32().toRadixString(16)}',
+        );
+      }
+    }
+  });
+
+  test('the search tint is visible without dropping the row text below AA', () {
+    // The tint is a search affordance, deliberately visible rather than
+    // AA-neutral: a hit nobody can see is not a hit. What is asserted is the
+    // achievable property — every hit is perceptibly different from its base,
+    // the current hit is stronger than the others, and the row's own text
+    // stays at AA on top of either. The secondary-text dip over a tinted tool
+    // surface is a recorded limit, not asserted here.
+    for (final roles in [piDarkRoles, piLightRoles]) {
+      for (final base in [
+        roles.pageBg,
+        roles.cardBg,
+        roles.userMessageBg,
+        roles.toolPendingBg,
+        roles.toolSuccessBg,
+        roles.toolErrorBg,
+      ]) {
+        final hit = Color.alphaBlend(
+          roles.warning.withValues(alpha: TranscriptView.hitHighlightAlpha),
+          base,
+        );
+        final current = Color.alphaBlend(
+          roles.warning.withValues(
+            alpha: TranscriptView.currentHitHighlightAlpha,
+          ),
+          base,
+        );
+        expect(
+          contrast(hit, base),
+          greaterThanOrEqualTo(1.25),
+          reason: 'the hit must be visible on ${base.toARGB32()}',
+        );
+        expect(
+          contrast(current, base),
+          greaterThan(contrast(hit, base)),
+          reason: 'the current hit must read stronger than the others on '
+              '${base.toARGB32()}',
+        );
+        expect(
+          contrast(roles.text, hit),
+          greaterThanOrEqualTo(4.5),
+          reason: 'row text on a hit over ${base.toARGB32()}',
+        );
+        expect(
+          contrast(roles.text, current),
+          greaterThanOrEqualTo(4.5),
+          reason: 'row text on the current hit over ${base.toARGB32()}',
         );
       }
     }

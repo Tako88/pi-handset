@@ -54,11 +54,17 @@ class TranscriptView extends StatefulWidget {
     super.key,
     required this.transcript,
     required this.onLoadOlder,
+    this.search = TranscriptSearch.none,
     this.onOpenLink = openExternalLink,
     this.onCopyText = copyToClipboard,
   });
 
   final SessionTranscript transcript;
+
+  /// The find-in-transcript state: which rows match and which one is current.
+  /// Defaults to [TranscriptSearch.none], so a view with no search tints
+  /// nothing.
+  final TranscriptSearch search;
 
   /// Loads one older page into the transcript. Required, not optional: an
   /// omitted handler would render a control that does nothing.
@@ -72,6 +78,14 @@ class TranscriptView extends StatefulWidget {
   /// can assert the wiring without a platform channel; production writes to
   /// the system clipboard.
   final void Function(String text) onCopyText;
+
+  /// The tint alpha for a row that matches the query. Public so the contrast
+  /// test pins the same number the widget paints.
+  static const double hitHighlightAlpha = 0.22;
+
+  /// The tint alpha for the current match — deliberately stronger than
+  /// [hitHighlightAlpha], so the row the stepper is on reads differently.
+  static const double currentHitHighlightAlpha = 0.40;
 
   /// The toolbar item that copies the whole row, as opposed to the system's
   /// own Copy, which copies only the selected substring.
@@ -264,6 +278,8 @@ class _TranscriptViewState extends State<TranscriptView> {
   @override
   Widget build(BuildContext context) {
     final blocks = widget.transcript.blocks;
+    final matchIds = {for (final b in widget.search.matches) b.id};
+    final currentId = widget.search.currentMatch?.id;
     final truncated = widget.transcript.truncated;
     final liveThinking = widget.transcript.streamingThinking.isNotEmpty;
     final streaming =
@@ -344,7 +360,10 @@ class _TranscriptViewState extends State<TranscriptView> {
             final block = blocks[blockIndex];
             return RepaintBoundary(
               key: ValueKey(block.id),
-              child: _selectable(block, _block(block)),
+              child: _selectable(
+                block,
+                _block(block, _highlightFor(block.id, matchIds, currentId)),
+              ),
             );
           },
         ),
@@ -393,26 +412,51 @@ class _TranscriptViewState extends State<TranscriptView> {
     );
   }
 
-  Widget _block(TranscriptBlock block) {
+  /// The tint for the row [id]: the current match is stronger than the other
+  /// hits, and a non-match has none.
+  ///
+  /// [matchIds] is built from the *matched blocks*, so the synthetic notice the
+  /// view constructs in its own item builder is never a member and can never be
+  /// tinted.
+  Color? _highlightFor(String id, Set<String> matchIds, String? currentId) {
+    final roles = Theme.of(context).extension<PiRoles>()!;
+    if (currentId == id) {
+      return roles.warning.withValues(
+        alpha: TranscriptView.currentHitHighlightAlpha,
+      );
+    }
+    if (matchIds.contains(id)) {
+      return roles.warning.withValues(alpha: TranscriptView.hitHighlightAlpha);
+    }
+    return null;
+  }
+
+  Widget _block(TranscriptBlock block, Color? highlight) {
     switch (block.kind) {
       case TranscriptBlockKind.text:
-        return TextBlock(block: block, onOpenLink: widget.onOpenLink);
+        return TextBlock(
+          block: block,
+          highlight: highlight,
+          onOpenLink: widget.onOpenLink,
+        );
       case TranscriptBlockKind.thinking:
         return ThinkingBlock(
           block: block,
           thinkingLevel: widget.transcript.thinkingLevel,
+          highlight: highlight,
         );
       case TranscriptBlockKind.tool:
         final expanded = block.id == _expandedToolId;
         return ToolBlock(
           block: block,
           expanded: expanded,
+          highlight: highlight,
           onToggle: () => setState(() {
             _expandedToolId = expanded ? null : block.id;
           }),
         );
       case TranscriptBlockKind.notice:
-        return NoticeBlock(block: block);
+        return NoticeBlock(block: block, highlight: highlight);
       case TranscriptBlockKind.image:
         return ImageBlock(block: block);
     }
