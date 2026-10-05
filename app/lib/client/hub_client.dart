@@ -42,7 +42,7 @@ import 'scheduler.dart';
 import 'token_store.dart';
 import 'context_usage.dart';
 import 'transcript.dart';
-import 'hub_models.dart';
+import 'hub_client_view.dart';
 export 'hub_models.dart';
 
 /// The close code the hub sends for a capability violation. Retrying a bridge
@@ -129,7 +129,7 @@ class _PendingListing {
   HubTimer? timer;
 }
 
-class HubClient {
+class HubClient implements HubClientView {
   HubClient({
     required HubSocketFactory socketFactory,
     required HubScheduler scheduler,
@@ -259,26 +259,31 @@ class HubClient {
   HubTimer? _replacementTimer;
 
   /// The current snapshot.
+  @override
   HubClientState get state => _state;
 
   /// Whether [state]'s [HubClientState.lastError] came from the connection path
   /// (dial, auth, send) rather than a session/operation. A new deliberate dial
   /// clears a connection-scoped error and leaves a session notice alone.
+  @override
   bool get lastErrorFromConnection => _lastErrorFromConnection;
 
   /// Coalesced notifications: at most one per scheduled frame, regardless of how
   /// many deltas arrived.
+  @override
   Stream<HubClientState> get changes => _changesController.stream;
 
   /// Settle notifications: one event per `agent-settled` frame the hub sends,
   /// regardless of which session is active. Broadcast, so several listeners are
   /// possible; it closes with [stop], never with [disconnect].
+  @override
   Stream<AgentSettledEvent> get settles => _settlesController.stream;
 
   /// Leaf moves: one event per `leaf` frame, carrying the session it is
   /// attributed to and the new leaf id (`null` for the root). Broadcast, so
   /// several listeners are possible; it closes with [stop], never with
   /// [disconnect].
+  @override
   Stream<LeafEvent> get leafEvents => _leafEventsController.stream;
 
   /// The number of consecutive resyncs a session is allowed before the client
@@ -316,6 +321,7 @@ class HubClient {
   /// Returns after the race is decided; reconnects after that happen in the
   /// background. Throws [StateError] when [candidates] is empty or neither
   /// credential is available.
+  @override
   Future<void> startCandidates(
     List<HubEndpoint> candidates, {
     String? ticket,
@@ -448,6 +454,7 @@ class HubClient {
   ///
   /// Relayed `event` frames carry no `sessionId`, so the client can only
   /// attribute them to the session it is currently viewing.
+  @override
   void subscribe(String sessionId) {
     // Picking a session is an explicit navigation: a replacement follow for a
     // different session must not later yank the user onto its successor. Clear
@@ -506,6 +513,7 @@ class HubClient {
     _scheduleNotify();
   }
 
+  @override
   void unsubscribe(String sessionId) {
     // Unsubscribing the awaited id abandons the replacement it was waiting on.
     if (_awaitingReplacementFrom == sessionId) {
@@ -557,6 +565,7 @@ class HubClient {
   /// A non-null socket can still be a dead agent, so a successful send is
   /// bounded by a page timeout that re-enables the control instead of hanging
   /// it forever.
+  @override
   void loadOlder(String sessionId) {
     final transcript = _state.transcripts[sessionId];
     if (transcript == null) return;
@@ -614,6 +623,7 @@ class HubClient {
 
   /// Sends one allowlisted command and completes when its `command-result`
   /// arrives. The correlation id is generated here unless [id] is supplied.
+  @override
   Future<CommandResult> sendCommand(
     String sessionId,
     String name, {
@@ -651,6 +661,7 @@ class HubClient {
   ///
   /// The picker is a one-shot, not a per-keystroke list, so nothing is cached
   /// here — unlike [listCommands].
+  @override
   Future<CommandResult> listModels(String sessionId, {String? id}) {
     return _request(sessionId, id, (commandId) => <String, Object?>{
       'protocolVersion': protocolVersion,
@@ -666,6 +677,7 @@ class HubClient {
   /// A `/fork` picks its fork point from this list; the tree carries only user
   /// and assistant messages, already relinked to their nearest emitted
   /// ancestor.
+  @override
   Future<CommandResult> listTree(String sessionId, {String? id}) {
     return _request(sessionId, id, (commandId) => <String, Object?>{
       'protocolVersion': protocolVersion,
@@ -682,6 +694,7 @@ class HubClient {
   /// replacement itself, so the returned future is settled by the successor's
   /// registration (or by the old session's `session-gone` while the follow is
   /// armed), never by the ack. The follow fails after [_replacementTimeout].
+  @override
   Future<CommandResult> sessionNew(String sessionId, {String? id}) {
     return _request(sessionId, id, (commandId) {
       return <String, Object?>{
@@ -696,6 +709,7 @@ class HubClient {
 
   /// Asks pi to fork [sessionId] at [entryId], replacing it in place. Same
   /// replacement-follow contract as [sessionNew].
+  @override
   Future<CommandResult> sessionFork(
     String sessionId,
     String entryId, {
@@ -718,6 +732,7 @@ class HubClient {
   /// A navigation does not replace the session, so this is a plain request: the
   /// ack settles it. The re-baseline is the bridge's separate `leaf` event, not
   /// a history request issued here.
+  @override
   Future<CommandResult> sessionTree(
     String sessionId,
     String entryId, {
@@ -750,6 +765,7 @@ class HubClient {
   /// successful result can only come from `_onCommandResult`, so the transcript
   /// is still present when this continuation runs. It stays because that
   /// ordering is a cross-function invariant, not a local one.
+  @override
   Future<void> loadCommands(String sessionId) async {
     final result = await listCommands(sessionId);
     if (!result.ok || result.commands == null) return;
@@ -772,6 +788,7 @@ class HubClient {
   /// the call is refused locally and no frame is sent. `trust` is a
   /// project-session-era field too — the hub validates it alongside `cwd` — so
   /// it is only ever sent together with `cwd`.
+  @override
   Future<CommandResult> startSession({String? id, String? cwd, bool? trust}) {
     if ((cwd != null || trust != null) &&
         !_state.capabilities.contains(capabilityProjectSession)) {
@@ -801,6 +818,7 @@ class HubClient {
   /// an unknown viewer type as a capability violation and closes `4003`, which
   /// this client treats as terminal (no reconnect). The id is namespaced
   /// `dirs-N`, distinct from `_request`'s `cmd-N`.
+  @override
   Future<DirListingResult> listDirs({String? path, String? id}) {
     if (!_state.capabilities.contains(capabilityListDirs)) {
       return Future.value(
@@ -840,6 +858,7 @@ class HubClient {
 
   /// Asks the hub to kill an app-started session. Same empty-session pending
   /// convention as [startSession].
+  @override
   Future<CommandResult> killSession(String sessionId, {String? id}) {
     return _request('', id, (commandId) => <String, Object?>{
       'protocolVersion': protocolVersion,
