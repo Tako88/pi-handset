@@ -1156,5 +1156,151 @@ void main() {
       );
     });
   });
+
+  group('find in blocks', () {
+    TranscriptBlock textRow(String id, String text) =>
+        TranscriptBlock(kind: TranscriptBlockKind.text, id: id, text: text);
+
+    test('search text is the row text for text, thinking and notice blocks', () {
+      expect(
+        searchTextForBlock(
+          TranscriptBlock(
+            kind: TranscriptBlockKind.text,
+            id: 'a',
+            text: 'hello',
+          ),
+        ),
+        'hello',
+      );
+      expect(
+        searchTextForBlock(
+          TranscriptBlock(
+            kind: TranscriptBlockKind.thinking,
+            id: 'b',
+            text: 'hmm',
+          ),
+        ),
+        'hmm',
+      );
+      expect(
+        searchTextForBlock(
+          TranscriptBlock(
+            kind: TranscriptBlockKind.notice,
+            id: 'c',
+            text: 'note',
+          ),
+        ),
+        'note',
+      );
+    });
+
+    test('search text is null for an image block', () {
+      expect(
+        searchTextForBlock(
+          TranscriptBlock(
+            kind: TranscriptBlockKind.image,
+            id: 'img',
+            imageBytes: pngBytes,
+          ),
+        ),
+        isNull,
+      );
+    });
+
+    test('search text composes a tool row name, arguments and result body', () {
+      expect(
+        searchTextForBlock(
+          TranscriptBlock(
+            kind: TranscriptBlockKind.tool,
+            id: 't',
+            text: 'output',
+            toolName: 'bash',
+            toolArgs: {'command': 'ls'},
+          ),
+        ),
+        'bash\n{"command":"ls"}\noutput',
+      );
+    });
+
+    test('blocks matching returns the matching rows in block order', () {
+      final blocks = [
+        textRow('a', 'apple'),
+        textRow('b', 'banana'),
+        textRow('c', 'apricot'),
+      ];
+      expect(blocksMatching(blocks, 'ap'), [blocks[0], blocks[2]]);
+    });
+
+    test('blocks matching is case-insensitive', () {
+      final blocks = [textRow('a', 'hello')];
+      expect(blocksMatching(blocks, 'HELLO'), [blocks[0]]);
+    });
+
+    test('blocks matching trims the needle before matching', () {
+      final blocks = [textRow('a', 'hello')];
+      expect(blocksMatching(blocks, '  hello  '), [blocks[0]]);
+    });
+
+    test('blocks matching never returns an image block', () {
+      final image = TranscriptBlock(
+        kind: TranscriptBlockKind.image,
+        id: 'img',
+        imageBytes: pngBytes,
+      );
+      expect(blocksMatching([image], 'anything'), isEmpty);
+    });
+
+    test(
+      'blocks matching returns nothing for a blank query, the deliberate '
+      'inversion of modelsMatching',
+      () {
+        final blocks = [textRow('a', 'hello')];
+        expect(
+          blocksMatching(blocks, ''),
+          isEmpty,
+          reason: 'a blank search is 0/0; the model picker\'s blank '
+              '"lists everything" is deliberately inverted here',
+        );
+        expect(blocksMatching(blocks, '   '), isEmpty);
+      },
+    );
+
+    test('blocks matching returns nothing when no row matches', () {
+      expect(blocksMatching([textRow('a', 'hello')], 'zzz'), isEmpty);
+    });
+
+    test(
+      'blocks matching finds a hit hidden in a tool row arguments even when '
+      'collapsed',
+      () {
+        final tool = TranscriptBlock(
+          kind: TranscriptBlockKind.tool,
+          id: 't',
+          text: 'output',
+          toolName: 'bash',
+          toolArgs: {'command': 'ls'},
+        );
+        expect(blocksMatching([tool], 'ls'), [tool]);
+      },
+    );
+
+    test('the current match is the searched row at the current index', () {
+      final blocks = [textRow('a', 'one'), textRow('b', 'two')];
+      final matches = blocksMatching(blocks, 'two');
+      expect(
+        TranscriptSearch(matches: matches, current: 0).currentMatch,
+        matches[0],
+      );
+    });
+
+    test('there is no current match when out of range or there are none', () {
+      final matches = blocksMatching([textRow('a', 'one')], 'one');
+      expect(
+        TranscriptSearch(matches: matches, current: 5).currentMatch,
+        isNull,
+      );
+      expect(TranscriptSearch.none.currentMatch, isNull);
+    });
+  });
 }
 
