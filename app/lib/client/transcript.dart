@@ -818,3 +818,49 @@ String? copyTextForBlock(TranscriptBlock block) {
       ].join('\n');
   }
 }
+
+/// The text a search matches against for [block]: exactly the row's copy text.
+///
+/// `null` for an image (nothing to search); for a tool row that is the tool
+/// name + arguments + result body, so a match can mark a collapsed row whose
+/// visible text shows nothing.
+String? searchTextForBlock(TranscriptBlock block) => copyTextForBlock(block);
+
+/// Blocks whose [copyTextForBlock] contains [query], case-insensitively.
+///
+/// A blank query matches NOTHING. This is deliberately the *opposite* of
+/// [modelsMatching] (which returns every model for a blank query): blank is
+/// `0/0` for a search, and "every row is a hit" would light up the whole
+/// transcript. Do not "align" it with the model picker.
+List<TranscriptBlock> blocksMatching(
+  List<TranscriptBlock> blocks,
+  String query,
+) {
+  final needle = query.trim().toLowerCase();
+  if (needle.isEmpty) return const [];
+  return [
+    for (final b in blocks)
+      if (searchTextForBlock(b)?.toLowerCase().contains(needle) ?? false) b,
+  ];
+}
+
+/// The find-in-transcript state: whether the query field is open, the matching
+/// rows in block order, and the index of the current one, [currentMatch].
+class TranscriptSearch {
+  const TranscriptSearch({
+    this.open = false,
+    this.matches = const [],
+    this.current = -1,
+  });
+
+  final bool open;
+  final List<TranscriptBlock> matches;
+  final int current;
+
+  /// The search closed, with no matches and no current row.
+  static const TranscriptSearch none = TranscriptSearch();
+
+  /// The row at [current], or null when [current] is out of range or empty.
+  TranscriptBlock? get currentMatch =>
+      (current >= 0 && current < matches.length) ? matches[current] : null;
+}
