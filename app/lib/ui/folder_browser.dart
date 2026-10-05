@@ -14,13 +14,13 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
-import '../client/hub_client.dart';
+import '../client/hub_client_view.dart';
 import 'theme.dart';
 
 class FolderBrowserScreen extends StatefulWidget {
   const FolderBrowserScreen({super.key, required this.client});
 
-  final HubClient client;
+  final HubClientView client;
 
   @override
   State<FolderBrowserScreen> createState() => _FolderBrowserScreenState();

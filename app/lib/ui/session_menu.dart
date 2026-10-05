@@ -10,7 +10,7 @@
 library;
 
 import 'package:flutter/material.dart';
-import 'package:pi_droid/client/hub_client.dart';
+import 'package:pi_droid/client/hub_models.dart';
 import 'package:pi_droid/ui/theme.dart';
 
 /// pi's canonical thinking levels.
