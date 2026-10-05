@@ -22,12 +22,13 @@ import '../client/notification_policy.dart';
 import '../client/notification_presenter.dart';
 import '../client/settle_notification.dart';
 import '../client/token_store.dart';
-import '../platform/gallery_picker.dart';
 import '../platform/qr_scanner.dart';
 import '../protocol/protocol.dart';
+import 'attachment_actions.dart';
 import 'command_suggestions.dart';
 import 'compose_bar.dart';
 import 'folder_browser.dart';
+import 'model_actions.dart';
 import 'pairing_screen.dart';
 import 'session_list.dart';
 import 'session_menu.dart';
@@ -166,9 +167,22 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
   /// into this state, so the `/` overlay is fresh at the point of use.
   bool _commandDraftOpen = false;
 
+  /// The extracted composer/dialog actions. Constructed in [initState] with the
+  /// shell's live probes once, so each controller reads current state at the
+  /// point of use rather than at construction.
+  late final AttachmentActions _attachmentActions;
+  late final ModelActions _modelActions;
+
   @override
   void initState() {
     super.initState();
+    _attachmentActions = AttachmentActions(isMounted: () => mounted);
+    _modelActions = ModelActions(
+      client: widget.client,
+      isMounted: () => mounted,
+      transcriptOf: (id) =>
+          _state.transcripts[id] ?? const SessionTranscript(),
+    );
     _pendingOpenSessionId = widget.initialSessionId;
     _subscription = widget.client.changes.listen(_onState);
     _openRequests = widget.notifications.openSessionRequests.listen(_queueOpen);
@@ -783,91 +797,9 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
     );
   }
 
-  /// Sends the picked thinking level. No optimistic update: the shown value
-  /// comes from the next `usage` event, so an unsupported level snaps back to
-  /// the clamped one pi actually applied.
-  Future<void> _setThinkingLevel(String activeId, BuildContext context) async {
-    final messenger = ScaffoldMessenger.of(context);
-    final transcript = _state.transcripts[activeId] ?? const SessionTranscript();
-    final level = await pickThinkingLevel(context, transcript.thinkingLevel);
-    if (!mounted || level == null) return;
-    final result = await widget.client.sendCommand(
-      activeId,
-      'setThinkingLevel',
-      args: {'level': level},
-    );
-    if (!mounted || result.ok) return;
-    messenger.showSnackBar(
-      SnackBar(content: Text(result.error ?? 'could not set the thinking level')),
-    );
-  }
-
-  /// Lists pi's models and sends the picked one. No optimistic update: the
-  /// shown name comes from the next `usage` event, so it cannot disagree with
-  /// what pi actually applied.
-  Future<void> _setModel(String activeId, BuildContext context) async {
-    final messenger = ScaffoldMessenger.of(context);
-    final listed = await widget.client.listModels(activeId);
-    // `context.mounted`, not the State's `mounted`: the picker below needs this
-    // descendant context alive, and that is the check the analyzer requires.
-    if (!context.mounted) return;
-    if (!listed.ok) {
-      messenger.showSnackBar(
-        SnackBar(content: Text(listed.error ?? 'could not list models')),
-      );
-      return;
-    }
-    final models = listed.models ?? const <ModelSummary>[];
-    if (models.isEmpty) {
-      messenger.showSnackBar(
-        const SnackBar(content: Text('No models available')),
-      );
-      return;
-    }
-    final transcript = _state.transcripts[activeId] ?? const SessionTranscript();
-    final picked = await pickModel(context, models, transcript.currentModel);
-    if (!mounted || picked == null) return;
-    final result = await widget.client.sendCommand(
-      activeId,
-      'setModel',
-      args: {'provider': picked.provider, 'id': picked.id},
-    );
-    if (!mounted || result.ok) return;
-    messenger.showSnackBar(
-      SnackBar(content: Text(result.error ?? 'could not switch the model')),
-    );
-  }
-
   void _close() {
     final active = _state.activeSessionId;
     if (active != null) widget.client.unsubscribe(active);
-  }
-
-  /// Picks one gallery image and arms it for the next send. A cancel is silent;
-  /// a platform error and an over-cap image each get a visible reason. The
-  /// messenger is captured before the picker's await, because this context is
-  /// gone once it returns.
-  Future<void> _pickAttachment(BuildContext context) async {
-    final messenger = ScaffoldMessenger.of(context);
-    final PickedImage? picked;
-    try {
-      picked = await (widget.pickImage ?? pickGalleryImage)();
-    } catch (_) {
-      if (!mounted) return;
-      messenger.showSnackBar(
-        const SnackBar(content: Text('Could not open the gallery')),
-      );
-      return;
-    }
-    if (!mounted) return;
-    if (picked == null) return;
-    if (!withinAttachmentCap(picked.bytes.length)) {
-      messenger.showSnackBar(
-        const SnackBar(content: Text('That image is too large to send')),
-      );
-      return;
-    }
-    setState(() => _attachment = picked);
   }
 
   /// The `prompt`/`followup` args for [text], carrying the picked image when
@@ -1057,8 +989,9 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
             model: transcript.currentModel?.name,
             onCompact: () => _compact(context),
             onRename: () => _rename(activeId, context),
-            onThinkingLevel: () => _setThinkingLevel(activeId, context),
-            onModel: () => _setModel(activeId, context),
+            onThinkingLevel: () =>
+                _modelActions.setThinkingLevel(activeId, context),
+            onModel: () => _modelActions.setModel(activeId, context),
             // New and fork replace the session: only a hub advertising the
             // capability can, and without it the items are omitted rather than
             // offered and refused.
@@ -1134,7 +1067,11 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
             thinkingLevel: transcript.thinkingLevel,
             attachment: attachmentsEnabled ? _attachment : null,
             onAttach: attachmentsEnabled
-                ? () => _pickAttachment(context)
+                ? () => _attachmentActions.pick(
+                    context,
+                    pickImage: widget.pickImage,
+                    onPicked: (image) => setState(() => _attachment = image),
+                  )
                 : null,
             onRemoveAttachment: () => setState(() => _attachment = null),
             onSend: (text) => widget.client.sendCommand(
