@@ -4,21 +4,6 @@ import { HUB_CAPABILITIES, PROTOCOL_VERSION } from '../protocol/protocol.ts';
 import type { AgentSettledMessage, SessionsMessage } from '../protocol/protocol.ts';
 import type { Connection, Session, State } from './hub-state.ts';
 
-/**
- * Application close codes (4000–4999). What each one means on the wire, and
- * what a client should do about it, is in `protocol.ts`; this is the
- * enforcement site, so only the reasons *this* hub closes for are listed here.
- *
- * - `CLOSE_PROTOCOL` (4002): an explicit session takeover displacing an agent.
- * - `CLOSE_CAPABILITY` (4003): a message this listener does not permit.
- * - `CLOSE_RATE_LIMITED` (4008): an unauthenticated connection outlived its
- *   auth deadline, or the unauthenticated-viewer cap was exceeded.
- */
-export const CLOSE_PROTOCOL = 4002;
-export const CLOSE_CAPABILITY = 4003;
-export const CLOSE_RATE_LIMITED = 4008;
-export const CLOSE_INTERNAL = 4500;
-
 export function send(connection: Connection, message: unknown): void {
   if (connection.socket.readyState !== WebSocket.OPEN) return;
   connection.socket.send(JSON.stringify(message));

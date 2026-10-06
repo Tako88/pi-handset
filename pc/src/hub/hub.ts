@@ -32,6 +32,10 @@ import { WebSocketServer } from 'ws';
 import type { RawData, WebSocket } from 'ws';
 
 import {
+  CLOSE_CAPABILITY,
+  CLOSE_INTERNAL,
+  CLOSE_PROTOCOL,
+  CLOSE_RATE_LIMITED,
   EVENT_PAYLOAD_KINDS,
   MAX_RELAY_BYTES,
   PROTOCOL_VERSION,
@@ -56,7 +60,7 @@ import type { TicketStore } from './pairing.ts';
 import type { Spawner } from './spawner.ts';
 import type { Connection, Session, State } from './hub-state.ts';
 import { ownedSession } from './hub-state.ts';
-import { CLOSE_CAPABILITY, CLOSE_INTERNAL, CLOSE_PROTOCOL, CLOSE_RATE_LIMITED, broadcastAgentSettled, broadcastSessions, closeWith, pushSessions, sendToViewer } from './hub-outbound.ts';
+import { broadcastAgentSettled, broadcastSessions, closeWith, pushSessions, sendToViewer } from './hub-outbound.ts';
 export { CLOSE_CAPABILITY, CLOSE_INTERNAL, CLOSE_PROTOCOL, CLOSE_RATE_LIMITED };
 import { handleChildExit, removePendingByPid } from './hub-pending.ts';
 import { handleCommand, handleCommandResult, handleHistory, handleHistoryRequest, handleKillSession, handleListDirs, handleStartSession, handleSubscribe, handleUnsubscribe } from './hub-commands.ts';

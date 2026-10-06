@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { CLOSE_INTERNAL } from '../hub/hub.ts';
+import { CLOSE_CAPABILITY, CLOSE_INTERNAL, CLOSE_PROTOCOL, CLOSE_RATE_LIMITED } from '../protocol/protocol.ts';
 import { computeBackoff, RATE_LIMITED_RECONNECT_MS } from './backoff.ts';
 import { makeHarness, parsed } from '../../test/support/bridge-harness.ts';
 
@@ -30,7 +30,7 @@ test('a 4003 capability close does not schedule a reconnect', () => {
   harness.start();
   const socket = harness.sockets[0]!;
   socket.open();
-  socket.drop(4003);
+  socket.drop(CLOSE_CAPABILITY);
   assert.equal(harness.timers.length, 0, 'a bridge capability bug must not retry forever');
 });
 
@@ -39,7 +39,7 @@ test('a 4002 protocol close does not schedule a reconnect', () => {
   harness.start();
   const socket = harness.sockets[0]!;
   socket.open();
-  socket.drop(4002);
+  socket.drop(CLOSE_PROTOCOL);
   assert.equal(harness.timers.length, 0, 'a protocol violation is permanent; retrying cannot fix it');
 });
 
@@ -48,7 +48,7 @@ test('a 4002 close is surfaced as terminal', () => {
   harness.start();
   const socket = harness.sockets[0]!;
   socket.open();
-  socket.drop(4002);
+  socket.drop(CLOSE_PROTOCOL);
   assert.ok(
     harness.writes.some((w) => w.stream === 'stderr' && w.text.includes('protocol close 4002')),
     'the operator must see why the bridge stopped',
@@ -73,7 +73,7 @@ test('a 4008 rate-limit close reconnects after a fixed longer delay', () => {
   harness.start();
   const socket = harness.sockets[0]!;
   socket.open();
-  socket.drop(4008);
+  socket.drop(CLOSE_RATE_LIMITED);
   assert.equal(harness.timers.length, 1);
   assert.equal(harness.timers[0]!.ms, RATE_LIMITED_RECONNECT_MS);
   assert.ok(RATE_LIMITED_RECONNECT_MS > 500, 'the rate-limit wait exceeds the first backoff step');
@@ -82,7 +82,7 @@ test('a 4008 rate-limit close reconnects after a fixed longer delay', () => {
   harness.fireTimer();
   const second = harness.sockets[1]!;
   second.open();
-  second.drop(4008);
+  second.drop(CLOSE_RATE_LIMITED);
   assert.equal(harness.timers[1]!.ms, RATE_LIMITED_RECONNECT_MS);
 });
 
