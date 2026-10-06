@@ -34,13 +34,10 @@ import type {
   AgentState,
   AgentToHubMessage,
   CommandMessage,
-  CommandResultMessage,
   ContextUsagePayload,
-  EventMessage,
   EventPayload,
   HistoryMessage,
   ModelSummary,
-  RegisterMessage,
   SlashCommand,
   TreeNodeSummary,
 } from '../src/protocol/protocol.ts';
@@ -51,6 +48,7 @@ import { collectToolArgs, collectUnpairedToolArgs, annotateToolViews, TREE_MAX_N
 import { messageText, SETTLED_TEXT_MAX_CODE_POINTS, settleText, sanitizeLabel, labelFromMessage, labelFromEntries } from '../src/bridge/labels.ts';
 import { RATE_LIMITED_RECONNECT_MS, computeBackoff } from '../src/bridge/backoff.ts';
 import { encodeAgentMessage, parseCommand } from '../src/bridge/wire.ts';
+import { commandResultMessage, eventMessage, helloMessage, registerMessage } from '../src/bridge/outbound.ts';
 import { isActiveMode, COMMAND_ALLOWLIST, SESSION_COMMAND_NAME, COMMAND_NOT_ALLOWED } from '../src/bridge/commands.ts';
 
 
@@ -412,7 +410,7 @@ class Bridge {
       this.guard(() => {
         if (this.socket !== socket) return;
         this.attempt = 0;
-        this.send({ protocolVersion: PROTOCOL_VERSION, type: 'hello', token: endpoint.token });
+        this.send(helloMessage(endpoint.token));
         this.sendRegister(this.currentLabel());
         this.sendAgentState();
       }),
@@ -470,28 +468,25 @@ class Bridge {
   }
 
   private sendEvent(payload: EventPayload): void {
-    const message: EventMessage = { protocolVersion: PROTOCOL_VERSION, type: 'event', payload };
-    this.send(message);
+    this.send(eventMessage(payload));
   }
 
   private sendRegister(label: string | null): void {
     const ctx = this.ctx;
     if (ctx === null) return;
     const manager = ctx.sessionManager;
-    const message: RegisterMessage = {
-      protocolVersion: PROTOCOL_VERSION,
-      type: 'register',
+    const replaces = this.replacesSessionId;
+    const message = registerMessage({
       sessionId: manager.getSessionId(),
       sessionFile: manager.getSessionFile(),
       cwd: ctx.cwd,
       mode: ctx.mode,
       pid: process.pid,
-    };
-    if (ctx.model !== undefined) message.model = ctx.model.id;
-    if (ctx.thinkingLevel !== undefined) message.thinkingLevel = ctx.thinkingLevel;
-    if (label !== null) message.name = label;
-    const replaces = this.replacesSessionId;
-    if (replaces !== null) message.replaces = replaces;
+      model: ctx.model?.id,
+      thinkingLevel: ctx.thinkingLevel,
+      name: label,
+      replaces,
+    });
     this.lastLabel = label;
     if (this.send(message) && replaces !== null) {
       // Consumed only by a register that actually reached the wire: a dropped
@@ -999,20 +994,7 @@ class Bridge {
     treeTruncated?: boolean,
     leafId?: string | null,
   ): void {
-    const message: CommandResultMessage = {
-      protocolVersion: PROTOCOL_VERSION,
-      type: 'command-result',
-      id,
-      ok,
-    };
-    if (error !== undefined) message.error = error;
-    if (commands !== undefined) message.commands = commands;
-    if (queued !== undefined) message.queued = queued;
-    if (models !== undefined) message.models = models;
-    if (tree !== undefined) message.tree = tree;
-    if (treeTruncated !== undefined) message.treeTruncated = treeTruncated;
-    if (leafId !== undefined) message.leafId = leafId;
-    this.send(message);
+    this.send(commandResultMessage(id, ok, { error, commands, queued, models, tree, treeTruncated, leafId }));
   }
 }
 
