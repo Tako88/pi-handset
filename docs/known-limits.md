@@ -487,7 +487,7 @@ rather than guess at it.
   `pi --mode rpc --approve` and did not under `--no-approve`, so the project spawn
   passes `--approve` exactly when the effective trust decision is true (`--no-approve`
   otherwise, per `defaultProjectArgs` in `pc/src/hub/spawner.ts`). Hand-run spike on
-  the dev host with `pi` 0.87.1; no committed script or test pins it.
+  the dev host; no test pins the behaviour.
 - **A project session is saved, but only once the agent has replied.** Project spawns
   drop `--no-session`, so pi persists the session under
   `~/.pi/agent/sessions/--<encoded-cwd>--/`, and it can be continued on the PC with

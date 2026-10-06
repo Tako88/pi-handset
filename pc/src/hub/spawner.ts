@@ -130,7 +130,7 @@ interface Entry {
 
 /**
  * The args for a project spawn: exactly one of `--approve` / `--no-approve`
- * (pi 0.87.1 `--help`), plus rpc mode. No `--no-session`, so the child can
+ * (pi's `--help`), plus rpc mode. No `--no-session`, so the child can
  * persist a resumable session in the project.
  */
 export function defaultProjectArgs(trust: boolean): readonly string[] {

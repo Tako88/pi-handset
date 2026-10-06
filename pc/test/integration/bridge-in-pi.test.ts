@@ -6,7 +6,7 @@
 /**
  * M9 — the bridge inside a *real* pi, and silence as a real process.
  *
- * Two behaviours, both against a spawned `pi` binary (version 0.87.1):
+ * Two behaviours, both against the `pi` on PATH (CI pins which version):
  *
  * 1. A real pi is started in `--mode rpc` with the bridge and a faux-provider
  *    harness extension loaded (`-ne` disables discovery, explicit `-e` still

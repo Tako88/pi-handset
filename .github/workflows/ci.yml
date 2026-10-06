@@ -1,0 +1,80 @@
+# The four gates AGENTS.md defines, run on a clean checkout.
+#
+# This file is the single definition of what "the gates" are; README.md and
+# AGENTS.md point here instead of restating the commands.
+#
+# Both suites spawn real processes and a real `pi` binary, and neither skips when
+# it is missing — the tests fail with a message naming the binary. So CI installs
+# the `pi` version pinned below. Bump it deliberately, not by accident.
+name: CI
+
+on:
+  push:
+    branches: [develop]
+  pull_request:
+    branches: [develop]
+  workflow_dispatch:
+
+# A second push supersedes the first; there is no reason to pay for both.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '22.19'
+  FLUTTER_VERSION: '3.47.5'
+  PI_VERSION: '1.0.4'
+
+jobs:
+  pc:
+    name: pc — suite and type gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: pc/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+        working-directory: pc
+      - name: Install pi
+        run: npm install --global @earendil-works/pi-coding-agent@${{ env.PI_VERSION }}
+      - name: Suite
+        run: npm test
+        working-directory: pc
+      - name: Type gate
+        run: npm run typecheck
+        working-directory: pc
+
+  app:
+    name: app — suite and analyzer
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: pc/package-lock.json
+      # The attach test spawns the hub from source (`node pc/src/cli/serve.ts`),
+      # so the app job needs the PC side's dependencies as well as Node.
+      - name: Install the hub's dependencies
+        run: npm ci
+        working-directory: pc
+      - name: Install pi
+        run: npm install --global @earendil-works/pi-coding-agent@${{ env.PI_VERSION }}
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Suite
+        run: flutter test
+        working-directory: app
+      - name: Analyzer
+        run: flutter analyze
+        working-directory: app
