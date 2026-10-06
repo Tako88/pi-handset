@@ -1,4 +1,4 @@
-import { PROTOCOL_VERSION, asString } from '../protocol/protocol.ts';
+import { CLOSE_PROTOCOL, PROTOCOL_VERSION, asString } from '../protocol/protocol.ts';
 import {
   FolderError,
   TrustStoreError,
@@ -9,7 +9,7 @@ import {
   trustDecision,
 } from './folders.ts';
 import type { DirectoryListing } from './folders.ts';
-import { CLOSE_PROTOCOL, broadcastSessions, closeWith, send, sendToViewer } from './hub-outbound.ts';
+import { broadcastSessions, closeWith, send, sendToViewer } from './hub-outbound.ts';
 import { ownedSession } from './hub-state.ts';
 import type { Connection, Session, State } from './hub-state.ts';
 import { beginPendingSpawn } from './hub-pending.ts';

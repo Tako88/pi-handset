@@ -54,13 +54,17 @@ export const HISTORY_MAX_BYTES = 768 * 1024;
  *   a non-`hello` message before authentication, a bad `protocolVersion`,
  *   malformed JSON, a missing required field, or a permitted type with no
  *   dispatch branch (the hub fails closed). Terminal: a retry re-sends the same
- *   message and is rejected identically.
+ *   message and is rejected identically. The hub also uses 4002 for an
+ *   explicit session takeover displacing a live agent — a deliberate policy
+ *   close, not a producer bug, but terminal for the same reason.
  * - `4003` a listener-bound capability violation for a message this listener
  *   does not permit (see `hub.ts`, the enforcement site). Terminal, likewise.
  * - `4008` rate limited: the per-connection failed-credential cap was reached.
  *   It arrives **after a short delay** (~250 ms), deliberately, so a socket
  *   cannot be used as a fast token oracle. Treat it as "wait, then retry", not
- *   as a transport failure.
+ *   as a transport failure. The hub also uses 4008 when an unauthenticated
+ *   connection outlives its auth deadline or exceeds the unauthenticated-viewer
+ *   cap.
  * - `4500` an unexpected internal handler error, contained to one connection;
  *   retryable — this is a transient fault, not a capability or protocol bug.
  *
@@ -114,6 +118,16 @@ export const HISTORY_MAX_BYTES = 768 * 1024;
  * Both decoders ignore unknown fields, so a peer that predates these fields
  * decodes the frame as if they were absent.
  */
+
+/**
+ * Application close codes (4000–4999). The `## Close codes` block above
+ * documents what each means on the wire and how a client should react; these
+ * names are the single place the hub and the bridge compare against.
+ */
+export const CLOSE_PROTOCOL = 4002;
+export const CLOSE_CAPABILITY = 4003;
+export const CLOSE_RATE_LIMITED = 4008;
+export const CLOSE_INTERNAL = 4500;
 
 /** Fields shared by both `hello` credential shapes. */
 export interface HelloBase {

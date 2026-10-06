@@ -24,15 +24,13 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { LABEL_MAX_CODE_POINTS, SETTLED_TEXT_MAX_CODE_POINTS } from '../bridge/labels.ts';
+import { DEFAULT_MAX_PAYLOAD } from '../hub/hub.ts';
 import {
+  ALL_MESSAGE_TYPES,
   CLOSE_CAPABILITY,
   CLOSE_INTERNAL,
   CLOSE_PROTOCOL,
   CLOSE_RATE_LIMITED,
-  DEFAULT_MAX_PAYLOAD,
-} from '../hub/hub.ts';
-import {
-  ALL_MESSAGE_TYPES,
   AGENT_MESSAGE_TYPES,
   AGENT_STATES,
   EVENT_PAYLOAD_KINDS,
