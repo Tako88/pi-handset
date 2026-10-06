@@ -103,8 +103,9 @@ const DEFAULT_AUTH_CLOSE_DELAY_MS = 250;
 const DEFAULT_AUTH_DEADLINE_MS = 10_000;
 /** Most unauthenticated viewer connections accepted at once. */
 const DEFAULT_MAX_UNAUTHENTICATED_VIEWERS = 64;
-/** Cap on a single inbound frame; `ws` defaults to 100 MB, far too generous. */
-const DEFAULT_MAX_PAYLOAD = 1024 * 1024;
+/** Cap on a single inbound frame; `ws` defaults to 100 MB, far too generous.
+ * Exported so the contract test can pin it to `protocol/contract.json`. */
+export const DEFAULT_MAX_PAYLOAD = 1024 * 1024;
 /** Most outstanding commands one session may have queued. */
 const DEFAULT_MAX_PENDING_COMMANDS = 128;
 

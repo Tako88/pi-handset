@@ -222,7 +222,7 @@ export type ToolStatus = (typeof TOOL_STATUSES)[number];
 
 /**
  * The view types a relayed `tool` payload may carry. Canonical: the fixture
- * suite pins this list to the shared `message-types.json`, and the app's
+ * suite pins this list to the shared `contract.json`, and the app's
  * `parseToolView` switch to its own `viewTypes`, so a type added on one side
  * and not the other fails a suite. An unknown type is still valid on the wire
  * (the app renders its generic fallback); this list is the set the app knows.

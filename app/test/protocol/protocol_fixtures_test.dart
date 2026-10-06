@@ -14,6 +14,9 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pi_droid/client/attachment.dart';
+import 'package:pi_droid/client/hub_client.dart';
+import 'package:pi_droid/client/settle_notification.dart';
 import 'package:pi_droid/protocol/protocol.dart';
 
 /// `expectations.json` is metadata, not a message fixture.
@@ -64,6 +67,9 @@ String? firstMismatch(Object? expected, Object? actual, String path) {
 }
 
 void main() {
+  final contract =
+      jsonDecode(File('../protocol/contract.json').readAsStringSync())
+          as Map<String, dynamic>;
   final expectationsFile =
       jsonDecode(
             File('../protocol/fixtures/valid/expectations.json').readAsStringSync(),
@@ -273,7 +279,7 @@ void main() {
   test('the canonical message-type and payload-kind lists match the shared fixture', () {
     final shared =
         jsonDecode(
-              File('../protocol/fixtures/message-types.json').readAsStringSync(),
+              File('../protocol/contract.json').readAsStringSync(),
             )
             as Map<String, dynamic>;
     expect(allMessageTypes.toSet(), (shared['messageTypes'] as List).toSet());
@@ -333,6 +339,70 @@ void main() {
       files,
       named,
       reason: 'invalid/ must contain exactly the fixtures cases.json names',
+    );
+  });
+
+  test('the protocol numbers match the shared contract', () {
+    expect(
+      protocolVersion,
+      contract['protocolVersion'],
+      reason: 'protocolVersion must equal contract.protocolVersion',
+    );
+    expect(
+      closeCapability,
+      contract['closeCodes']['capability'],
+      reason: 'closeCapability must equal contract.closeCodes.capability',
+    );
+    expect(
+      closeRateLimited,
+      contract['closeCodes']['rateLimited'],
+      reason: 'closeRateLimited must equal contract.closeCodes.rateLimited',
+    );
+    expect(
+      maxAttachmentBytes,
+      contract['byteCaps']['attachment'],
+      reason: 'maxAttachmentBytes must equal contract.byteCaps.attachment',
+    );
+    expect(
+      notificationBodyMaxCodePoints,
+      contract['codePointCaps']['notificationBody'],
+      reason: 'notificationBodyMaxCodePoints must equal contract.codePointCaps.notificationBody',
+    );
+  });
+
+  // The invariants read only the contract; the equality test above reads only
+  // the language constants. A constant that moves is caught by that side's
+  // equality test, and a contract value that moves by the invariants in both
+  // suites.
+  test("an attachment's base64 form fits the hub frame", () {
+    expect(
+      contract['byteCaps']['attachment'] * 4 <= contract['byteCaps']['hubFrame'] * 3,
+      isTrue,
+      reason: "contract: an attachment's base64 form must fit the hub frame",
+    );
+  });
+
+  test('the visible body cap stays within the wire settled-text cap', () {
+    expect(
+      contract['codePointCaps']['notificationBody'] <= contract['codePointCaps']['settledText'],
+      isTrue,
+      reason: 'contract: the visible body cap must not exceed the wire settled-text cap',
+    );
+  });
+
+  test('a tool view is smaller than the relay budget', () {
+    expect(
+      contract['byteCaps']['toolView'] < contract['byteCaps']['relay'],
+      isTrue,
+      reason: 'contract: a tool view must be smaller than the relay budget',
+    );
+  });
+
+  test('a history page is larger than the relay budget', () {
+    expect(
+      contract['byteCaps']['history'] > contract['byteCaps']['relay'],
+      isTrue,
+      reason: 'contract: a history page must be larger than the relay budget',
     );
   });
 }

@@ -49,5 +49,25 @@
     "agent-settled",
     "dir-listing",
     "spawn-failed"
-  ]
+  ],
+
+  "protocolVersion": 1,
+  "closeCodes": {
+    "protocol": 4002,
+    "capability": 4003,
+    "rateLimited": 4008,
+    "internal": 4500
+  },
+  "byteCaps": {
+    "relay": 262144,
+    "toolView": 65536,
+    "history": 786432,
+    "attachment": 358400,
+    "hubFrame": 1048576
+  },
+  "codePointCaps": {
+    "label": 80,
+    "settledText": 200,
+    "notificationBody": 140
+  }
 }

@@ -11,9 +11,6 @@ import 'dart:convert';
 /// The wire protocol version.
 const int protocolVersion = 1;
 
-/// The shared byte cap for agent-supplied bulk payloads.
-const int maxRelayBytes = 256 * 1024;
-
 /// The agent's reported lifecycle state.
 const List<String> agentStates = ['idle', 'running', 'settled'];
 
@@ -22,11 +19,11 @@ const List<String> agentStates = ['idle', 'running', 'settled'];
 const List<String> sessionOrigins = ['app', 'pc'];
 
 /// The normalized statuses a `tool` payload may carry. Canonical; asserted
-/// against the shared `message-types.json` by the fixture suite.
+/// against the shared `contract.json` by the fixture suite.
 const List<String> toolStatuses = ['running', 'done', 'error'];
 
 /// The view types a relayed `tool` payload may carry. Canonical; asserted
-/// against the shared `message-types.json` by the fixture suite, and tied to
+/// against the shared `contract.json` by the fixture suite, and tied to
 /// [parseToolView]'s switch by `tool_view_test.dart`. An unknown type is still
 /// valid on the wire (the app renders its generic fallback).
 const List<String> viewTypes = ['diff', 'file', 'command', 'matches', 'table', 'generic'];
@@ -78,7 +75,7 @@ const List<String> hubCapabilities = [
 ///
 /// These lists are canonical: [decode]'s switch follows them, never the
 /// reverse, and the fixture suite asserts each against the shared
-/// `protocol/fixtures/message-types.json`.
+/// `protocol/contract.json`.
 const List<String> agentMessageTypes = [
   'register',
   'event',
