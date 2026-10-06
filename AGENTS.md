@@ -57,6 +57,23 @@ Both are now retired, the first real module having long since arrived. **Do not 
 another** — the three laws apply without exception from here, and "What not to
 test" below already excludes framework wiring.
 
+## Module seams
+
+A god file is not a long file; it holds unrelated jobs. Split by seam, never by
+line count.
+
+- Look at **~800 lines** of production code (**~1000** in a test file). It is a
+  prompt to look, not a cap — but "it's cohesive" is an argument about jobs, not size.
+- The test: two unrelated changes would both have to touch this one file. Then it
+  already has the wrong shape.
+- The seam is what the caller needs. Extract state-free builders and pure functions
+  first; they never need the class's state. State goes to its owner — when two jobs
+  share a field, name the owner explicitly.
+- A `part` file, or a file handed a back-reference to the same class, is the same
+  file in two places. Not a split; it does not count as one.
+- A pure move edits no test. If a refactor needs a test change, it is not a pure
+  move — say so before you make it.
+
 ## Tooling — `pc/` (Node + TypeScript)
 
 - **Node ≥22.19** (22.23.2 present), npm, ESM, `"type": "module"`.
