@@ -418,6 +418,39 @@ void main() {
     );
   });
 
+  testWidgets('opening a long transcript builds only the newest window of blocks', (
+    tester,
+  ) async {
+    final blocks = CountingBlocks(
+      List<TranscriptBlock>.generate(
+        200,
+        (i) => textBlock('b$i', 'message $i'),
+      ),
+    );
+    await tester.pumpWidget(wrap(SessionTranscript(blocks: blocks)));
+    await tester.pump();
+    expect(
+      find.textContaining('message 199', findRichText: true),
+      findsOneWidget,
+      reason: 'the view still opens at the newest row',
+    );
+    expect(
+      find.textContaining('message 0', findRichText: true),
+      findsNothing,
+      reason: 'the oldest blocks are outside the rendered window',
+    );
+    expect(
+      tester.widgetList(find.byType(DocumentRow)).length,
+      lessThanOrEqualTo(TranscriptView.windowBlocks),
+      reason: 'the builder may not build more rows than the window holds',
+    );
+    expect(
+      blocks.reads,
+      lessThan(100),
+      reason: 'the open must not walk the whole loaded transcript',
+    );
+  });
+
   testWidgets('a truncated history says so above the oldest row it kept', (
     tester,
   ) async {

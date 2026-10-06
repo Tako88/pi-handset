@@ -158,6 +158,11 @@ class _TranscriptViewState extends State<TranscriptView> {
   /// spinning; the row tint still marks the match if it is ever built.
   static const int _maxSeekFrames = 40;
 
+  /// The block index the rendered window starts at. The window is a suffix of
+  /// the loaded blocks: the list opens at the newest [TranscriptView.windowBlocks]
+  /// and only grows upward. 0 renders the whole transcript.
+  int _windowStart = 0;
+
   /// Whether the viewer is following the bottom. It is *not* recomputed from
   /// the offset after content growth (in a forward list that would read as "not
   /// at the bottom" the instant `maxScrollExtent` grew), so it must be read
@@ -195,6 +200,12 @@ class _TranscriptViewState extends State<TranscriptView> {
   void initState() {
     super.initState();
     _controller.addListener(_onScroll);
+    _windowStart = transcriptWindowStartAfter(
+      oldBlocks: const [],
+      newBlocks: widget.transcript.blocks,
+      prepend: false,
+      windowStart: 0,
+    );
     _adoptDerived(_currentToolId(widget.transcript));
     // R3: an already-open search starts paused, not following.
     if (widget.search.open) {
@@ -244,11 +255,37 @@ class _TranscriptViewState extends State<TranscriptView> {
     // Collapse what is no longer current: the in-flight call moved on, or the
     // turn settled. A no-op while the derivation is unchanged.
     _adoptDerived(_currentToolId(widget.transcript));
+    // Carry the rendered window over to the new block list. A pure append
+    // keeps it, a prepend re-anchors on the same block id, and a rebuild-shaped
+    // append re-anchors on the old window's first surviving block; only a
+    // replacement whose anchor did not survive falls back to the newest window
+    // (see transcriptWindowStartAfter). The `identical` guard is only a
+    // same-object rebuild fast path — a streaming delta arrives with a fresh
+    // block list (hub_client's `_withEntries` copies it per append), so the
+    // O(1) tail check inside the function is what keeps the delta path cheap.
+    final prepended = _isPrepend(
+      oldWidget.transcript.entries,
+      widget.transcript.entries,
+    );
+    if (!identical(oldWidget.transcript.blocks, widget.transcript.blocks)) {
+      // The window only engages above [TranscriptView.windowBlocks]: a
+      // transcript that fits is rendered whole (the plan's "≤30 blocks
+      // unaffected" invariant). Without this, a short blocks-only list can be
+      // re-anchored past a front-inserted row and silently drop it.
+      _windowStart = widget.transcript.blocks.length <= TranscriptView.windowBlocks
+          ? 0
+          : transcriptWindowStartAfter(
+              oldBlocks: oldWidget.transcript.blocks,
+              newBlocks: widget.transcript.blocks,
+              prepend: prepended,
+              windowStart: _windowStart,
+            );
+    }
     // A prepend grows the list at the top. In a natural-order list `pixels` is
     // preserved, so the viewed content would slide down by the inserted height;
     // correct it in a post-frame callback, when the new extent is measurable.
     // Never follow-jump on a prepend: the content being read must not move.
-    if (_isPrepend(oldWidget.transcript.entries, widget.transcript.entries)) {
+    if (prepended) {
       final oldOffset = _controller.hasClients ? _controller.offset : null;
       final oldMax =
           _controller.hasClients ? _controller.position.maxScrollExtent : null;
@@ -451,33 +488,31 @@ class _TranscriptViewState extends State<TranscriptView> {
     _seekFrames = 0;
   }
 
-  int? _listIndexOf(String id) => transcriptListIndexOf(widget.transcript, id);
+  int? _listIndexOf(String id) =>
+      transcriptListIndexOf(widget.transcript, id, windowStart: _windowStart);
 
   /// The smallest and largest list indices among the committed rows currently
   /// built, or null when none is. `ListView.builder` builds a contiguous index
   /// window, so this is that window's extent.
   ({int min, int max})? _builtIndexRange() {
     final blocks = widget.transcript.blocks;
-    final listOffset = widget.transcript.truncated ? 1 : 0;
+    final listOffset = widget.transcript.truncated && _windowStart == 0 ? 1 : 0;
     int? min;
     int? max;
-    for (var i = 0; i < blocks.length; i++) {
+    for (var i = _windowStart; i < blocks.length; i++) {
       if (_rowKeys[blocks[i].id]?.currentContext == null) continue;
-      final index = i + listOffset;
+      final index = i - _windowStart + listOffset;
       if (min == null || index < min) min = index;
       if (max == null || index > max) max = index;
     }
     return min == null ? null : (min: min, max: max!);
   }
 
-  /// The number of list items the builder would produce for this transcript.
-  int _itemCount() {
-    final t = widget.transcript;
-    return t.blocks.length +
-        (t.truncated ? 1 : 0) +
-        (t.streamingThinking.isNotEmpty ? 1 : 0) +
-        (t.streaming && t.streamingText.isNotEmpty ? 1 : 0);
-  }
+  /// The number of list items the builder would produce for the rendered
+  /// window of this transcript. Delegates to the pure function so the builder's
+  /// count and the search's index space cannot drift.
+  int _itemCount() =>
+      transcriptItemCount(widget.transcript, windowStart: _windowStart);
 
   Future<void> _returnToBottom() async {
     if (!_controller.hasClients) return;
@@ -506,16 +541,11 @@ class _TranscriptViewState extends State<TranscriptView> {
     final blocks = widget.transcript.blocks;
     final matchIds = {for (final b in widget.search.matches) b.id};
     final currentId = widget.search.currentMatch?.id;
-    final truncated = widget.transcript.truncated;
+    // The truncation notice sits above the oldest rendered row, so it is shown
+    // only when the window actually reaches block 0.
+    final truncatedRow = widget.transcript.truncated && _windowStart == 0;
     final liveThinking = widget.transcript.streamingThinking.isNotEmpty;
-    final streaming =
-        widget.transcript.streaming &&
-        widget.transcript.streamingText.isNotEmpty;
-    final itemCount =
-        blocks.length +
-        (truncated ? 1 : 0) +
-        (liveThinking ? 1 : 0) +
-        (streaming ? 1 : 0);
+    final itemCount = _itemCount();
     if (itemCount == 0) {
       return const Center(child: Text(TranscriptView.emptyMessage));
     }
@@ -528,7 +558,7 @@ class _TranscriptViewState extends State<TranscriptView> {
           padding: const EdgeInsets.fromLTRB(0, 8, 0, 72),
           itemCount: itemCount,
           itemBuilder: (context, index) {
-            if (truncated && index == 0) {
+            if (truncatedRow && index == 0) {
               if (widget.transcript.olderCursor != null) {
                 final loading = widget.transcript.historyLoading;
                 return RepaintBoundary(
@@ -554,7 +584,7 @@ class _TranscriptViewState extends State<TranscriptView> {
                 ),
               );
             }
-            final blockIndex = truncated ? index - 1 : index;
+            final blockIndex = index - (truncatedRow ? 1 : 0) + _windowStart;
             if (blockIndex == blocks.length && liveThinking) {
               return RepaintBoundary(
                 key: TranscriptView.liveThinkingKey,
