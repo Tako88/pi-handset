@@ -94,7 +94,8 @@ node --test src/foo.test.ts     # one file
 npm run typecheck               # tsc --noEmit
 ```
 
-Dev deps only (`typescript`, `@types/node`). Zero runtime deps so far.
+Dev deps: `typescript`, `@types/node`, `@types/ws`, `@types/qrcode-terminal`.
+Runtime deps: `ws`, `qrcode-terminal`.
 
 ## Tooling — `app/` (Flutter + Dart)
 
@@ -115,7 +116,8 @@ flutter analyze                           # must be clean
 flutter run --profile -d <serial>         # boot the AVD first; discover the serial, never assume 5554
 ```
 
-Dependencies: `flutter` only so far. Add one when a test demands it, not before.
+Dependencies: `flutter`, `flutter_markdown_plus`, `flutter_secure_storage`, `image_picker`,
+`mobile_scanner`, `url_launcher`. Add one when a test demands it, not before.
 
 ### Goldens
 

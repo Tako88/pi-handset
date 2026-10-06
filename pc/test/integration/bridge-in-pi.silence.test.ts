@@ -1,5 +1,5 @@
 // a real pi: silence with no hub, a refused token, and print mode.
-// Split from the bipi test file; test blocks are byte-exact (see .pi/plans/pc-test-split).
+// Split from the bipi test file; test blocks are byte-exact.
 //
 // Preserved from the original bipi test file:
 //

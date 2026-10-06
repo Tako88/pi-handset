@@ -32,8 +32,8 @@ chosen over, so it does not have to be re-litigated.
   renders as plain text and is re-rendered as markdown when it completes. Chosen
   over the original `flutter_markdown`, which Google retired, on maintenance grounds:
   `1.0.12` on a roughly two-month cadence, 160/160 pub points, and dependencies of
-  just `markdown`/`meta`/`path`. Links are styled but not tappable — that would need
-  `url_launcher`, which was not worth a second dependency.
+  just `markdown`/`meta`/`path`. Links were left un-tappable at first to avoid another
+  dependency; `url_launcher` was added later, so a link now opens on tap.
 - **The transcript list is lazy, and that is load-bearing.** A non-lazy list
   re-parses every completed markdown message on every rebuild, which at the 16 ms
   frame interval is the exact cost the spike measured. `RepaintBoundary` isolates

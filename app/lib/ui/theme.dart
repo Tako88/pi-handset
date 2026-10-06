@@ -17,8 +17,8 @@
 /// into the UI from under the palette.
 ///
 /// There are no literal-colour assertions anywhere in the test suite and no
-/// goldens: this file is the palette's single source of truth, and `spec.md`
-/// under `.pi/plans/redesign/` is the design record.
+/// goldens: this file is the palette's single source of truth, and
+/// `docs/decisions.md` carries the rationale for the deviations from pi's hexes.
 library;
 
 import 'package:flutter/material.dart';
