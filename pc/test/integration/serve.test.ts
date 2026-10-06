@@ -696,6 +696,24 @@ test('serve exits 0 on SIGTERM and removes the control socket', async () => {
   assert.equal(existsSync(socket), false, 'the control socket is removed on SIGTERM');
 });
 
+test('a SIGTERM during startup still tears down, leaving no lock or socket', async () => {
+  const port = await freePort();
+  const serve = startServe(['--port', String(port)]);
+  // The lock is written first; the hub, the control socket and the discovery
+  // record all come after it. A stop requested the moment it appears therefore
+  // lands inside startup, before there is anything to serve.
+  await waitFor(() => existsSync(lockFile()), 'the lock file');
+  const socket = join(runtimeDir, 'pi-droid', 'control.sock');
+
+  const exited = waitExit(serve.child);
+  serve.child.kill('SIGTERM');
+  const { code } = await exited;
+
+  assert.equal(code, 0, 'a stop during startup is a clean exit, not a signal death');
+  assert.equal(existsSync(socket), false, 'no control socket is left behind');
+  assert.equal(existsSync(lockFile()), false, 'the lock is released');
+});
+
 test('serve exits 0 on SIGINT and removes the control socket', async () => {
   const port = await freePort();
   const serve = await startReadyServe(port);
