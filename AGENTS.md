@@ -161,6 +161,8 @@ font-dependent by construction. A golden failure means "look at the diff".
 - Both suites green: `cd pc && npm test`, `cd app && flutter test`.
 - Both static gates clean: `cd pc && npm run typecheck`, `cd app && flutter analyze`.
 - No skipped or `.only` tests left behind.
+- `.github/workflows/ci.yml` is the single definition of the four gates; it runs them
+  on `develop`.
 - If a boundary genuinely cannot be tested yet, say so explicitly rather than
   silently skipping it.
 

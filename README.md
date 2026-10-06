@@ -168,7 +168,9 @@ cd pc  && npm test && npm run typecheck     # the suite, then the type gate
 cd app && flutter test && flutter analyze   # the suite, then the analyzer
 ```
 
-Both gates on both sides must be green before anything is done. Toolchain setup, the
+Both gates on both sides must be green before anything is done, and CI runs the same
+four commands on every push to `develop` and every pull request against it
+([`.github/workflows/ci.yml`](.github/workflows/ci.yml)). Toolchain setup, the
 paid live-model test, the emulator notes and the deeper install details are in
 [`docs/development.md`](docs/development.md); the rules are in
 [`AGENTS.md`](AGENTS.md).
