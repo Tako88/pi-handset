@@ -117,6 +117,25 @@ class TranscriptView extends StatefulWidget {
   /// and is replaced by the committed thinking block when the message lands.
   static const Key liveThinkingKey = ValueKey('transcript-live-thinking');
 
+  /// How many blocks the list builds when a session opens. Derived from the
+  /// device measurement in the brief: a 149k-token open built ~440 text rows in
+  /// one 117.5 ms frame, so a text row costs ~0.27 ms; 30 rows ≈ 8 ms, inside a
+  /// 16.7 ms frame with ~2× headroom (it takes >0.55 ms/row to breach it).
+  ///
+  /// The caveat is load-bearing: that cost is text rows on one AVD run only. An
+  /// image or tool-diff row is taller and costlier, so a window of tall rows can
+  /// still breach a frame (measured check 1 in the plan).
+  static const int windowBlocks = 30;
+
+  /// How many blocks the window reveals per growth step. The same 30, so a
+  /// reveal frame lays out ~chunk + viewport rows ≈ 45 rows ≈ 12 ms, bounded
+  /// the same way as [windowBlocks].
+  static const int windowChunk = 30;
+
+  /// How close to the top (in pixels) the list must be scrolled before a growth
+  /// step is scheduled. Kept comfortably above the scroll slop.
+  static const double windowGrowThreshold = 200;
+
   @override
   State<TranscriptView> createState() => _TranscriptViewState();
 }
@@ -677,14 +696,108 @@ class _TranscriptViewState extends State<TranscriptView> {
   }
 }
 
-/// The list index of [id] in [transcript]'s builder, including the synthetic
-/// truncated-history notice row, or null when [id] names no block. Exposed so
-/// the search's index space and the builder's can be asserted to match.
+/// Clamps a window start to the block list's bounds. A start past the end
+/// renders nothing; a negative one is the open window.
+int _clampWindowStart(int windowStart, int length) {
+  if (windowStart < 0) return 0;
+  if (windowStart > length) return length;
+  return windowStart;
+}
+
+/// The list index of [id] in [transcript]'s builder when the rendered window
+/// starts at [windowStart], including the synthetic truncated-history notice
+/// row only when the window reaches block 0. Returns null when [id] names no
+/// block or the block sits before the window. Exposed so the search's index
+/// space and the builder's can be asserted to match.
 @visibleForTesting
-int? transcriptListIndexOf(SessionTranscript transcript, String id) {
-  final blockIndex = transcript.blocks.indexWhere((b) => b.id == id);
-  if (blockIndex < 0) return null;
-  return blockIndex + (transcript.truncated ? 1 : 0);
+int? transcriptListIndexOf(
+  SessionTranscript transcript,
+  String id, {
+  int windowStart = 0,
+}) {
+  final blocks = transcript.blocks;
+  final start = _clampWindowStart(windowStart, blocks.length);
+  final blockIndex = blocks.indexWhere((b) => b.id == id);
+  if (blockIndex < 0 || blockIndex < start) return null;
+  return blockIndex - start + (transcript.truncated && start == 0 ? 1 : 0);
+}
+
+/// The number of list items the builder would produce for [transcript] when the
+/// rendered window starts at [windowStart]. The window is **open at the
+/// bottom**: it renders every block from [windowStart] to the end, so a stream
+/// append is always included and only the top is bounded.
+///
+/// [windowStart] is clamped to `[0, blocks.length]`. The synthetic truncation
+/// row is counted only when the window actually reaches block 0, matching
+/// [transcriptListIndexOf] and the builder's index space.
+@visibleForTesting
+int transcriptItemCount(SessionTranscript transcript, {int windowStart = 0}) {
+  final blocks = transcript.blocks;
+  final start = _clampWindowStart(windowStart, blocks.length);
+  return (blocks.length - start) +
+      (transcript.truncated && start == 0 ? 1 : 0) +
+      (transcript.streamingThinking.isNotEmpty ? 1 : 0) +
+      (transcript.streaming && transcript.streamingText.isNotEmpty ? 1 : 0);
+}
+
+/// The window start to carry into [newBlocks] after [oldBlocks] changed.
+///
+/// [windowStart] was the start in [oldBlocks]. The rules keep the rendered
+/// content stable where possible and fall back to the newest window only when
+/// the anchor genuinely did not survive:
+/// 1. a first (empty) baseline opens at the newest [size] blocks;
+/// 2. a prepend re-anchors on the same block id, so the rows already on screen
+///    stay on screen (and a window that already reaches block 0 stays open);
+/// 3. a pure append/patch (the last old block is still present at its index)
+///    keeps the start unchanged — the O(1) tail check the streaming delta path
+///    depends on;
+/// 4. anything else (a rebuild-shaped append that inserted rows mid-list, a
+///    replaced baseline, a truncation) re-anchors on the old window's first
+///    block id, so a rebuild that merely inserted rows does not throw the
+///    reader back to the newest window.
+///
+/// Rule 3 precedes rule 4 deliberately: on a streaming delta it costs two
+/// indexed reads, which is what keeps the delta test's `reads < 50` green —
+/// not the `identical` fast path in the view.
+@visibleForTesting
+int transcriptWindowStartAfter({
+  required List<TranscriptBlock> oldBlocks,
+  required List<TranscriptBlock> newBlocks,
+  required bool prepend,
+  required int windowStart,
+  int size = TranscriptView.windowBlocks,
+}) {
+  int newestStart() {
+    final start = newBlocks.length - size;
+    return start < 0 ? 0 : start;
+  }
+
+  int anchorIndex() => _clampWindowStart(windowStart, oldBlocks.length - 1);
+
+  if (oldBlocks.isEmpty) return newestStart();
+
+  if (prepend) {
+    if (windowStart <= 0) return 0;
+    final index = _indexOfId(newBlocks, oldBlocks[anchorIndex()].id);
+    return index >= 0 ? index : newestStart();
+  }
+
+  if (newBlocks.length >= oldBlocks.length &&
+      newBlocks[oldBlocks.length - 1].id == oldBlocks.last.id) {
+    return windowStart;
+  }
+
+  final index = _indexOfId(newBlocks, oldBlocks[anchorIndex()].id);
+  return index >= 0 ? index : newestStart();
+}
+
+/// The first index in [blocks] whose id is [id], or -1. By id, not identity:
+/// a rebuild re-creates every block object.
+int _indexOfId(List<TranscriptBlock> blocks, String id) {
+  for (var i = 0; i < blocks.length; i++) {
+    if (blocks[i].id == id) return i;
+  }
+  return -1;
 }
 
 /// Whether [now] is [old] with entries prepended: the suffix of [now] equals
