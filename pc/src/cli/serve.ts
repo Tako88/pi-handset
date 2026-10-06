@@ -227,10 +227,13 @@ export async function abortStartup(
  *
  * Startup refusals return their code directly (see the exit-code table in the
  * pairing-35 plan). On the success path this returns a promise that resolves
- * only on the first `SIGINT`/`SIGTERM`: the handler is single-shot
+ * only on the first `SIGINT`/`SIGTERM`: the teardown is single-shot
  * (`shuttingDown` is set first, so `mint` refuses and SIGUSR1 mints nothing),
  * then `control.close()`, then `finishShutdown`, whose code resolves the
- * promise. The listeners keep the process alive until that signal.
+ * promise. The handler is armed the moment the lock is ours — before the control
+ * socket, the record or the hint is written — so a stop during startup unwinds
+ * at the next checkpoint instead of killing the process and stranding them. The
+ * listeners keep the process alive until that signal.
  */
 export async function runServe(argv: readonly string[]): Promise<number> {
   let args: ServeArgs;
@@ -258,6 +261,26 @@ export async function runServe(argv: readonly string[]): Promise<number> {
       1,
     );
   }
+
+  // Armed here — the lock is ours, and nothing else is written yet — because a
+  // signal from this point on must run the teardown rather than kill the
+  // process, or the lock, the control socket and the discovery record outlive
+  // it. Until `teardown` is assigned (once serving) a stop only sets the flag,
+  // and the startup path checks it after each `await`. Arming it later, after
+  // the record was published, left a window in which a SIGTERM exited on the
+  // signal and stranded `control.sock` — CI caught exactly that.
+  //
+  // `shuttingDown` is also what makes SIGUSR1 mint nothing: a code minted after
+  // a stop has begun could never be redeemed (`pairingAnnouncement`).
+  let shuttingDown = false;
+  let teardown: (() => Promise<void>) | null = null;
+  let teardownStarted = false;
+  const requestStop = (): void => {
+    shuttingDown = true;
+    void teardown?.();
+  };
+  process.on('SIGINT', requestStop);
+  process.on('SIGTERM', requestStop);
 
   // We hold the lock, so the record is ours. A *live* record that does not
   // belong to us is inconsistent state (the lock is the authority); refuse
@@ -330,9 +353,11 @@ export async function runServe(argv: readonly string[]): Promise<number> {
     );
   }
 
-  // Declared before the SIGUSR1 handler so a signal arriving after teardown has
-  // begun is seen as shutting down and mints nothing (`pairingAnnouncement`).
-  let shuttingDown = false;
+  // A stop requested while the hub was being built: nothing has been published
+  // yet, so the hub is the only thing to close.
+  if (shuttingDown) {
+    return await finishShutdown(hub, runtimeDir, process.pid);
+  }
 
   // Started BEFORE `writeDiscovery` (R2.7): if the record is visible, the
   // socket is already listening, so `pair` never sees a live record with a
@@ -354,6 +379,17 @@ export async function runServe(argv: readonly string[]): Promise<number> {
       `could not start the control socket: ${(error as Error).message}`,
       1,
     );
+  }
+
+  // A stop requested while the socket was being created: the socket exists now,
+  // so startup owes it the same close a signal would have run.
+  if (shuttingDown) {
+    try {
+      await control.close();
+    } catch {
+      // Best-effort, as in the teardown below.
+    }
+    return await finishShutdown(hub, runtimeDir, process.pid);
   }
 
   // Installed before the discovery file is written, so a reader that sees the
@@ -389,12 +425,11 @@ export async function runServe(argv: readonly string[]): Promise<number> {
   );
 
   return await new Promise<number>((resolve) => {
-    const shutdown = async (): Promise<void> => {
+    teardown = async (): Promise<void> => {
       // Single-shot: a second signal must not re-enter teardown. Any close()
-      // rejection is caught inside `finishShutdown`, so this never becomes an
-      // unhandled rejection.
-      if (shuttingDown) return;
-      shuttingDown = true;
+      // rejection is caught here, so this never becomes an unhandled rejection.
+      if (teardownStarted) return;
+      teardownStarted = true;
       try {
         await control.close();
       } catch {
@@ -402,12 +437,9 @@ export async function runServe(argv: readonly string[]): Promise<number> {
       }
       resolve(await finishShutdown(hub, runtimeDir, process.pid));
     };
-    process.on('SIGINT', () => {
-      void shutdown();
-    });
-    process.on('SIGTERM', () => {
-      void shutdown();
-    });
+    // A stop requested while the record was being written: nothing was awaiting
+    // the promise yet, so run the teardown the signal would have run.
+    if (shuttingDown) void teardown();
   });
 }
 
