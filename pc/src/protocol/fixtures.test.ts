@@ -23,16 +23,28 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { LABEL_MAX_CODE_POINTS, SETTLED_TEXT_MAX_CODE_POINTS } from '../bridge/labels.ts';
+import {
+  CLOSE_CAPABILITY,
+  CLOSE_INTERNAL,
+  CLOSE_PROTOCOL,
+  CLOSE_RATE_LIMITED,
+  DEFAULT_MAX_PAYLOAD,
+} from '../hub/hub.ts';
 import {
   ALL_MESSAGE_TYPES,
   AGENT_MESSAGE_TYPES,
   AGENT_STATES,
   EVENT_PAYLOAD_KINDS,
+  HISTORY_MAX_BYTES,
   HUB_CAPABILITIES,
   HUB_TO_VIEWER_MESSAGE_TYPES,
+  MAX_RELAY_BYTES,
+  PROTOCOL_VERSION,
   SESSION_ORIGINS,
   STREAM_PHASES,
   TOOL_STATUSES,
+  TOOL_VIEW_MAX_BYTES,
   VIEWER_MESSAGE_TYPES,
   VIEW_TYPES,
   decode,
@@ -42,9 +54,37 @@ import type { DecodeResult, EventMessage } from './protocol.ts';
 
 const validDir = fileURLToPath(new URL('../../../protocol/fixtures/valid/', import.meta.url));
 const invalidDir = fileURLToPath(new URL('../../../protocol/fixtures/invalid/', import.meta.url));
-const messageTypesPath = fileURLToPath(
-  new URL('../../../protocol/fixtures/message-types.json', import.meta.url),
-);
+const contractPath = fileURLToPath(new URL('../../../protocol/contract.json', import.meta.url));
+
+interface Contract {
+  messageTypes: string[];
+  hubCapabilities: string[];
+  eventPayloadKinds: string[];
+  streamPhases: string[];
+  sessionOrigins: string[];
+  toolStatuses: string[];
+  agentStates: string[];
+  viewTypes: string[];
+  agentMessageTypes: string[];
+  viewerMessageTypes: string[];
+  hubToViewerMessageTypes: string[];
+  protocolVersion: number;
+  closeCodes: { protocol: number; capability: number; rateLimited: number; internal: number };
+  byteCaps: {
+    relay: number;
+    toolView: number;
+    history: number;
+    attachment: number;
+    hubFrame: number;
+  };
+  codePointCaps: { label: number; settledText: number; notificationBody: number };
+}
+
+/**
+ * The shared contract. Read at module scope on purpose: a missing or malformed
+ * `contract.json` is a hard failure of every test in this file.
+ */
+const contract = JSON.parse(readFileSync(contractPath, 'utf8')) as Contract;
 
 interface InvalidCase {
   file: string;
@@ -276,19 +316,20 @@ test('every message type in the canonical lists decodes from a minimal body', ()
 // Cross-language pin: both suites assert their own list against this shared
 // file, so a list dropped in one language fails that language's suite.
 test('the canonical message-type and payload-kind lists match the shared fixture', () => {
-  const shared = JSON.parse(readFileSync(messageTypesPath, 'utf8')) as {
-    messageTypes: string[];
-    eventPayloadKinds: string[];
-    streamPhases: string[];
-    agentMessageTypes: string[];
-    viewerMessageTypes: string[];
-    hubToViewerMessageTypes: string[];
-    sessionOrigins: string[];
-    hubCapabilities: string[];
-    toolStatuses: string[];
-    agentStates: string[];
-    viewTypes: string[];
-  };
+  const shared: Pick<
+    Contract,
+    | 'messageTypes'
+    | 'eventPayloadKinds'
+    | 'streamPhases'
+    | 'agentMessageTypes'
+    | 'viewerMessageTypes'
+    | 'hubToViewerMessageTypes'
+    | 'sessionOrigins'
+    | 'hubCapabilities'
+    | 'toolStatuses'
+    | 'agentStates'
+    | 'viewTypes'
+  > = contract;
   assert.deepEqual(new Set(ALL_MESSAGE_TYPES), new Set(shared.messageTypes));
   assert.deepEqual(new Set(EVENT_PAYLOAD_KINDS), new Set(shared.eventPayloadKinds));
   assert.deepEqual(new Set(STREAM_PHASES), new Set(shared.streamPhases));
@@ -326,5 +367,50 @@ test('every invalid fixture is named in cases.json and vice versa', () => {
     files,
     named,
     'invalid/ must contain exactly the fixtures cases.json names (plus cases.json)',
+  );
+});
+
+test('the protocol numbers match the shared contract', () => {
+  assert.equal(PROTOCOL_VERSION, contract.protocolVersion, 'PROTOCOL_VERSION must equal contract.protocolVersion');
+  assert.equal(CLOSE_PROTOCOL, contract.closeCodes.protocol, 'CLOSE_PROTOCOL must equal contract.closeCodes.protocol');
+  assert.equal(CLOSE_CAPABILITY, contract.closeCodes.capability, 'CLOSE_CAPABILITY must equal contract.closeCodes.capability');
+  assert.equal(CLOSE_RATE_LIMITED, contract.closeCodes.rateLimited, 'CLOSE_RATE_LIMITED must equal contract.closeCodes.rateLimited');
+  assert.equal(CLOSE_INTERNAL, contract.closeCodes.internal, 'CLOSE_INTERNAL must equal contract.closeCodes.internal');
+  assert.equal(MAX_RELAY_BYTES, contract.byteCaps.relay, 'MAX_RELAY_BYTES must equal contract.byteCaps.relay');
+  assert.equal(TOOL_VIEW_MAX_BYTES, contract.byteCaps.toolView, 'TOOL_VIEW_MAX_BYTES must equal contract.byteCaps.toolView');
+  assert.equal(HISTORY_MAX_BYTES, contract.byteCaps.history, 'HISTORY_MAX_BYTES must equal contract.byteCaps.history');
+  assert.equal(DEFAULT_MAX_PAYLOAD, contract.byteCaps.hubFrame, 'DEFAULT_MAX_PAYLOAD must equal contract.byteCaps.hubFrame');
+  assert.equal(LABEL_MAX_CODE_POINTS, contract.codePointCaps.label, 'LABEL_MAX_CODE_POINTS must equal contract.codePointCaps.label');
+  assert.equal(SETTLED_TEXT_MAX_CODE_POINTS, contract.codePointCaps.settledText, 'SETTLED_TEXT_MAX_CODE_POINTS must equal contract.codePointCaps.settledText');
+});
+
+// The invariants read only the contract; the equality test above reads only the
+// language constants. A constant that moves is caught by that side's equality
+// test, and a contract value that moves by the invariants in both suites.
+test("an attachment's base64 form fits the hub frame", () => {
+  assert.ok(
+    contract.byteCaps.attachment * 4 <= contract.byteCaps.hubFrame * 3,
+    "contract: an attachment's base64 form must fit the hub frame",
+  );
+});
+
+test('the visible body cap stays within the wire settled-text cap', () => {
+  assert.ok(
+    contract.codePointCaps.notificationBody <= contract.codePointCaps.settledText,
+    'contract: the visible body cap must not exceed the wire settled-text cap',
+  );
+});
+
+test('a tool view is smaller than the relay budget', () => {
+  assert.ok(
+    contract.byteCaps.toolView < contract.byteCaps.relay,
+    'contract: a tool view must be smaller than the relay budget',
+  );
+});
+
+test('a history page is larger than the relay budget', () => {
+  assert.ok(
+    contract.byteCaps.history > contract.byteCaps.relay,
+    'contract: a history page must be larger than the relay budget',
   );
 });
