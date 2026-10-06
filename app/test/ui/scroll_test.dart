@@ -64,12 +64,13 @@ Widget wrap(
   SessionTranscript transcript, {
   Key? key,
   TranscriptSearch search = TranscriptSearch.none,
+  VoidCallback? onLoadOlder,
 }) => MaterialApp(
   theme: piTheme(Brightness.dark),
   home: TranscriptView(
     key: key,
     transcript: transcript,
-    onLoadOlder: () {},
+    onLoadOlder: onLoadOlder ?? () {},
     search: search,
   ),
 );
@@ -596,6 +597,51 @@ void main() {
       );
     },
   );
+
+  testWidgets('a fetched page joins a window that is already fully open', (
+    tester,
+  ) async {
+    // Count load requests: revealing the joined page's last row must not
+    // need one.
+    var loads = 0;
+    Widget wrapCounted(SessionTranscript transcript) =>
+        wrap(transcript, onLoadOlder: () => loads++);
+
+    final existing = userEntries(3);
+    final older = userEntries(60, prefix: 'older');
+    await tester.pumpWidget(wrapCounted(fromEntries(existing)));
+    await tester.pump();
+    expect(find.text('older 0'), findsNothing);
+
+    await tester.pumpWidget(wrapCounted(fromEntries([...older, ...existing])));
+    await tester.pump();
+
+    expect(
+      find.text('older 0'),
+      findsOneWidget,
+      reason: 'a window that reaches block 0 must render the fetched page',
+    );
+    // The plan asserted `find.text('older 59')` right here, but a 63-block list
+    // in a 600 px viewport builds only the rows near the offset: the fetched
+    // page's *last* row is in the window's index space, not simultaneously laid
+    // out. Assert the truthful form of "the page joined": it is reachable by
+    // scrolling to the bottom, with no round trip — `loads` stays 0, so
+    // revealing it never requested another page. (The same scroll-then-assert
+    // shape as the M3 test above, though for a different reason — there it is
+    // window growth, here it is plain viewport laziness.)
+    //
+    // Division of labour: only the `older 0` assertion above can redden on the
+    // regression this test exists to catch (a newest-window reset). This second
+    // assertion is weaker but not vacuous — it pins contiguity/reachability:
+    // the joined page has no gap and scrolls into view in a single pump.
+    final position = tester
+        .state<ScrollableState>(find.byType(Scrollable))
+        .position;
+    position.jumpTo(position.maxScrollExtent);
+    await tester.pump();
+    expect(find.text('older 59'), findsOneWidget);
+    expect(loads, 0, reason: 'revealing the joined page fetched nothing');
+  });
 
   testWidgets(
     'a search opening in the growth frame keeps the position it owns',
