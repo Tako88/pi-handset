@@ -29,7 +29,7 @@
 
 import { loadOrCreateToken, resolveConfigDir } from '../src/hub/auth.ts';
 import { readDiscovery, resolveRuntimeDir } from '../src/hub/discovery.ts';
-import { CLOSE_CAPABILITY, CLOSE_PROTOCOL, CLOSE_RATE_LIMITED, HISTORY_MAX_BYTES, PROTOCOL_VERSION, asObject, asString } from '../src/protocol/protocol.ts';
+import { HISTORY_MAX_BYTES, PROTOCOL_VERSION, asObject, asString } from '../src/protocol/protocol.ts';
 import type {
   AgentState,
   AgentToHubMessage,
@@ -41,15 +41,15 @@ import type {
   SlashCommand,
   TreeNodeSummary,
 } from '../src/protocol/protocol.ts';
-import type { BridgeCommandCtx, BridgeCtx, BridgePi, BridgeCloseEvent, BridgeSocket, SocketFactory, BridgeDeps } from '../src/bridge/pi-types.ts';
+import type { BridgeCommandCtx, BridgeCtx, BridgePi, BridgeSocket, SocketFactory, BridgeDeps } from '../src/bridge/pi-types.ts';
 import { annotateToolViews, projectHistory, entryAnchor, mintCursor, parseHistoryCursor, projectModel, readContextUsage } from '../src/bridge/history.ts';
 import { sanitizeLabel, labelFromMessage, labelFromEntries } from '../src/bridge/labels.ts';
-import { RATE_LIMITED_RECONNECT_MS, computeBackoff } from '../src/bridge/backoff.ts';
-import { encodeAgentMessage, parseCommand } from '../src/bridge/wire.ts';
+import { parseCommand } from '../src/bridge/wire.ts';
 import { commandResultMessage, eventMessage, helloMessage, registerMessage } from '../src/bridge/outbound.ts';
 import { isActiveMode, COMMAND_ALLOWLIST, SESSION_COMMAND_NAME, COMMAND_NOT_ALLOWED } from '../src/bridge/commands.ts';
 import { dispatchCommand, type CommandOutcome } from '../src/bridge/command-dispatch.ts';
 import { createRelay, type Relay } from '../src/bridge/relay.ts';
+import { createSocketLink, type SocketLink } from '../src/bridge/socket-link.ts';
 
 
 /**
@@ -108,8 +108,6 @@ interface ResolvedDeps {
   clearTimeout: (handle: unknown) => void;
 }
 
-const SOCKET_OPEN = 1;
-
 function resolveDeps(deps: BridgeDeps): ResolvedDeps {
   return {
     env: deps.env ?? process.env,
@@ -125,16 +123,12 @@ function resolveDeps(deps: BridgeDeps): ResolvedDeps {
 
 class Bridge {
   private readonly pi: BridgePi;
-  private readonly deps: ResolvedDeps;
   private readonly debug: (stream: 'stderr', text: string) => void;
   private readonly relay: Relay;
-  private socket: BridgeSocket | null = null;
+  private readonly link: SocketLink;
   private ctx: BridgeCtx | null = null;
   private lastLabel: string | null = null;
   private state: AgentState = 'idle';
-  private attempt = 0;
-  private reconnectTimer: unknown = null;
-  private closed = false;
   /** The id the next register must name as replaced, consumed only on a send. */
   private replacesSessionId: string | null = null;
   /** Guards the one-time internal command registration. */
@@ -142,11 +136,11 @@ class Bridge {
 
   constructor(pi: BridgePi, deps: ResolvedDeps) {
     this.pi = pi;
-    this.deps = deps;
     this.debug = (stream, text) => {
       if (deps.env.PI_DROID_DEBUG === '1') deps.write(stream, text);
     };
     this.relay = createRelay({ sendEvent: (payload) => this.sendEvent(payload), relabelFromMessage: (message) => this.relabelFromMessage(message) });
+    this.link = createSocketLink({ socketFactory: deps.socketFactory, resolveEndpoint: deps.resolveEndpoint, rng: deps.rng, setTimeout: deps.setTimeout, clearTimeout: deps.clearTimeout, debug: (text) => this.debug('stderr', text), guard: (run) => this.guard(run) }, { onOpen: (token) => this.onSocketOpen(token), onFrame: (event) => this.onMessage(event) });
   }
 
   install(): void {
@@ -322,13 +316,10 @@ class Bridge {
     lastRegisteredSessionId = sessionId;
     // Session replacement invalidates the previous context: drop the old
     // socket and every session-scoped value before binding the new context.
-    this.closeSocket('session replaced');
-    this.cancelReconnect();
+    this.link.startSession();
     this.ctx = ctx;
-    this.closed = false;
     this.relay.resetSession();
     this.state = 'idle';
-    this.attempt = 0;
     try {
       this.relay.seedToolArgs(ctx.sessionManager.getEntries());
     } catch (error) {
@@ -339,101 +330,22 @@ class Bridge {
       this.debug('stderr', `pi-droid bridge: inert in ${ctx.mode} mode\n`);
       return;
     }
-    this.openSocket();
+    this.link.open();
   }
 
   private onSessionShutdown(): void {
-    this.closed = true;
+    this.link.stop();
     this.ctx = null;
-    this.cancelReconnect();
-    this.closeSocket('shutdown');
   }
 
-  private closeSocket(reason: string): void {
-    const socket = this.socket;
-    this.socket = null;
-    if (socket === null) return;
-    try {
-      socket.close(1000, reason);
-    } catch {
-      // Already closed; nothing to do.
-    }
-  }
-
-  private cancelReconnect(): void {
-    if (this.reconnectTimer === null) return;
-    this.deps.clearTimeout(this.reconnectTimer);
-    this.reconnectTimer = null;
-  }
-
-  private openSocket(): void {
-    const endpoint = this.deps.resolveEndpoint();
-    if (endpoint === null) {
-      this.debug('stderr', 'pi-droid bridge: no hub discovered\n');
-      this.scheduleReconnect();
-      return;
-    }
-    const socket = this.deps.socketFactory(endpoint.url);
-    this.socket = socket;
-    socket.addEventListener('open', () =>
-      this.guard(() => {
-        if (this.socket !== socket) return;
-        this.attempt = 0;
-        this.send(helloMessage(endpoint.token));
-        this.sendRegister(this.currentLabel());
-        this.sendAgentState();
-      }),
-    );
-    socket.addEventListener('message', (event) => this.guard(() => this.onMessage(event)));
-    socket.addEventListener('error', () =>
-      this.guard(() => this.debug('stderr', 'pi-droid bridge: socket error\n')),
-    );
-    socket.addEventListener('close', (event) => this.guard(() => this.onSocketClose(socket, event)));
-  }
-
-  private onSocketClose(socket: BridgeSocket, event: BridgeCloseEvent): void {
-    if (this.socket !== socket) return;
-    this.socket = null;
-    const code = event.code;
-    this.debug('stderr', `pi-droid bridge: socket closed (${String(code ?? 'transport')})\n`);
-    // 4003 is a capability violation: a bridge bug, not a transient failure.
-    // Retrying it at capped backoff would reconnect forever.
-    if (code === CLOSE_CAPABILITY) return;
-    // 4002 is a protocol violation — a version mismatch, malformed JSON, a missing
-    // field, or an unhandled type. All are permanent producer bugs (whose side is
-    // not knowable here): a retry reconnects to the same rejection forever. Stop,
-    // and say why. CLOSE_INTERNAL (4500) is deliberately NOT included: that close
-    // is transient and must retry.
-    if (code === CLOSE_PROTOCOL) {
-      this.debug('stderr', `pi-droid bridge: protocol close ${CLOSE_PROTOCOL}; not reconnecting\n`);
-      return;
-    }
-    // 4008 is rate-limited: the hub delayed the close deliberately, so wait a
-    // longer fixed span rather than an ordinary jittered backoff step.
-    if (code === CLOSE_RATE_LIMITED) {
-      this.scheduleReconnect(RATE_LIMITED_RECONNECT_MS);
-      return;
-    }
-    this.scheduleReconnect();
-  }
-
-  private scheduleReconnect(fixedDelayMs?: number): void {
-    if (this.closed) return;
-    // A pending timer already owns the next dial; scheduling a second would
-    // leak the first and double-connect.
-    if (this.reconnectTimer !== null) return;
-    const delay = fixedDelayMs ?? computeBackoff(this.attempt, { rng: this.deps.rng });
-    if (fixedDelayMs === undefined) this.attempt += 1;
-    this.reconnectTimer = this.deps.setTimeout(() => {
-      this.reconnectTimer = null;
-      this.openSocket();
-    }, delay);
+  private onSocketOpen(token: string): void {
+    this.send(helloMessage(token));
+    this.sendRegister(this.currentLabel());
+    this.sendAgentState();
   }
 
   private send(message: AgentToHubMessage): boolean {
-    if (this.socket === null || this.socket.readyState !== SOCKET_OPEN) return false;
-    this.socket.send(encodeAgentMessage(message));
-    return true;
+    return this.link.send(message);
   }
 
   private sendEvent(payload: EventPayload): void {
