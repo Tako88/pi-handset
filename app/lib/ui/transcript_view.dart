@@ -21,10 +21,12 @@
 /// older page at the top preserves `pixels`, so the viewed content slides down
 /// by the inserted height. The prepend is detected by entry-object identity and
 /// undone with a post-frame jump — never a follow-jump — so loading a page does
-/// not move the content being read. The correction is approximate: it measures
-/// the inserted height as the `maxScrollExtent` delta, which `ListView.builder`
-/// estimates and which under-measures when the pre-prepend content fitted the
-/// viewport (that case is skipped rather than guessed).
+/// not move the content being read. The **prepend** correction is approximate:
+/// it measures the inserted height as the `maxScrollExtent` delta, which
+/// `ListView.builder` estimates and which under-measures when the pre-prepend
+/// content fitted the viewport (that case is skipped rather than guessed). The
+/// **window-growth** correction described next is exact whenever it lands, so
+/// the two must not be conflated.
 ///
 /// **The rendered list is a bounded suffix of the loaded blocks.** On open the
 /// view renders only the newest [TranscriptView.windowBlocks] blocks, so a long
@@ -32,7 +34,13 @@
 /// loaded page. Reaching the top of that window silently reveals one more
 /// [TranscriptView.windowChunk] chunk, anchored so the row being read does not
 /// move — an insertion above a natural-order list would otherwise slide the
-/// content down by the inserted height. The window only grows, never shrinks,
+/// content down by the inserted height. The inserted height is measured, not
+/// estimated: the anchor row's change in absolute layout position *is* the
+/// insertion, exactly, even for variable-height rows. A whole chunk is taller
+/// than the builder's default cache, though, so the anchor is usually unmounted
+/// by the growth; a growth-scoped build cache is then grown additively over a
+/// bounded, single-flight settle until the anchor is built, and the correction
+/// lands in one jump layered on the live offset. The window only grows, never shrinks,
 /// within a mounted view, and it is open at the bottom, so a streaming append
 /// is always included. Row state survives the growth because the framework
 /// retakes the alive `GlobalKey`s in ascending index order — a framework
@@ -43,6 +51,7 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 
 import '../client/hub_models.dart';
@@ -170,6 +179,11 @@ class _TranscriptViewState extends State<TranscriptView> {
   /// spinning; the row tint still marks the match if it is ever built.
   static const int _maxSeekFrames = 40;
 
+  /// Frames a growth may spend growing its scoped cache before the correction
+  /// is abandoned. The retry is bounded so a settle cannot spin; hitting the cap
+  /// leaves the offset at its old value until the next scroll or growth.
+  static const int _maxGrowSettleFrames = 12;
+
   /// The block index the rendered window starts at. The window is a suffix of
   /// the loaded blocks: the list opens at the newest [TranscriptView.windowBlocks]
   /// and only grows upward. 0 renders the whole transcript.
@@ -187,6 +201,18 @@ class _TranscriptViewState extends State<TranscriptView> {
 
   /// Coalesces grow checks so at most one is scheduled per frame.
   bool _growScheduled = false;
+
+  /// A growth-scoped build-cache extent, in pixels. Non-null only while a
+  /// growth settles: it widens the builder's cache so the inserted chunk —
+  /// taller than the default 250 px — is laid out and the anchor row can be
+  /// measured. Cleared on every settle exit so no ordinary frame pays for it.
+  double? _growCacheExtent;
+
+  /// Whether a growth settle is in flight. Growth is **single-flight**: a second
+  /// attempt arriving mid-settle would overwrite [_growCacheExtent] and layer a
+  /// second chunk-sized correction. A swallowed request is re-attempted by
+  /// [_finishGrowth].
+  bool _growthSettling = false;
 
   /// Whether the viewer is following the bottom. It is *not* recomputed from
   /// the offset after content growth (in a forward list that would read as "not
@@ -415,79 +441,160 @@ class _TranscriptViewState extends State<TranscriptView> {
     _growWindowTo(_windowStart - TranscriptView.windowChunk);
   }
 
-  /// The topmost built row's id and its screen y, or null when none is
-  /// measurable. Used to pin the content across a growth, so the anchor is read
-  /// before the new rows are laid out.
-  (String, double)? _topAnchor() {
+  /// The topmost built row's id, its screen y and its height, or null when
+  /// none is measurable. Used to pin the content across a growth, so the anchor
+  /// is read before the new rows are laid out. The height is captured so a row
+  /// that resized between capture and settle (a tool expand/collapse) can be
+  /// rejected rather than biasing the measured insertion.
+  (String, double, double)? _topAnchor() {
     final blocks = widget.transcript.blocks;
     for (var i = _windowStart; i < blocks.length; i++) {
       final object = _rowKeys[blocks[i].id]?.currentContext?.findRenderObject();
       if (object is RenderBox && object.attached) {
-        return (blocks[i].id, object.localToGlobal(Offset.zero).dy);
+        return (blocks[i].id, object.localToGlobal(Offset.zero).dy, object.size.height);
       }
     }
     return null;
   }
 
+  /// The smallest height among the built window rows, or null when none is
+  /// measurable. Seeds a growth's cache extent: the minimum cannot over-estimate
+  /// the *average* built-row height, so when the inserted rows are representative
+  /// of the built ones the estimate under-builds rather than over-builds, and the
+  /// retries converge. (It can still exceed the true insertion when the built
+  /// rows are much taller than the inserted ones; an over-large cache costs one
+  /// frame's layout, never correctness.)
+  double? _minBuiltRowHeight() {
+    final blocks = widget.transcript.blocks;
+    double? min;
+    for (var i = _windowStart; i < blocks.length; i++) {
+      final object = _rowKeys[blocks[i].id]?.currentContext?.findRenderObject();
+      if (object is RenderBox && object.attached) {
+        final height = object.size.height;
+        if (min == null || height < min) min = height;
+      }
+    }
+    return min;
+  }
+
   /// Reveal a chunk ending at [newStart] while keeping the content the viewer
   /// is reading fixed on screen.
   ///
-  /// The inserted rows push everything below them down. The preferred correction
-  /// re-measures the topmost built row (the anchor) by block id: its screen
-  /// delta *is* the inserted height, exactly, even for variable-height rows.
-  /// A full chunk is taller than the builder's cache (30 rows ≈ 1140 px vs a
-  /// 250 px default), so the anchor row is systematically unmounted by the
-  /// growth; when that happens (but an anchor *was* identified) fall back to
-  /// the extent delta — the same estimate the prepend correction uses. With no
-  /// anchor at all, do not guess. Then re-check: a successful correction leaves
-  /// the offset well above the top, so the chain stops after one chunk per
+  /// The inserted rows push everything below them down. The correction measures
+  /// the topmost built row (the anchor) by block id: its change in absolute
+  /// layout position *is* the inserted height, exactly, even for variable-height
+  /// rows. A full chunk is taller than the builder's cache (30 rows ≈ 1140 px vs
+  /// a 250 px default), so the anchor row is usually unmounted by the growth;
+  /// when that happens the growth-scoped cache is grown additively over a
+  /// bounded, single-flight [_settleGrowth] until the anchor is built, deferring
+  /// the correction. The correction still lands layered on the live offset, so a
+  /// scroll during the settle is preserved; the estimate seeds the cache and is
+  /// never used as the correction. A successful correction then leaves the
+  /// offset well above the top, so the chain stops after one chunk per
   /// scroll-to-top.
   void _growWindowTo(int newStart) {
     final target = newStart < 0 ? 0 : newStart;
     if (target >= _windowStart) return;
+    // Single-flight: a settle already owns the cache and the correction. A
+    // second attempt here (a stream append's didUpdateWidget can schedule one
+    // mid-settle) would overwrite [_growCacheExtent] and layer a second
+    // correction. Swallow it; [_finishGrowth] re-attempts it after the settle.
+    if (_growthSettling) return;
     final anchor = _topAnchor(); // captured with a current layout
-    final oldMax = _controller.position.maxScrollExtent;
+    final oldOffset = _controller.offset;
+    final insertedCount = _windowStart - target;
+    // The minimum cannot over-estimate the average built-row height, so when
+    // the inserted rows are representative of the built ones this under-builds
+    // rather than over-builds; the retries widen the cache from here until the
+    // anchor is built. A zero seed is no seed: falling to the give-up path beats
+    // setting a cache below the default and burning the retry cap on no growth.
+    final minRow = _minBuiltRowHeight();
+    final estimate = (minRow == null || minRow <= 0)
+        ? null
+        : insertedCount * minRow;
+    _growCacheExtent = estimate;
+    _growthSettling = true;
     setState(() => _windowStart = target);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !_controller.hasClients) return;
-      // A search that opened in the same frame owns the position now: correcting
-      // would yank the offset the seek is about to bisect from. Every other
-      // growth entry bails when a search is open; so does this one.
-      if (widget.search.open) return;
-      var corrected = false;
-      if (anchor != null) {
-        final object = _rowKeys[anchor.$1]?.currentContext?.findRenderObject();
-        if (object is RenderBox && object.attached) {
-          final delta = object.localToGlobal(Offset.zero).dy - anchor.$2;
-          if (delta > 0) {
-            _controller.jumpTo(
-              (_controller.offset + delta).clamp(
-                0.0,
-                _controller.position.maxScrollExtent,
-              ),
-            );
-            corrected = true;
-          }
-        }
-      }
-      // The anchor moved out of the builder's cache (a whole chunk is taller
-      // than it). Measure the insertion from the extent delta instead. Use the
-      // live offset, exactly as the anchor path does: the insertion
-      // compensation layers on wherever the finger has since moved, so scroll
-      // input landing between the setState and this callback is preserved.
-      if (anchor != null && !corrected) {
-        final inserted = _controller.position.maxScrollExtent - oldMax;
-        if (inserted > 0) {
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => _settleGrowth(anchor, oldOffset, estimate, 0),
+    );
+  }
+
+  /// Correct the offset after a window growth, once the grown rows are laid out.
+  ///
+  /// The inserted height is the anchor row's change in absolute layout position:
+  /// `dy = layoutOffset − scrollOffset + C` for a constant per-viewport `C`, so
+  /// the difference between the captured and the live value cancels `C` and any
+  /// finger movement, leaving exactly the inserted height. The correction layers
+  /// on the live offset, so scroll input landing between the setState and this
+  /// callback is preserved. If the anchor has not been built yet (the inserted
+  /// chunk is taller than the current cache), the cache is grown by one
+  /// `estimate` increment and the settle retries, bounded by
+  /// [_maxGrowSettleFrames]. A missing or resized anchor falls through to that
+  /// path rather than biasing the jump.
+  void _settleGrowth(
+    (String, double, double)? anchor,
+    double oldOffset,
+    double? estimate,
+    int attempt,
+  ) {
+    if (!mounted || !_controller.hasClients) {
+      _finishGrowth(chain: false);
+      return;
+    }
+    // A search that opened in the same frame owns the position now: correcting
+    // would yank the offset the seek is about to bisect from. Every other growth
+    // entry bails when a search is open; so does this one. _settleToMatch
+    // re-schedules itself, so the growth is not lost.
+    if (widget.search.open) {
+      _clearGrowCache();
+      _finishGrowth(chain: false);
+      return;
+    }
+    if (anchor != null) {
+      final object = _rowKeys[anchor.$1]?.currentContext?.findRenderObject();
+      if (object is RenderBox &&
+          object.attached &&
+          object.size.height == anchor.$3) {
+        final live = _controller.offset;
+        final h = (object.localToGlobal(Offset.zero).dy + live) -
+            (anchor.$2 + oldOffset);
+        if (h != 0) {
           _controller.jumpTo(
-            (_controller.offset + inserted).clamp(
-              0.0,
-              _controller.position.maxScrollExtent,
-            ),
+            (live + h).clamp(0.0, _controller.position.maxScrollExtent),
           );
         }
+        _clearGrowCache();
+        _finishGrowth(chain: true);
+        return;
       }
-      _maybeGrowWindow(); // chains the undersized case, one chunk per frame
-    });
+    }
+    // No anchor, no measurable built row, or the retry cap: give up rather than
+    // guess. No chaining — a failed settle must not spin.
+    if (anchor == null || estimate == null || attempt >= _maxGrowSettleFrames) {
+      _clearGrowCache();
+      _finishGrowth(chain: false);
+      return;
+    }
+    _growCacheExtent = (_growCacheExtent ?? 0) + estimate;
+    setState(() {});
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => _settleGrowth(anchor, oldOffset, estimate, attempt + 1),
+    );
+  }
+
+  /// Drop the growth-scoped cache. Guarded so no setState is paid when no growth
+  /// is in flight.
+  void _clearGrowCache() {
+    if (_growCacheExtent != null) setState(() => _growCacheExtent = null);
+  }
+
+  /// Leave the settling state. [chain] re-runs the grow check so a request
+  /// swallowed by the single-flight guard, or a window still unable to scroll,
+  /// is re-attempted; a give-up does not chain, so a failed settle cannot spin.
+  void _finishGrowth({required bool chain}) {
+    _growthSettling = false;
+    if (chain) _maybeGrowWindow();
   }
 
   void _jumpToBottom() => _settleToBottom(0);
@@ -716,6 +823,12 @@ class _TranscriptViewState extends State<TranscriptView> {
       children: [
         ListView.builder(
           controller: _controller,
+          // Growth-scoped: null outside a settle, so the open and every ordinary
+          // frame keep the default cache. `cacheExtent` is deprecated; the
+          // non-deprecated form needs `ScrollCacheExtent`.
+          scrollCacheExtent: _growCacheExtent == null
+              ? null
+              : ScrollCacheExtent.pixels(_growCacheExtent!),
           // Bottom clearance so the jump-to-latest button never sits on the
           // newest (often still-streaming) row.
           padding: const EdgeInsets.fromLTRB(0, 8, 0, 72),

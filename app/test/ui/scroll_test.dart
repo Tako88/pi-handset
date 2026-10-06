@@ -60,6 +60,24 @@ SessionTranscript mixed(int count) => SessionTranscript(
   ],
 );
 
+/// A transcript whose newest window (blocks 70..99) is short but whose *next*
+/// chunk (blocks 40..69) is uniformly tall. The open renders the newest 30 short
+/// rows, so the growth's minimum-row seed is a short row; the additive cache then
+/// falls far short of the tall chunk, and the settle exhausts its retry cap
+/// without ever building the anchor.
+SessionTranscript tallChunkAhead(int count) => SessionTranscript(
+  blocks: [
+    for (var i = 0; i < count; i++)
+      TranscriptBlock(
+        kind: TranscriptBlockKind.text,
+        id: 'b$i',
+        text: i >= 40 && i < 70
+            ? List.generate(120, (l) => 'tall $i line $l').join('\n')
+            : 'message $i',
+      ),
+  ],
+);
+
 Widget wrap(
   SessionTranscript transcript, {
   Key? key,
@@ -559,6 +577,132 @@ void main() {
         find.text('message 140'),
         findsOneWidget,
         reason: 'the revealed chunk is reachable by scrolling, with no round trip',
+      );
+    },
+  );
+
+  testWidgets(
+    'a variable-height window growth pins the anchor by measured geometry',
+    (tester) async {
+      // mixed(200) makes the inserted chunk 140..169 contain six 30-line rows,
+      // far taller than the builder's cache window, so the anchor row is
+      // unmounted by the growth and the old extent-delta fallback is what places
+      // the view. The extent is an estimate extrapolated from the few rows built
+      // before the jump, so it mis-measures the insertion and leaves the pinned
+      // row off the top (measured 214 px in this 600 px viewport; thousands on
+      // device).
+      await tester.pumpWidget(wrap(mixed(200)));
+      await tester.pumpAndSettle();
+      tester.state<ScrollableState>(find.byType(Scrollable)).position.jumpTo(0);
+      await tester.pumpAndSettle();
+
+      expect(find.text('message 170'), findsOneWidget);
+      final listTop = tester.getTopLeft(find.byType(ListView)).dy;
+      final pinnedTop = tester.getTopLeft(find.text('message 170')).dy;
+      expect(
+        pinnedTop - listTop,
+        lessThan(60),
+        reason: 'the growth correction must place the anchor by its measured '
+            'geometry, not by the estimated extent delta',
+      );
+    },
+  );
+
+  testWidgets(
+    'a settle that never builds its anchor gives up at the frame cap',
+    (tester) async {
+      await tester.pumpWidget(wrap(tallChunkAhead(100)));
+      await tester.pumpAndSettle();
+      final position = tester
+          .state<ScrollableState>(find.byType(Scrollable))
+          .position;
+
+      // Scroll to the top of the window: this arms the growth and the next frame
+      // inserts the uniformly tall chunk (blocks 40..69) above the short newest
+      // window. The cache is seeded from the *minimum* built row — a short one —
+      // so the additive retries never reach the anchor's true distance and the
+      // settle exhausts the retry cap.
+      final before = position.maxScrollExtent;
+      position.jumpTo(0);
+      await tester.pumpAndSettle();
+
+      expect(
+        position.maxScrollExtent,
+        greaterThan(before),
+        reason: 'the window really grew (the tall chunk was inserted)',
+      );
+      // Give-up. The correction was abandoned without chaining, so the offset is
+      // exactly where the viewer left it; a landed correction would have moved
+      // it by the inserted height (tens of thousands of pixels).
+      //
+      // The zero-seed guard (a built row of height <= 0) routes into this same
+      // give-up branch, so these assertions cover it too. A real zero-height
+      // block row does not exist — every block kind carries DocumentRow's 16 px
+      // vertical padding — so that path is defensive, not separately reachable.
+      expect(
+        scrollOffset(tester),
+        0,
+        reason: 'a capped settle must leave the offset untouched',
+      );
+      // The growth-scoped cache is dropped on every settle exit.
+      expect(
+        tester.widget<ListView>(find.byType(ListView)).scrollCacheExtent,
+        isNull,
+        reason: 'a capped settle must clear the growth cache',
+      );
+      // The single-flight guard is released: a later upward scroll can start a
+      // fresh settle, which widens the cache again. A stuck flag would swallow
+      // the growth and leave the cache null here.
+      position.jumpTo(position.maxScrollExtent - 1);
+      position.jumpTo(0);
+      await tester.pump(); // the grow check runs post-frame, then setState
+      await tester.pump(); // the ListView rebuilds with the growth cache
+      expect(
+        tester.widget<ListView>(find.byType(ListView)).scrollCacheExtent,
+        isNotNull,
+        reason: 'the single-flight guard must be released after a give-up',
+      );
+    },
+  );
+
+  testWidgets(
+    'an append during a window growth does not double-correct',
+    (tester) async {
+      // Control: one clean growth, one chunk's correction.
+      await tester.pumpWidget(wrap(mixed(200), key: const ValueKey('control')));
+      await tester.pumpAndSettle();
+      tester.state<ScrollableState>(find.byType(Scrollable)).position.jumpTo(0);
+      await tester.pumpAndSettle();
+      final controlOffset = scrollOffset(tester);
+
+      // Interleaved: the growth is still in flight when an append arrives. The
+      // append fires didUpdateWidget -> _scheduleGrowCheck -> a second growth
+      // attempt mid-settle; without a single-flight guard the second attempt
+      // overwrites the cache and layers a second chunk-sized correction.
+      await tester.pumpWidget(
+        wrap(mixed(200), key: const ValueKey('interleaved')),
+      );
+      await tester.pumpAndSettle();
+      tester.state<ScrollableState>(find.byType(Scrollable)).position.jumpTo(0);
+      await tester.pump(); // the growth's setState has run; the settle is in flight
+      await tester.pumpWidget(
+        wrap(mixed(201), key: const ValueKey('interleaved')),
+      );
+      await tester.pump(); // a second growth attempt mid-settle
+      await tester.pumpAndSettle();
+
+      final listTop = tester.getTopLeft(find.byType(ListView)).dy;
+      final pinnedTop = tester.getTopLeft(find.text('message 170')).dy;
+      expect(
+        pinnedTop - listTop,
+        lessThan(60),
+        reason: 'the one correction must pin the anchor',
+      );
+      expect(
+        scrollOffset(tester),
+        closeTo(controlOffset, 60),
+        reason:
+            'the interleaved append must not layer a second chunk correction',
       );
     },
   );

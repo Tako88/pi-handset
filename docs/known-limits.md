@@ -896,3 +896,50 @@ was measured rather than assumed.
   row tint still marks the match once it is built.
 - **Search resets on a session switch.** A query belongs to the session it was typed in;
   switching or closing a session closes and clears it.
+
+## Transcript rendering
+
+- **Only the newest 30 blocks render when a session opens; the rest of the loaded
+  transcript is not in the list yet.** The bound is on the *open*, not on the total:
+  scrolling to the top of the window reveals one more 30-block chunk of the blocks the
+  app already holds, so a long transcript read from bottom to top ends up rendering the
+  whole loaded suffix — exactly what it rendered before the window existed. The window
+  only grows as you scroll; it does not shrink again while that session stays open.
+- **The 30-row frame budget is justified from text-row measurements only.** The number
+  comes from one emulator run against a 149k-token session where a text row cost about
+  0.27 ms, making 30 rows roughly 8 ms inside a 16.7 ms frame. An image row or an expanded
+  tool/diff row is taller and costlier, so a window made of tall rows can still exceed a
+  frame — the window bounds the *count*, not the height or cost.
+- **The correction that keeps the content still while the window grows is exact
+  whenever it lands; abandoned without chaining at the cap.** The inserted height is the
+  topmost rendered row's measured change in absolute layout position, which is the true
+  insertion even for variable-height rows and even when a scroll lands in the same frame. A
+  whole 30-row chunk is taller than the list's build cache, so the anchor row is usually
+  unmounted by the growth; the view then grows a growth-scoped build cache over a bounded,
+  single-flight settle (at most 12 frames) while deferring the correction — the correction
+  still layers on the live offset when it lands, so a scroll during the settle is preserved —
+  and corrects in one jump once the anchor is built. On the converging path, no settle frame
+  lays out more than about the inserted chunk plus one increment (≤ ~2× the chunk in the
+  uniform-height worst case); a settle that never builds its anchor grows the cache up to the
+  12-frame cap and then abandons the correction. The estimate that seeds the cache is the
+  *minimum* built-row height: the minimum cannot over-estimate the average built-row height,
+  so when the inserted rows are representative of the built ones the estimate under-builds
+  rather than over-builds, and the retries converge. If the cap is reached without the anchor
+  being built, the offset is left at its old value until the next scroll or growth — not
+  retried in a chain.
+- **Revealing a search match that sits above the window grows the window in one step.**
+  A match near the top of a large loaded transcript therefore renders everything from there
+  down to the newest block in a single frame — the same work the pre-window list did on
+  every open, now paid once, on an explicit action, and only for a match that was already
+  counted.
+- **After the window has fully opened, the jump-to-latest animation still walks to the
+  bottom over every revealed row.** That is the pre-existing cost of the animated return,
+  not something the window removes; only a fresh open is bounded.
+- **A running tool's row is auto-expanded by id, and if the reader has scrolled it above
+  the window it is not rendered.** The tool's body is not shown until that row scrolls back
+  into the window; the live streaming reply still pins at the bottom, so the running turn
+  remains visible.
+- **The `Load older messages` control is not shown while the window sits above block 0.**
+  It reappears when the window reaches the top of the loaded blocks; a page that completes
+  while the reader is scrolled down inside the window does not surface the control until
+  then.
