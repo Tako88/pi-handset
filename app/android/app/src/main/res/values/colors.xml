@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The app's own page background, so the cold-start window is the colour the
+         UI is about to be rather than the platform's white. The night override is
+         in values-night/colors.xml, and the API 31+ splash in values-v31/. -->
+
+    <!-- Kept equal to piLightRoles.pageBg in lib/ui/theme.dart. -->
+    <color name="pi_page_bg">#EFEEEE</color>
+
+    <!-- The launcher icon's background layer. Deliberately not themed: an app
+         icon does not change with the system's dark mode. -->
+    <color name="ic_launcher_background">#12141A</color>
+</resources>

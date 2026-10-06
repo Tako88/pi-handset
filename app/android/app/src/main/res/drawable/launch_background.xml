@@ -1,12 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Modify this file to customize your launch splash screen -->
+<!-- The window the app opens on, before Flutter draws its first frame. It is the
+     app's own page background, not the white the template ships: this app is
+     dark, and a white flash on every cold start is the first thing a user sees.
+     The night colour comes from values-night/colors.xml; API 31+ reads the
+     splash colour from values-v31/styles.xml instead of this drawable. -->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <item android:drawable="@android:color/white" />
-
-    <!-- You can insert your own image assets here -->
-    <!-- <item>
-        <bitmap
-            android:gravity="center"
-            android:src="@mipmap/launch_image" />
-    </item> -->
+    <item android:drawable="@color/pi_page_bg" />
 </layer-list>

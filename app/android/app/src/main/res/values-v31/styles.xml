@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Android 12+ brings its own splash window and reads
+         windowSplashScreenBackground, which defaults to the theme's
+         colorBackground - white, under Theme.Light.NoTitleBar. Without this
+         override a dark app still flashes white on a modern phone.
+
+         This has to be a separate file per UI mode: "night" outranks "version"
+         in Android's qualifier precedence, so on a dark-mode API 31+ device
+         values-night/styles.xml wins outright and this file is never read. -->
+    <style name="LaunchTheme" parent="@android:style/Theme.Light.NoTitleBar">
+        <item name="android:windowBackground">@drawable/launch_background</item>
+        <item name="android:windowSplashScreenBackground">@color/pi_page_bg</item>
+    </style>
+</resources>

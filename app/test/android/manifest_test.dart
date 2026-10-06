@@ -107,6 +107,21 @@ void main() {
     );
   });
 
+  test('the launcher shows a name, not a package identifier', () {
+    // android:label is the only text the user reads in the launcher and in
+    // Settings. It carried the Gradle application id, underscore and all, which
+    // no host test can see and no other gate covers.
+    final xml = File('android/app/src/main/AndroidManifest.xml').readAsStringSync();
+    expect(
+      RegExp(
+        r'<application\s+[^>]*android:label="pi-droid"',
+        dotAll: true,
+      ).hasMatch(xml),
+      isTrue,
+      reason: 'pi_droid leaks the package identifier onto the home screen',
+    );
+  });
+
   test('main manifest declares the specialUse foreground service', () {
     final xml = File('android/app/src/main/AndroidManifest.xml').readAsStringSync();
 

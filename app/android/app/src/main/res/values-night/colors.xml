@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Kept equal to piDarkRoles.pageBg in lib/ui/theme.dart. -->
+    <color name="pi_page_bg">#12141A</color>
+</resources>

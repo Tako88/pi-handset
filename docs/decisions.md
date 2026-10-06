@@ -99,4 +99,24 @@ chosen over, so it does not have to be re-litigated.
   Typographically the app has two voices — the platform mono face for anything the
   machine produced or named, the platform sans for prose. Every deviation, and the
   known-unguarded edges, are in [`docs/known-limits.md`](docs/known-limits.md).
+- **The launcher icon is pi's glyph, not a chat bubble.** The mark is π set in a
+  monospace face — DejaVu Sans Mono Bold's U+03C0, outlined to a path so nothing needs a
+  font installed at build time — in the same violet on the app's page background, which
+  is the "machine's voice" this app already uses for anything it names. A speech bubble
+  says *chat client*, which is true but says nothing about *pi*, and it goes to mush at
+  48px. `app/android/icon/` holds the master SVG and the generator; the generated
+  assets are committed.
+- **Both halves of an Android icon are required, and the safe zone is real.** minSdk 24
+  means the PNGs are not a legacy nicety — a device with no adaptive-icon support shows
+  those, and a launcher that ignores them shows them too. The art is 43.2dp on the
+  108dp canvas: inside the 66dp circle a launcher guarantees, and still ~60% of the
+  72dp it actually shows. `app/test/android/launcher_icon_test.dart` pins every
+  density's px size, the adaptive-icon resource references, and the art's bounds —
+  because nothing else in the repo can see a clipped or missing icon.
+- **The cold-start window is the app's own background, in both UI modes.** The Flutter
+  template starts white, which a dark app flashes on every launch. Android 12+ ignores
+  `android:windowBackground` while its splash is up and reads
+  `windowSplashScreenBackground` instead — and because *night* outranks *version* in
+  Android's qualifier precedence, a `values-v31` override alone is dead code on exactly
+  the dark-mode devices that need it. Hence the `values-night-v31` twin.
 
