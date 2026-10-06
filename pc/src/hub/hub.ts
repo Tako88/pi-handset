@@ -410,16 +410,7 @@ function handleEvent(
     closeWith(connection, CLOSE_PROTOCOL);
     return;
   }
-  for (const subscriber of session.subscribers) relayToViewer(subscriber, message, session.sessionId);
-}
-
-/**
- * Relays one event to one viewer under its byte budget. A message that does not
- * fit is dropped whole; the viewer is told once per session to resync, and its
- * next `history-request` rebuilds it from the hub's tracked `lastSeq`/`agentState`.
- */
-function relayToViewer(viewer: Connection, message: unknown, sessionId: string): void {
-  sendToViewer(viewer, message, sessionId);
+  for (const subscriber of session.subscribers) sendToViewer(subscriber, message, session.sessionId);
 }
 
 function dispatch(

@@ -1,5 +1,5 @@
 // message, stream and agent-state events.
-// Split from the bridge test file; test blocks are byte-exact (see .pi/plans/pc-test-split).
+// Split from the bridge test file; test blocks are byte-exact.
 //
 // Preserved from the original bridge test file:
 //

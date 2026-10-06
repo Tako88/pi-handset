@@ -1,5 +1,5 @@
 // history paging and replay.
-// Split from the hub test file; test blocks are byte-exact (see .pi/plans/pc-test-split).
+// Split from the hub test file; test blocks are byte-exact.
 
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';

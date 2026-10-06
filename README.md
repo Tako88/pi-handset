@@ -140,7 +140,7 @@ Both sides are built and tested, and the whole path has been exercised for real:
 
 | | `pc/` (Node + TypeScript) | `app/` (Flutter + Dart) |
 |---|---|---|
-| Suite | 654 tests passing | 789 tests passing |
+| Suite | `npm test` | `flutter test` |
 | Static gate | `tsc --noEmit` clean | `flutter analyze` clean |
 | Product code | hub, protocol codec, pi bridge | protocol codec, client, UI |
 
@@ -164,8 +164,8 @@ fails with ENOENT by design, not by accident.
 ## Development
 
 ```sh
-cd pc  && npm test && npm run typecheck     # 654 tests, then the type gate
-cd app && flutter test && flutter analyze   # 789 tests, then the analyzer
+cd pc  && npm test && npm run typecheck     # the suite, then the type gate
+cd app && flutter test && flutter analyze   # the suite, then the analyzer
 ```
 
 Both gates on both sides must be green before anything is done. Toolchain setup, the

@@ -3,8 +3,8 @@
 /// The transcript is a **document**, not a chat of bubbles. Every row begins at
 /// the same left text edge ([DocumentRow]), and a rule in the gutter carries
 /// the row's role: the user's violet, a tool row's state, a thinking row's
-/// level. Colours are pi's own — see `theme.dart` and
-/// `.pi/plans/redesign/spec.md`.
+/// level. Colours are pi's own — see `theme.dart`, and `docs/decisions.md`
+/// for the deviations.
 ///
 /// Each row is keyed by the view (through the block id) and wrapped in a
 /// `RepaintBoundary` there, so a streamed frame repaints only the streaming row.
