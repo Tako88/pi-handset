@@ -82,7 +82,7 @@ function exchange(payload: string): Promise<string> {
     socket.setEncoding('utf8');
     socket.on('connect', () => socket.write(payload));
     socket.on('data', (chunk) => {
-      data += chunk;
+      data += chunk.toString('utf8');
     });
     socket.on('error', reject);
     socket.on('close', () => resolve(data));

@@ -45,6 +45,9 @@ jobs:
       - name: Suite
         run: npm test
         working-directory: pc
+      - name: Lint
+        run: npm run lint
+        working-directory: pc
       - name: Type gate
         run: npm run typecheck
         working-directory: pc

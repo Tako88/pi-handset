@@ -148,6 +148,16 @@ function signalGroup(pid: number, signal: NodeJS.Signals, debug?: (text: string)
   }
 }
 
+/**
+ * A rejection reason that is always an `Error`. A `catch` binding is `unknown`,
+ * and both `mkdtempSync` and `spawn` can throw anything; rejecting with a bare
+ * value loses the stack, while the message a caller reports is unchanged (the
+ * hub stringifies a non-Error the same way).
+ */
+function toError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}
+
 export function createSpawner(options: SpawnerOptions = {}): Spawner {
   const command = options.command ?? 'pi';
   const args = options.args ?? ['--mode', 'rpc', '--no-session'];
@@ -241,10 +251,10 @@ export function createSpawner(options: SpawnerOptions = {}): Spawner {
       try {
         dir = mkdtempSync(join(tempRoot, 'pi-droid-session-'));
       } catch (error) {
-        return Promise.reject(error);
+        return Promise.reject(toError(error));
       }
     } else {
-      dir = options!.cwd as string;
+      dir = options.cwd as string;
     }
     const spawnArgs = owned
       ? args
@@ -259,7 +269,7 @@ export function createSpawner(options: SpawnerOptions = {}): Spawner {
       });
     } catch (error) {
       if (owned) removeDir(dir);
-      return Promise.reject(error);
+      return Promise.reject(toError(error));
     }
     // Drain both pipes; never touch stdin (rpc reads commands from it).
     child.stdout?.on('data', () => {});
@@ -444,7 +454,7 @@ export function parseProcStat(raw: string): ProcStat | null {
   if (close === -1) return null;
   const tokens = raw.slice(close + 1).trim().split(/\s+/);
   if (tokens.length < 20) return null;
-  const state = tokens[0]!;
+  const state = tokens[0];
   const startTime = Number(tokens[19]);
   if (!Number.isSafeInteger(startTime) || startTime < 0) return null;
   return { state, startTime };

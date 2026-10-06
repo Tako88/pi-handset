@@ -82,7 +82,7 @@ test('listTree projects the real session tree into relinked, role-tagged nodes',
       ],
     },
   ]);
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'listTree');
   const result = parsed(socket).at(-1) as {
@@ -170,7 +170,7 @@ test('listTree keeps the newest 200 nodes and repairs the dangling parent', asyn
     ];
   }
   ctx.setTree(chain);
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'listTree');
   const result = parsed(socket).at(-1) as {
@@ -179,9 +179,9 @@ test('listTree keeps the newest 200 nodes and repairs the dangling parent', asyn
   };
   assert.equal(result.treeTruncated, true);
   assert.equal(result.tree.length, 200);
-  assert.equal(result.tree[0]!.id, 'n5');
+  assert.equal(result.tree[0].id, 'n5');
   // n5's parent (n4) was dropped, so it must not point at a missing id.
-  assert.equal(result.tree[0]!.parentId, null);
+  assert.equal(result.tree[0].parentId, null);
   assert.equal(result.tree.at(-1)!.id, 'n204');
 });
 
@@ -189,7 +189,7 @@ test('listTree refuses when pi has no getTree', async () => {
   const harness = makeHarness();
   const ctx = harness.start();
   delete (ctx.sessionManager as { getTree?: unknown }).getTree;
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'listTree');
   const result = parsed(socket).at(-1) as { ok: boolean; error?: string };
@@ -203,7 +203,7 @@ test('listTree projects an empty tree as no nodes and not truncated', async () =
   // A fresh session legitimately has no message entries yet — that is an empty
   // picker, never an error and never a truncation.
   ctx.setTree([]);
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'listTree');
   const result = parsed(socket).at(-1) as {
@@ -220,7 +220,7 @@ test('listTree carries the current leaf id', async () => {
   const harness = makeHarness();
   const ctx = harness.start();
   ctx.setLeafId('t1');
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'listTree');
   const result = parsed(socket).at(-1)!;
@@ -232,7 +232,7 @@ test('listTree reports a null leaf when there is none', async () => {
   const harness = makeHarness();
   const ctx = harness.start();
   ctx.setLeafId(null);
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'listTree');
   const result = parsed(socket).at(-1)!;
@@ -416,7 +416,7 @@ test('a history-request with a cursor answers an older page, echoes the cursor a
   const harness = makeHarness();
   const ctx = harness.start();
   ctx.setEntries(largeEntries(6, 200_000));
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   socket.message({ protocolVersion: PROTOCOL_VERSION, type: 'history-request', sessionId: 'sess-1' });
   const baseline = lastHistory(socket);
@@ -442,7 +442,7 @@ test('a mismatched anchor answers a fresh baseline carrying the routing cursor b
   const harness = makeHarness();
   const ctx = harness.start();
   ctx.setEntries(largeEntries(6, 200_000));
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   socket.message({ protocolVersion: PROTOCOL_VERSION, type: 'history-request', sessionId: 'sess-1' });
   const baseline = lastHistory(socket);
@@ -464,7 +464,7 @@ test('a history frame carries olderCursor only when older entries remain', () =>
   const harness = makeHarness();
   const ctx = harness.start();
   ctx.setEntries(largeEntries(10, 200_000));
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   let cursor: string | undefined;
   let sawIntermediate = false;
@@ -490,7 +490,7 @@ test('a history frame carries olderCursor only when older entries remain', () =>
 test('a history-request without a cursor is byte-identical to today', () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   socket.message({ protocolVersion: PROTOCOL_VERSION, type: 'history-request', sessionId: 'sess-1' });
   assert.deepEqual(lastHistory(socket), {
@@ -524,7 +524,7 @@ test('a cursor whose boundary entry was collapsed still revalidates and pages th
   assert.equal(sizeOf(newest), newestTarget);
   const older = { type: 'message', id: 'old', message: { role: 'user', content: 'older' } };
   ctx.setEntries([older, huge, newest]);
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   socket.message({ protocolVersion: PROTOCOL_VERSION, type: 'history-request', sessionId: 'sess-1' });
   const baseline = lastHistory(socket);
@@ -554,11 +554,11 @@ test('the anchor binds the offset, so identical entries at different offsets do 
   assert.notEqual(entryAnchor(0, shared), entryAnchor(1, shared));
   // The offset was swapped onto the other identical entry's anchor: a
   // content-only digest would validate it, an offset-bound one must not.
-  const swapped = `0:${mintCursor(annotated, 1).split(':')[1]!}`;
+  const swapped = `0:${mintCursor(annotated, 1).split(':')[1]}`;
   const harness = makeHarness();
   const ctx = harness.start();
   ctx.setEntries(annotated);
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   socket.message({
     protocolVersion: PROTOCOL_VERSION,
@@ -574,7 +574,7 @@ test('a history-request with an unparseable cursor answers a baseline without th
   const harness = makeHarness();
   const ctx = harness.start();
   ctx.setEntries(largeEntries(6, 200_000));
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   socket.message({ protocolVersion: PROTOCOL_VERSION, type: 'history-request', sessionId: 'sess-1' });
   const baseline = lastHistory(socket);
@@ -597,7 +597,7 @@ test('a history-request with an out-of-range offset degrades to a baseline', () 
   const ctx = harness.start();
   const entries = largeEntries(6, 200_000);
   ctx.setEntries(entries);
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   socket.message({ protocolVersion: PROTOCOL_VERSION, type: 'history-request', sessionId: 'sess-1' });
   const baseline = lastHistory(socket);
@@ -675,7 +675,7 @@ test('the anchor revalidates over tool-annotated entries', () => {
   ctx.setEntries(entries);
   const annotated = annotateToolViews(entries);
   assert.equal(annotated.length, 6);
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   socket.message({ protocolVersion: PROTOCOL_VERSION, type: 'history-request', sessionId: 'sess-1' });
   const baseline = lastHistory(socket);

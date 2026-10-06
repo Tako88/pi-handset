@@ -14,6 +14,8 @@ import { fileURLToPath } from 'node:url';
 
 import { WebSocket } from 'ws';
 
+import { frameText } from './hub-harness.ts';
+
 import { loadOrCreateToken } from '../../src/hub/auth.ts';
 import { writeDiscovery } from '../../src/hub/discovery.ts';
 import { createHub } from '../../src/hub/hub.ts';
@@ -143,6 +145,9 @@ export function waitExit(child: ChildProcess): Promise<void> {
       return;
     }
     const command = child.spawnargs.join(' ');
+    // `timer` is assigned only after `settle` closes over it, so `const` would hit
+    // the temporal dead zone if the child exited before the assignment returned.
+    // eslint-disable-next-line prefer-const
     let timer: ReturnType<typeof setTimeout>;
     const settle = (): void => {
       clearTimeout(timer);
@@ -193,10 +198,10 @@ export function spawnPi(args: string[], extraEnv: Record<string, string> = {}): 
   let stdout = '';
   let stderr = '';
   let error: Error | null = null;
-  child.stdout!.on('data', (chunk) => {
+  child.stdout.on('data', (chunk) => {
     stdout += String(chunk);
   });
-  child.stderr!.on('data', (chunk) => {
+  child.stderr.on('data', (chunk) => {
     stderr += String(chunk);
   });
   child.on('error', (cause) => {
@@ -207,7 +212,7 @@ export function spawnPi(args: string[], extraEnv: Record<string, string> = {}): 
     child,
     stdout: () => stdout,
     stderr: () => stderr,
-    send: (line) => child.stdin!.write(`${line}\n`),
+    send: (line) => child.stdin.write(`${line}\n`),
     spawnError: () => error,
   };
 }
@@ -377,7 +382,7 @@ export function connectViewer(port: number, token: string): Promise<Viewer> {
   const ws = new WebSocket(`ws://127.0.0.1:${port}`);
   const queue = messageQueue();
   ws.on('message', (data) => {
-    queue.push(JSON.parse(String(data)) as Record<string, unknown>);
+    queue.push(JSON.parse(frameText(data)) as Record<string, unknown>);
   });
 
   return new Promise((resolve, reject) => {

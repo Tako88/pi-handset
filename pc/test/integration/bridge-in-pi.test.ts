@@ -43,12 +43,11 @@
 // ---------------------------------------------------------------------------
 
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, test } from 'node:test';
-import { WebSocket } from 'ws';
+import type { WebSocket } from 'ws';
 import { loadOrCreateToken } from '../../src/hub/auth.ts';
 import { createSpawner } from '../../src/hub/spawner.ts';
 import type { Spawner } from '../../src/hub/spawner.ts';
@@ -323,7 +322,7 @@ test("sessionTree navigates in place, witnessed by the next turn's parentId", as
   assert.ok(navigated, 'sessionTree must be acked');
   assert.equal(navigated.ok, true, `sessionTree was refused: ${String(navigated.error)}`);
   assert.ok(leafPayloads.length > 0, 'a leaf event must follow the navigation');
-  const leafPayload = leafPayloads[0]!;
+  const leafPayload = leafPayloads[0];
   assert.ok('leafId' in leafPayload, 'the leaf event must carry leafId');
   const leafId = leafPayload.leafId as string | null;
 
@@ -506,7 +505,7 @@ test('a spawned bare pi registers, prompts and dies on kill-session', async () =
   );
   assert.equal(pids.length, 1, 'exactly one child was spawned');
   await waitFor(
-    () => !alive(pids[0]!),
+    () => !alive(pids[0]),
     'the spawned process group to be gone after the kill',
     5000,
   );

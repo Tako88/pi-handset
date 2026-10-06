@@ -29,7 +29,7 @@ declare module '@earendil-works/pi-ai' {
     options?: Record<string, unknown>,
   ): FauxProviderHandle;
   export function fauxAssistantMessage(
-    content: string | unknown | unknown[],
+    content: unknown,
     options?: Record<string, unknown>,
   ): unknown;
   export function fauxText(text: string): unknown;

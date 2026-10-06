@@ -36,7 +36,7 @@ class BrowserHarness {
     factory.last.receive({
       'protocolVersion': 1,
       'type': 'sessions',
-      'sessions': const [],
+      'sessions': const <Object?>[],
       'capabilities': const ['list-dirs', 'project-session'],
     });
     await tester.pump();

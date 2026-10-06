@@ -30,6 +30,9 @@ export class FakeSocket implements BridgeSocket {
   readyState = 0;
   readonly sent: string[] = [];
   readonly closeCalls: Array<{ code?: number; reason?: string }> = [];
+  // `any` because the map holds handlers for unrelated event shapes; the
+  // public overloads below are the typed surface.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private readonly listeners = new Map<string, Array<(event: any) => void>>();
 
   send(data: string): void {
@@ -44,6 +47,9 @@ export class FakeSocket implements BridgeSocket {
 
   addEventListener(type: 'close', handler: (event: BridgeCloseEvent) => void): void;
   addEventListener(type: string, handler: (event: unknown) => void): void;
+  // An overload implementation signature has to accept every overload; `any`
+  // is what makes the narrower `BridgeCloseEvent` handler assignable.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   addEventListener(type: string, handler: (event: any) => void): void {
     const list = this.listeners.get(type) ?? [];
     list.push(handler);
@@ -151,6 +157,9 @@ export class StubCommandCtx implements BridgeCommandCtx {
     if (this.used) throw new Error(`command context is stale on ${method}`);
     this.used = true;
     this.calls.push(method);
+    // The test configures an arbitrary thrown value on purpose: the bridge is
+    // asserted to contain whatever a pi callback throws, Error or not.
+    // eslint-disable-next-line @typescript-eslint/only-throw-error
     if (this.error !== undefined) throw this.error;
     return { cancelled: this.cancelled };
   }
@@ -260,6 +269,8 @@ export function makeCtx(mode = 'tui', sessionId = 'sess-1'): TestCtx {
       compacts += 1;
     },
     isIdle: () => {
+      // Same as `act` above: an arbitrary thrown value is the subject.
+      // eslint-disable-next-line @typescript-eslint/only-throw-error
       if (idleError !== undefined) throw idleError;
       return idle;
     },
@@ -365,7 +376,7 @@ export function makeHarness(overrides: Partial<BridgeDeps> = {}): Harness {
     },
     start,
     reinstall: () => installBridge(pi, deps),
-    fireTimer: (index = 0) => timers[index]!.fn(),
+    fireTimer: (index = 0) => timers[index].fn(),
   };
 }
 

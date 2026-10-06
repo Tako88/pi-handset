@@ -537,7 +537,7 @@ test('decode accepts a sessions entry with an app origin', () => {
   });
   const result = decode(raw);
   if (!result.ok) assert.fail(`expected an app origin to decode: ${result.error}`);
-  assert.equal((result.value as SessionsMessage).sessions[0]!.origin, 'app');
+  assert.equal((result.value as SessionsMessage).sessions[0].origin, 'app');
 });
 
 test('decode rejects a sessions entry with an unknown origin', () => {
@@ -628,7 +628,7 @@ test('encode produces exactly one JSON object per call', () => {
   };
   const encoded = encode(hello);
   assert.equal(encoded.split('\n').length, 1);
-  const parsed = JSON.parse(encoded);
+  const parsed: unknown = JSON.parse(encoded);
   assert.equal(Array.isArray(parsed), false);
   assert.deepEqual(parsed, hello);
 });

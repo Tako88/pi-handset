@@ -72,7 +72,7 @@ test('the socket opens in session_start', () => {
 test('register carries the session identity', () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const register = parsed(socket).find((m) => m.type === 'register')!;
   assert.equal(register.sessionId, 'sess-1');
@@ -87,7 +87,7 @@ test('register carries the session identity', () => {
 test('session_shutdown closes the socket', () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   harness.pi.handlers.get('session_shutdown')!({ type: 'session_shutdown' }, harness.startCtx);
   assert.equal(socket.closeCalls.length, 1);
@@ -96,7 +96,7 @@ test('session_shutdown closes the socket', () => {
 test('session_shutdown is idempotent', () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   harness.pi.handlers.get('session_shutdown')!({ type: 'session_shutdown' }, harness.startCtx);
   harness.pi.handlers.get('session_shutdown')!({ type: 'session_shutdown' }, harness.startCtx);
@@ -106,21 +106,24 @@ test('session_shutdown is idempotent', () => {
 test('a new session_start closes the previous socket and re-registers', () => {
   const harness = makeHarness();
   harness.start();
-  const first = harness.sockets[0]!;
+  const first = harness.sockets[0];
   first.open();
   harness.start('tui');
-  const second = harness.sockets[1]!;
+  const second = harness.sockets[1];
   second.open();
   assert.equal(first.closeCalls.length, 1);
-  assert.equal(second.sent.filter((text) => JSON.parse(text).type === 'register').length, 1);
+  assert.equal(
+    second.sent.filter((text) => (JSON.parse(text) as { type?: unknown }).type === 'register').length,
+    1,
+  );
 });
 
 test('the retained context follows a session switch', async () => {
   const harness = makeHarness();
   harness.start();
-  harness.sockets[0]!.open();
+  harness.sockets[0].open();
   const secondCtx = harness.start();
-  const secondSocket = harness.sockets[1]!;
+  const secondSocket = harness.sockets[1];
   secondSocket.open();
   await sendCommand(harness.pi, secondSocket, 'abort');
   assert.equal(secondCtx.aborts(), 1);
@@ -145,10 +148,10 @@ test('a replacement session_start registers the id it replaced', () => {
     // install, not a re-fire on the same instance.
     const real = makeHarness();
     real.start('tui', 'sess-1', 'startup');
-    real.sockets[0]!.open();
+    real.sockets[0].open();
     real.reinstall();
     real.start('tui', 'sess-2', reason);
-    const realSecond = real.sockets[1]!;
+    const realSecond = real.sockets[1];
     realSecond.open();
     const realRegister = parsed(realSecond).find((m) => m.type === 'register')!;
     assert.equal(
@@ -160,9 +163,9 @@ test('a replacement session_start registers the id it replaced', () => {
     // Same-instance re-fire, which still pins the module-state comparison.
     const inPlace = makeHarness();
     inPlace.start('tui', 'sess-1', 'startup');
-    inPlace.sockets[0]!.open();
+    inPlace.sockets[0].open();
     inPlace.start('tui', 'sess-2', reason);
-    const second = inPlace.sockets[1]!;
+    const second = inPlace.sockets[1];
     second.open();
     const register = parsed(second).find((m) => m.type === 'register')!;
     assert.equal(register.replaces, 'sess-1', `${reason} did not carry replaces`);
@@ -172,10 +175,10 @@ test('a replacement session_start registers the id it replaced', () => {
 test('resetSessionLinkageForTests clears the module-level predecessor', () => {
   const harness = makeHarness();
   harness.start('tui', 'sess-1', 'startup');
-  harness.sockets[0]!.open();
+  harness.sockets[0].open();
   resetSessionLinkageForTests();
   harness.start('tui', 'sess-2', 'new');
-  const second = harness.sockets[1]!;
+  const second = harness.sockets[1];
   second.open();
   const register = parsed(second).find((m) => m.type === 'register')!;
   // Without the clear, the module still names sess-1 and the successor would be
@@ -187,9 +190,9 @@ test('a non-replacement session_start carries no replaces', () => {
   for (const reason of ['startup', 'reload']) {
     const harness = makeHarness();
     harness.start('tui', 'sess-1', 'startup');
-    harness.sockets[0]!.open();
+    harness.sockets[0].open();
     harness.start('tui', 'sess-2', reason);
-    const second = harness.sockets[1]!;
+    const second = harness.sockets[1];
     second.open();
     const register = parsed(second).find((m) => m.type === 'register')!;
     assert.equal(register.replaces, undefined, `${reason} carried replaces`);
@@ -199,11 +202,11 @@ test('a non-replacement session_start carries no replaces', () => {
 test('a resume that reloads the same session id carries no replaces', () => {
   const harness = makeHarness();
   harness.start('tui', 'sess-1', 'startup');
-  harness.sockets[0]!.open();
+  harness.sockets[0].open();
   // `/resume` can reload the very id already registered; naming it as replaced
   // would make the app follow a successor that does not exist.
   harness.start('tui', 'sess-1', 'resume');
-  const second = harness.sockets[1]!;
+  const second = harness.sockets[1];
   second.open();
   const register = parsed(second).find((m) => m.type === 'register')!;
   assert.equal(register.replaces, undefined);
@@ -212,7 +215,7 @@ test('a resume that reloads the same session id carries no replaces', () => {
 test('replaces survives a register that could not be sent and is cleared only after one that was', () => {
   const harness = makeHarness();
   harness.start('tui', 'sess-1', 'startup');
-  harness.sockets[0]!.open();
+  harness.sockets[0].open();
   harness.start('tui', 'sess-2', 'new');
   // sockets[1] is deliberately left closed, and a label refresh is the one
   // closed-socket path that calls `sendRegister`. It must not consume the
@@ -222,11 +225,11 @@ test('replaces survives a register that could not be sent and is cleared only af
     { type: 'session_info_changed' },
     harness.startCtx,
   );
-  const second = harness.sockets[1]!;
+  const second = harness.sockets[1];
   second.open();
   const registers = parsed(second).filter((m) => m.type === 'register');
   assert.equal(registers.length, 1);
-  assert.equal(registers[0]!.replaces, 'sess-1');
+  assert.equal(registers[0].replaces, 'sess-1');
   // A second rename now reaches the open socket, so the flag is consumed and the
   // next register omits it — it must not link a third, later register.
   harness.pi.setSessionName('renamed while open');
@@ -236,13 +239,13 @@ test('replaces survives a register that could not be sent and is cleared only af
   );
   const after = parsed(second).filter((m) => m.type === 'register');
   assert.equal(after.length, 2);
-  assert.equal(after[1]!.replaces, undefined);
+  assert.equal(after[1].replaces, undefined);
 });
 
 test('sessionNew acknowledges and triggers the registered command', async () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'sessionNew');
   assert.equal((parsed(socket).at(-1) as { ok: boolean }).ok, true);
@@ -256,7 +259,7 @@ test('sessionNew acknowledges and triggers the registered command', async () => 
 
 test('the registered handler for new calls newSession exactly once and returns', async () => {
   const harness = makeHarness();
-  const handler = harness.pi.registeredCommands[0]!.options.handler;
+  const handler = harness.pi.registeredCommands[0].options.handler;
   const cmdCtx = new StubCommandCtx();
   await handler('new', cmdCtx);
   // The stub throws on a second call, modelling pi's `assertActive`: a handler
@@ -267,9 +270,9 @@ test('the registered handler for new calls newSession exactly once and returns',
 test('a cancelled newSession emits an error status instead of a silent ack', async () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
-  const handler = harness.pi.registeredCommands[0]!.options.handler;
+  const handler = harness.pi.registeredCommands[0].options.handler;
   const cmdCtx = new StubCommandCtx();
   cmdCtx.setCancel(true);
   await handler('new', cmdCtx);
@@ -287,9 +290,9 @@ test('a cancelled newSession emits an error status instead of a silent ack', asy
 test('a navigateTree failure emits an error status', async () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
-  const handler = harness.pi.registeredCommands[0]!.options.handler;
+  const handler = harness.pi.registeredCommands[0].options.handler;
   const cmdCtx = new StubCommandCtx();
   cmdCtx.setThrow(new Error('cannot navigate'));
   await handler('tree t9', cmdCtx);
@@ -307,9 +310,9 @@ test('a navigateTree failure emits an error status', async () => {
 test('an unknown session action emits an error status instead of a silent ack', async () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
-  const handler = harness.pi.registeredCommands[0]!.options.handler;
+  const handler = harness.pi.registeredCommands[0].options.handler;
   // `dispatch` has already acked `ok:true`; a mistyped action must not fall off
   // the end of the handler silently.
   await handler('bogus t1', new StubCommandCtx());
@@ -333,7 +336,7 @@ test('sessionTree refuses while pi is working', async () => {
   const harness = makeHarness();
   const ctx = harness.start();
   ctx.setIdle(false);
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'sessionTree', { entryId: 't1' });
   const result = parsed(socket).at(-1) as { ok: boolean; error?: string };
@@ -347,12 +350,12 @@ test('sessionTree refuses while pi is working', async () => {
 test('a session_tree event emits a leaf event with the new leaf', () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const before = socket.sent.length;
   const handler = harness.pi.handlers.get('session_tree');
   assert.ok(handler, 'the bridge must subscribe to pi\'s session_tree event');
-  handler!({ type: 'session_tree', newLeafId: 'e9', oldLeafId: 'e1' }, harness.startCtx);
+  handler({ type: 'session_tree', newLeafId: 'e9', oldLeafId: 'e1' }, harness.startCtx);
   const emitted = parsed(socket).slice(before);
   assert.deepEqual(emitted.at(-1)?.payload, { kind: 'leaf', leafId: 'e9' });
 });
@@ -360,12 +363,12 @@ test('a session_tree event emits a leaf event with the new leaf', () => {
 test('a session_tree to the root emits leafId null', () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const before = socket.sent.length;
   const handler = harness.pi.handlers.get('session_tree');
   assert.ok(handler, 'the bridge must subscribe to pi\'s session_tree event');
-  handler!({ type: 'session_tree', newLeafId: null, oldLeafId: 'e1' }, harness.startCtx);
+  handler({ type: 'session_tree', newLeafId: null, oldLeafId: 'e1' }, harness.startCtx);
   const emitted = parsed(socket).slice(before);
   assert.deepEqual(emitted.at(-1)?.payload, { kind: 'leaf', leafId: null });
 });
@@ -376,7 +379,7 @@ test('sessionTree refuses an entry id pi does not know', async () => {
   // The id was listed earlier but the entry is gone now: pi's navigateTree
   // would throw after the ack, so the refusal must happen at dispatch.
   ctx.setEntries([{ type: 'message', id: 'e1', message: { role: 'user', content: 'hi' } }]);
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'sessionTree', { entryId: 'gone' });
   const result = parsed(socket).at(-1) as { ok: boolean; error?: string };
@@ -392,7 +395,7 @@ test('sessionFork rejects a non-user entry', async () => {
   // Forking with the default `before` position requires a user message entry;
   // an assistant entry is not a valid fork target.
   ctx.setEntries([{ type: 'message', id: 'e9', message: { role: 'assistant', content: [] } }]);
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'sessionFork', { entryId: 'e9' });
   const result = parsed(socket).at(-1) as { ok: boolean; error?: string };
@@ -408,7 +411,7 @@ test('sessionFork rejects a non-message entry that carries a user message', asyn
   // A non-message variant that happens to carry a `message` object must not
   // pass the role check: it would only fail later, after `ok:true` was acked.
   ctx.setEntries([{ type: 'compaction', id: 'c9', message: { role: 'user', content: 'x' } }]);
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'sessionFork', { entryId: 'c9' });
   const result = parsed(socket).at(-1) as { ok: boolean; error?: string };
@@ -421,7 +424,7 @@ test('a sessionFork for a user entry triggers the fork with the entry id', async
   const harness = makeHarness();
   const ctx = harness.start();
   ctx.setEntries([{ type: 'message', id: 'e3', message: { role: 'user', content: 'hi' } }]);
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'sessionFork', { entryId: 'e3' });
   assert.equal((parsed(socket).at(-1) as { ok: boolean }).ok, true);
@@ -429,7 +432,7 @@ test('a sessionFork for a user entry triggers the fork with the entry id', async
     harness.pi.userMessages.map((message) => message.content),
     [`/${SESSION_COMMAND_NAME} fork e3`],
   );
-  const handler = harness.pi.registeredCommands[0]!.options.handler;
+  const handler = harness.pi.registeredCommands[0].options.handler;
   const cmdCtx = new StubCommandCtx();
   await handler('fork e3', cmdCtx);
   assert.deepEqual(cmdCtx.calls, ['fork']);
@@ -438,9 +441,9 @@ test('a sessionFork for a user entry triggers the fork with the entry id', async
 test('after a session switch the previous session id is refused as a mismatch', async () => {
   const harness = makeHarness();
   harness.start('tui', 'sess-1', 'startup');
-  harness.sockets[0]!.open();
+  harness.sockets[0].open();
   const secondCtx = harness.start('tui', 'sess-2', 'startup');
-  const secondSocket = harness.sockets[1]!;
+  const secondSocket = harness.sockets[1];
   secondSocket.open();
   // A stale id from before the replacement must not be dispatched against the
   // successor context. `sendCommand` hardcodes `sess-1`, which is exactly the
@@ -456,7 +459,7 @@ test('after a session switch the previous session id is refused as a mismatch', 
 test('commands arriving after shutdown are ignored', async () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   harness.pi.handlers.get('session_shutdown')!({ type: 'session_shutdown' }, harness.startCtx);
   await sendCommand(harness.pi, socket, 'prompt', { text: 'late' });

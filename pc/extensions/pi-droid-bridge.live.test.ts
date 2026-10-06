@@ -18,7 +18,7 @@ beforeEach(() => resetSessionLinkageForTests());
 test('a message_end emits its tool frames after the message, in order', () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const before = socket.sent.length;
   const handler = harness.pi.handlers.get('message_end')!;
@@ -50,11 +50,11 @@ test('a message_end emits its tool frames after the message, in order', () => {
     frames.map((frame) => frame.kind),
     ['message', 'tool', 'message', 'tool'],
   );
-  assert.equal(frames[1]!.status, 'running');
-  assert.equal(frames[1]!.name, 'bash');
-  assert.deepEqual(frames[1]!.view, { type: 'generic', target: 'echo hi' });
-  assert.equal(frames[3]!.status, 'done');
-  assert.deepEqual(frames[3]!.view, {
+  assert.equal(frames[1].status, 'running');
+  assert.equal(frames[1].name, 'bash');
+  assert.deepEqual(frames[1].view, { type: 'generic', target: 'echo hi' });
+  assert.equal(frames[3].status, 'done');
+  assert.deepEqual(frames[3].view, {
     type: 'command',
     command: 'echo hi',
     output: 'hi\n',
@@ -75,7 +75,7 @@ test('a resumed session resolves a toolResult from entries seeded at session_sta
     },
   ]);
   harness.pi.handlers.get('session_start')!({ type: 'session_start', reason: 'startup' }, ctx);
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const before = socket.sent.length;
   harness.pi.handlers.get('message_end')!(
@@ -121,7 +121,7 @@ test('a completed call in the entries is not seeded (its later result renders wi
     },
   ]);
   harness.pi.handlers.get('session_start')!({ type: 'session_start', reason: 'reload' }, ctx);
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const before = socket.sent.length;
   harness.pi.handlers.get('message_end')!(
@@ -144,7 +144,7 @@ test('a completed call in the entries is not seeded (its later result renders wi
 test('a live call’s arguments are released once its result has been emitted', () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const handler = harness.pi.handlers.get('message_end')!;
   handler(
@@ -192,7 +192,7 @@ test('a live call’s arguments are released once its result has been emitted', 
 test('a settled turn releases a call that never produced a result', () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const handler = harness.pi.handlers.get('message_end')!;
   handler(
@@ -244,7 +244,7 @@ test('fetchHistory replays a history whose entries carry the synthesized tool fr
       },
     },
   ]);
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'fetchHistory');
   const history = parsed(socket).find((m) => m.type === 'history')!;
@@ -281,7 +281,7 @@ test('a tool-heavy history keeps the newest turns within HISTORY_MAX_BYTES', asy
     });
   }
   ctx.setEntries(entries);
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'fetchHistory');
   const history = parsed(socket).find((m) => m.type === 'history')!;

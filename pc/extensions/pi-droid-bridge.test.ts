@@ -38,7 +38,7 @@ beforeEach(() => resetSessionLinkageForTests());
 test('abort aborts the active operation and acknowledges dispatch', async () => {
   const harness = makeHarness();
   const ctx = harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'abort');
   assert.equal(ctx.aborts(), 1);
@@ -53,7 +53,7 @@ test('abort aborts the active operation and acknowledges dispatch', async () => 
 test('setModel resolves the reference through the registry before calling pi', async () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'setModel', {
     provider: 'test-provider',
@@ -72,7 +72,7 @@ test('setModel reports a rejected model as a failed command-result', async () =>
   const harness = makeHarness();
   harness.pi.modelAccepted = false;
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'setModel', {
     provider: 'test-provider',
@@ -88,7 +88,7 @@ test('setModel reports a rejected model as a failed command-result', async () =>
 test('setModel refuses an unknown model without calling pi', async () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'setModel', { provider: 'test-provider', id: 'nope' });
   const result = parsed(socket).at(-1) as { ok: boolean; error?: string };
@@ -100,7 +100,7 @@ test('setModel refuses an unknown model without calling pi', async () => {
 test('setModel without a provider or id is refused', async () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'setModel', { id: 'test-model' });
   const result = parsed(socket).at(-1) as { ok: boolean; error?: string };
@@ -113,7 +113,7 @@ test('setModel without a registry is refused', async () => {
   const harness = makeHarness();
   const ctx = harness.start();
   ctx.removeRegistry();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'setModel', { provider: 'test-provider', id: 'test-model' });
   const result = parsed(socket).at(-1) as { ok: boolean; error?: string };
@@ -126,7 +126,7 @@ test('setModel is refused mid-turn, before calling pi', async () => {
   const harness = makeHarness();
   const ctx = harness.start();
   ctx.setIdle(false);
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'setModel', { provider: 'test-provider', id: 'test-model' });
   const result = parsed(socket).at(-1) as { ok: boolean; error?: string };
@@ -141,7 +141,7 @@ test('a throwing pi.setModel surfaces the thrown message, not the accepted boole
   const harness = makeHarness();
   harness.pi.modelError = new Error('No API key for test-provider/test-model');
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'setModel', {
     provider: 'test-provider',
@@ -157,7 +157,7 @@ test('a throwing pi.setModel surfaces the thrown message, not the accepted boole
 test('an accepted same-model switch still re-reports usage exactly once', async () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const before = socket.sent.length;
   await sendCommand(harness.pi, socket, 'setModel', {
@@ -179,7 +179,7 @@ test('an accepted same-model switch still re-reports usage exactly once', async 
 test('setThinkingLevel dispatches the level', async () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'setThinkingLevel', { level: 'high' });
   assert.deepEqual(harness.pi.thinkingLevels, ['high']);
@@ -188,7 +188,7 @@ test('setThinkingLevel dispatches the level', async () => {
 test('compact requests compaction', async () => {
   const harness = makeHarness();
   const ctx = harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'compact');
   assert.equal(ctx.compacts(), 1);
@@ -197,7 +197,7 @@ test('compact requests compaction', async () => {
 test('fetchHistory replies with a history message', async () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'fetchHistory');
   const history = parsed(socket).find((m) => m.type === 'history')!;
@@ -209,7 +209,7 @@ test('fetchHistory replies with a history message', async () => {
 test('a history-request replays history and then the context usage', () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   socket.message({
     protocolVersion: PROTOCOL_VERSION,
@@ -217,7 +217,7 @@ test('a history-request replays history and then the context usage', () => {
     sessionId: 'sess-1',
   });
   const after = parsed(socket).slice(-2);
-  assert.equal(after[0]!.type, 'history');
+  assert.equal(after[0].type, 'history');
   // A phone that attaches mid-session must see a number without waiting for a
   // turn, and the hub only relays to subscribers — which is why this rides the
   // reply rather than the register frame.
@@ -238,7 +238,7 @@ test('an unknown token count travels as null', () => {
   const harness = makeHarness();
   const ctx = harness.start();
   ctx.setUsage({ tokens: null, contextWindow: 128000 });
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   socket.message({
     protocolVersion: PROTOCOL_VERSION,
@@ -257,7 +257,7 @@ test('an unknown token count travels as null', () => {
 test('agent_settled reports the terminal state and then the usage', () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const before = socket.sent.length;
   harness.pi.handlers.get('agent_settled')!({}, harness.startCtx);
@@ -271,7 +271,7 @@ test('agent_settled reports the terminal state and then the usage', () => {
 test('a compaction reports unknown tokens', () => {
   const harness = makeHarness();
   const ctx = harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const before = socket.sent.length;
   ctx.setUsage({ tokens: null, contextWindow: 128000 });
@@ -290,7 +290,7 @@ test('a context without a thinking level omits the field', () => {
   const harness = makeHarness();
   const ctx = harness.start();
   delete ctx.thinkingLevel;
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   socket.message({
     protocolVersion: PROTOCOL_VERSION,
@@ -311,7 +311,7 @@ test('a context without a model omits the field', () => {
   const harness = makeHarness();
   const ctx = harness.start();
   delete ctx.model;
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   socket.message({
     protocolVersion: PROTOCOL_VERSION,
@@ -334,7 +334,7 @@ test('a malformed model is omitted, never sent half-formed', () => {
   // `name` missing: the projection must drop the whole entry rather than emit a
   // `ModelSummary` the protocol validator would reject.
   ctx.model = { id: 'test-model', provider: 'test-provider' } as unknown as BridgeModel;
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   socket.message({
     protocolVersion: PROTOCOL_VERSION,
@@ -352,7 +352,7 @@ test('a malformed model is omitted, never sent half-formed', () => {
 test('a model_select re-reports usage', () => {
   const harness = makeHarness();
   const ctx = harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const before = socket.sent.length;
   ctx.model = { id: 'm2', provider: 'test-provider', name: 'Second Model' };
@@ -372,7 +372,7 @@ test('a model_select re-reports usage', () => {
 test('a thinking level change re-reports usage', () => {
   const harness = makeHarness();
   const ctx = harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const before = socket.sent.length;
   ctx.thinkingLevel = 'low';
@@ -392,7 +392,7 @@ test('a thinking level change re-reports usage', () => {
 test('the reported thinking level is read live, not cached', () => {
   const harness = makeHarness();
   const ctx = harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   ctx.thinkingLevel = 'high';
   const before = socket.sent.length;
@@ -412,7 +412,7 @@ test('the reported thinking level is read live, not cached', () => {
 test('a failed compaction reaches the transcript as an error notice', () => {
   const harness = makeHarness();
   const ctx = harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const before = socket.sent.length;
   harness.pi.handlers.get('session_compact_failed')!(
@@ -429,7 +429,7 @@ test('a failed compaction reaches the transcript as an error notice', () => {
 test('an overflow compaction failure also reaches the transcript', () => {
   const harness = makeHarness();
   const ctx = harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const before = socket.sent.length;
   harness.pi.handlers.get('session_compact_failed')!(
@@ -450,7 +450,7 @@ test('an overflow compaction failure also reaches the transcript', () => {
 test('an aborted compaction clears the announcement without an error notice', () => {
   const harness = makeHarness();
   const ctx = harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const before = socket.sent.length;
   harness.pi.handlers.get('session_compact_failed')!({ reason: 'manual', aborted: true }, ctx);
@@ -464,7 +464,7 @@ test('an aborted compaction clears the announcement without an error notice', ()
 test('a compaction start announces itself to the app', () => {
   const harness = makeHarness();
   const ctx = harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const before = socket.sent.length;
   harness.pi.handlers.get('session_before_compact')!(
@@ -481,7 +481,7 @@ test('a compaction start announces itself to the app', () => {
 test('the compaction start handler neither cancels nor customises the compaction', () => {
   const harness = makeHarness();
   const ctx = harness.start();
-  harness.sockets[0]!.open();
+  harness.sockets[0].open();
   // pi awaits this handler and reads the result: a truthy `cancel` aborts the
   // compaction and a `compaction` replaces the summary. Returning undefined is
   // what keeps the bridge from silently changing what compaction does.
@@ -495,7 +495,7 @@ test('the compaction start handler neither cancels nor customises the compaction
 test('a completed compaction clears the announcement', () => {
   const harness = makeHarness();
   const ctx = harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const before = socket.sent.length;
   harness.pi.handlers.get('session_compact')!({ type: 'session_compact', reason: 'manual' }, ctx);
@@ -511,7 +511,7 @@ test('a completed compaction clears the announcement', () => {
 test('a failed compaction clears the announcement before the error notice', () => {
   const harness = makeHarness();
   const ctx = harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const before = socket.sent.length;
   harness.pi.handlers.get('session_compact_failed')!(
@@ -530,7 +530,7 @@ test('an accepted model switch reports the new window', async () => {
   const harness = makeHarness();
   const ctx = harness.start();
   ctx.setUsage({ tokens: 100, contextWindow: 200000 });
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const before = socket.sent.length;
   await sendCommand(harness.pi, socket, 'setModel', {
@@ -551,7 +551,7 @@ test('a refused model switch reports nothing about usage', async () => {
   harness.pi.modelAccepted = false;
   const ctx = harness.start();
   ctx.setUsage({ tokens: 100, contextWindow: 200000 });
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const before = socket.sent.length;
   await sendCommand(harness.pi, socket, 'setModel', {
@@ -571,7 +571,7 @@ test('a pi without getContextUsage emits no usage frame', () => {
   const harness = makeHarness();
   const ctx = harness.start();
   delete ctx.getContextUsage;
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const before = socket.sent.length;
   socket.message({
@@ -595,7 +595,7 @@ test('an undefined usage reading emits no usage frame', () => {
   const harness = makeHarness();
   const ctx = harness.start();
   ctx.setUsage(undefined);
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const before = socket.sent.length;
   socket.message({
@@ -618,7 +618,7 @@ test('a throwing getContextUsage does not escape and costs only the reading', ()
   ctx.getContextUsage = () => {
     throw new Error('usage exploded');
   };
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   assert.doesNotThrow(() => {
     socket.message({
@@ -634,7 +634,7 @@ test('a throwing getContextUsage does not escape and costs only the reading', ()
 test('stream deltas never sample the context', () => {
   const harness = makeHarness();
   const ctx = harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const update = (): void => {
     harness.pi.handlers.get('message_update')!(
@@ -661,7 +661,7 @@ test('stream deltas never sample the context', () => {
 test('a history-request from the hub is answered with a history message', () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   socket.message({
     protocolVersion: PROTOCOL_VERSION,
@@ -686,7 +686,7 @@ test('history-request projects the active branch, not the whole file', () => {
     { type: 'message', id: 'b1', message: { role: 'user', content: 'kept' } },
     { type: 'message', id: 'b2', message: { role: 'assistant', content: 'reply' } },
   ]);
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   socket.message({
     protocolVersion: PROTOCOL_VERSION,
@@ -702,7 +702,7 @@ test('history-request projects the active branch, not the whole file', () => {
 test('a throwing getEntries on the history-request path does not escape and writes nothing', () => {
   const harness = makeHarness();
   const ctx = harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   ctx.sessionManager.getEntries = () => {
     throw new Error('entries exploded');
@@ -720,7 +720,7 @@ test('a throwing getEntries on the history-request path does not escape and writ
 test('setSessionName sets the session name', async () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'setSessionName', { name: 'Phone chat' });
   assert.deepEqual(harness.pi.sessionNames, ['Phone chat']);
@@ -738,7 +738,7 @@ test("listCommands answers with pi's commands, dropping source and absent descri
     { name: 'implement-vetted', source: 'prompt', sourceInfo: { path: '/prompts/implement-vetted.md' } },
   ];
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'listCommands');
   // `source`/`sourceInfo` must not travel, and an absent description must not
@@ -759,7 +759,7 @@ test('a listCommands reply carries no queued flag', async () => {
   const harness = makeHarness();
   harness.pi.commands = [{ name: 'review' }];
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'listCommands');
   // `sendCommandResult` is a shared path; only the prompt branch may set the
@@ -780,7 +780,7 @@ test('listCommands reports failure when pi has no getCommands method', async () 
   // returns `undefined` takes the `raw === undefined` guard instead.
   (harness.pi as { getCommands?: unknown }).getCommands = undefined;
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'listCommands');
   const result = parsed(socket).at(-1) as {
@@ -801,7 +801,7 @@ test('listCommands reports failure when getCommands returns undefined', async ()
   const harness = makeHarness();
   harness.pi.commandsAvailable = false;
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'listCommands');
   const result = parsed(socket).at(-1) as {
@@ -829,7 +829,7 @@ test('listCommands preserves duplicate names in pi order', async () => {
     'oops',
   ] as unknown as typeof harness.pi.commands;
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'listCommands');
   const result = parsed(socket).at(-1) as {
@@ -850,7 +850,7 @@ test('listModels returns the available models projected to provider, id and name
     { provider: 'anthropic', id: 'claude-sonnet-4', name: 'Claude Sonnet 4' },
     { provider: 'openai', id: 'gpt-5', name: 'GPT-5' },
   ]);
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'listModels');
   const result = parsed(socket).at(-1) as { ok: boolean; models?: unknown };
@@ -873,7 +873,7 @@ test('listModels drops an entry missing provider, id or name', async () => {
     42,
     'oops',
   ]);
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'listModels');
   const result = parsed(socket).at(-1) as { models?: unknown };
@@ -896,7 +896,7 @@ test('listModels never lets a credential or extra model field reach the wire', a
       cost: { input: 1 },
     },
   ]);
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'listModels');
   const result = parsed(socket).at(-1) as { models?: unknown };
@@ -908,7 +908,7 @@ test('an older pi without a registry is refused, not reported as empty', async (
   const harness = makeHarness();
   const ctx = harness.start();
   ctx.removeRegistry();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'listModels');
   const result = parsed(socket).at(-1) as { ok: boolean; error?: string; models?: unknown };
@@ -925,7 +925,7 @@ test('a registry whose getAvailable is not an array is refused', async () => {
     getAvailable: () => 'nope' as unknown as unknown[],
     find: () => undefined,
   };
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'listModels');
   const result = parsed(socket).at(-1) as { ok: boolean; error?: string };
@@ -942,7 +942,7 @@ test('a registry whose getAvailable throws reports the thrown message', async ()
     },
     find: () => undefined,
   };
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'listModels');
   const result = parsed(socket).at(-1) as { ok: boolean; error?: string };

@@ -93,14 +93,14 @@ function fetchPairing(socketPath: string, timeoutMs: number): Promise<PairingRes
       try {
         resolve(JSON.parse(data) as PairingResponse);
       } catch (error) {
-        reject(error as Error);
+        reject(error instanceof Error ? error : new Error(String(error)));
       }
     };
     socket.on('connect', () => {
       socket.write(`${JSON.stringify({ v: CONTROL_VERSION, type: 'pair' })}\n`);
     });
     socket.on('data', (chunk) => {
-      data += chunk;
+      data += chunk.toString('utf8');
     });
     socket.on('end', done);
     socket.on('close', done);

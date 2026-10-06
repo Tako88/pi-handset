@@ -4,3 +4,10 @@ analyzer:
   exclude:
     - build/**
     - android/**
+  language:
+    # The client decodes untyped JSON maps, so an implicit `dynamic` cast is the
+    # one mistake the lints cannot see. These three cost six findings when
+    # introduced (2026-10-06); `strict-casts` is the one that matters.
+    strict-casts: true
+    strict-inference: true
+    strict-raw-types: true

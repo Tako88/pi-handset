@@ -63,7 +63,7 @@ test('a real pi with the bridge registers and a hub prompt streams from the faux
   assert.equal(byRole('toolResult').length, 0, 'a plain reply runs no tools');
   assert.equal(collected.messages.length, 2, 'no role other than user and assistant may be relayed here');
 
-  const assistant = byRole('assistant')[0]!.payload.message as Record<string, unknown>;
+  const assistant = byRole('assistant')[0].payload.message as Record<string, unknown>;
   assert.match(
     JSON.stringify(assistant),
     new RegExp(FAUX_TEXT),
@@ -110,7 +110,7 @@ test('a thinking recipe streams the reasoning before the assistant message', asy
   // The first frame of the phase carries no text: it exists to label
   // "Thinking…" before the first chunk lands. Later frames carry the chunks.
   assert.equal(
-    collected.phases[0]!.payload.text,
+    collected.phases[0].payload.text,
     undefined,
     'the liveness frame must be content-free',
   );
@@ -143,7 +143,7 @@ test('a thinking recipe streams the reasoning before the assistant message', asy
   // The committed message stays authoritative, and is what the transcript
   // renders the durable thinking block from.
   assert.match(
-    JSON.stringify(assistantMessages[0]!.payload.message),
+    JSON.stringify(assistantMessages[0].payload.message),
     /FAUX_REASONING/,
     'the committed assistant message must carry the thinking body',
   );
@@ -189,10 +189,10 @@ test('a tools recipe relays a toolResult whose toolCallId matches the call', asy
 
   // The call is in the first assistant message; the result names the same id
   // and carries the tool's output.
-  const callMessage = JSON.stringify(byRole('assistant')[0]!.payload.message);
+  const callMessage = JSON.stringify(byRole('assistant')[0].payload.message);
   assert.match(callMessage, /"type":"toolCall"/);
   assert.match(callMessage, /"id":"call-1"/);
-  const result = byRole('toolResult')[0]!.payload.message as Record<string, unknown>;
+  const result = byRole('toolResult')[0].payload.message as Record<string, unknown>;
   assert.equal(result.toolCallId, 'call-1', 'the result must pair with the call by id');
   assert.equal(result.toolName, 'read');
   assert.equal(result.isError, false);
@@ -202,7 +202,7 @@ test('a tools recipe relays a toolResult whose toolCallId matches the call', asy
     'the result content must carry the tool output',
   );
   assert.match(
-    JSON.stringify(byRole('assistant')[1]!.payload.message),
+    JSON.stringify(byRole('assistant')[1].payload.message),
     new RegExp(FAUX_TEXT),
     'the final assistant message must carry the provider text',
   );

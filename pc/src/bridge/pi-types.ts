@@ -15,7 +15,14 @@ import type { BridgeEndpoint } from '../../extensions/pi-droid-bridge.ts';
 // The slice of the pi extension API the bridge uses
 // ---------------------------------------------------------------------------
 
-/** A registered pi event handler. Pi passes `(event, ctx)`. */
+/**
+ * A registered pi event handler. Pi passes `(event, ctx)`.
+ *
+ * This is the boundary where pi's untyped event union enters the bridge, on
+ * purpose: each handler narrows the event itself, and `unknown` here would
+ * force that narrowing onto every call site.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type BridgeHandler = (event: any, ctx: BridgeCtx) => unknown;
 
 /** The read-only session manager methods the bridge reads identity from. */

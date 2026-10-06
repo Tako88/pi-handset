@@ -26,7 +26,7 @@ test('register carries the last user prompt as the label', () => {
     { type: 'message', message: { role: 'user', content: 'first' } },
     { type: 'message', message: { role: 'user', content: 'last prompt' } },
   ];
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const register = parsed(socket).find((m) => m.type === 'register')!;
   assert.equal(register.name, 'last prompt');
@@ -39,7 +39,7 @@ test('an explicit session name beats the last user prompt', () => {
     { type: 'message', message: { role: 'user', content: 'last prompt' } },
   ];
   harness.pi.setSessionName('explicit');
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const register = parsed(socket).find((m) => m.type === 'register')!;
   assert.equal(register.name, 'explicit');
@@ -51,7 +51,7 @@ test('a label is sanitized', () => {
   ctx.sessionManager.getEntries = () => [
     { type: 'message', message: { role: 'user', content: '  hello\n\n\tworld  ' } },
   ];
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const register = parsed(socket).find((m) => m.type === 'register')!;
   assert.equal(register.name, 'hello world');
@@ -63,11 +63,11 @@ test('a label truncates over code points, never splitting an emoji', () => {
   ctx.sessionManager.getEntries = () => [
     { type: 'message', message: { role: 'user', content: '😀'.repeat(81) } },
   ];
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const register = parsed(socket).find((m) => m.type === 'register')!;
   assert.equal(register.name, '😀'.repeat(80));
-  assert.equal(Array.from(register.name as string).length, 80);
+  assert.equal(Array.from(register.name).length, 80);
 });
 
 test('an image-only user message puts no name on the wire', () => {
@@ -79,7 +79,7 @@ test('an image-only user message puts no name on the wire', () => {
       message: { role: 'user', content: [{ type: 'image', data: 'x', mimeType: 'image/png' }] },
     },
   ];
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const register = parsed(socket).find((m) => m.type === 'register')!;
   assert.equal('name' in register, false);
@@ -92,7 +92,7 @@ test('an empty session name falls back to the last prompt, never name: ""', () =
     { type: 'message', message: { role: 'user', content: 'last prompt' } },
   ];
   harness.pi.setSessionName('');
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const register = parsed(socket).find((m) => m.type === 'register')!;
   assert.equal(register.name, 'last prompt');
@@ -113,7 +113,7 @@ test('a mixed text+image prompt contributes only its text', () => {
       },
     },
   ];
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const register = parsed(socket).find((m) => m.type === 'register')!;
   assert.equal(register.name, 'look at this');
@@ -125,7 +125,7 @@ test('a throwing getSessionName still sends the register frame without a name', 
   harness.pi.getSessionName = () => {
     throw new Error('boom');
   };
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const register = parsed(socket).find((m) => m.type === 'register')!;
   assert.ok(register);
@@ -135,7 +135,7 @@ test('a throwing getSessionName still sends the register frame without a name', 
 test('a new user prompt re-registers with the new label', () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   assert.equal(parsed(socket).filter((m) => m.type === 'register').length, 1);
   harness.pi.handlers.get('message_end')!(
@@ -144,13 +144,13 @@ test('a new user prompt re-registers with the new label', () => {
   );
   const registers = parsed(socket).filter((m) => m.type === 'register');
   assert.equal(registers.length, 2);
-  assert.equal(registers[1]!.name, 'new topic');
+  assert.equal(registers[1].name, 'new topic');
 });
 
 test('a repeated prompt with the same text does not re-register', () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const handler = harness.pi.handlers.get('message_end')!;
   const event = { type: 'message_end', message: { role: 'user', content: 'same' } };
@@ -162,7 +162,7 @@ test('a repeated prompt with the same text does not re-register', () => {
 test('an image-only prompt does not re-register', () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   harness.pi.handlers.get('message_end')!(
     {
@@ -177,7 +177,7 @@ test('an image-only prompt does not re-register', () => {
 test('a non-user message_end does not re-register', () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   harness.pi.handlers.get('message_end')!(
     { type: 'message_end', message: { role: 'assistant', content: 'reply' } },
@@ -189,12 +189,12 @@ test('a non-user message_end does not re-register', () => {
 test('setSessionName re-registers with the new name', async () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'setSessionName', { name: 'Phone chat' });
   const registers = parsed(socket).filter((m) => m.type === 'register');
   assert.equal(registers.length, 2);
-  assert.equal(registers[1]!.name, 'Phone chat');
+  assert.equal(registers[1].name, 'Phone chat');
 });
 
 test('a throwing getEntries during register still sends the register frame', () => {
@@ -204,7 +204,7 @@ test('a throwing getEntries during register still sends the register frame', () 
   ctx.sessionManager.getEntries = () => {
     throw new Error('entries exploded');
   };
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const register = parsed(socket).find((m) => m.type === 'register')!;
   assert.ok(register);
@@ -214,7 +214,7 @@ test('a throwing getEntries during register still sends the register frame', () 
 test('a session_info_changed event from a TUI rename re-registers', () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   harness.pi.setSessionName('tui rename');
   harness.pi.handlers.get('session_info_changed')!(
@@ -223,7 +223,7 @@ test('a session_info_changed event from a TUI rename re-registers', () => {
   );
   const registers = parsed(socket).filter((m) => m.type === 'register');
   assert.equal(registers.length, 2);
-  assert.equal(registers[1]!.name, 'tui rename');
+  assert.equal(registers[1].name, 'tui rename');
 });
 
 // ---------------------------------------------------------------------------
@@ -250,7 +250,7 @@ test('settleText keeps text at the cap and flags one code point over', () => {
 test('agent_settled emits the assistant text cached from message_end', () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   harness.pi.handlers.get('message_end')!(
     { type: 'message_end', message: { role: 'assistant', content: 'the answer' } },
@@ -263,7 +263,7 @@ test('agent_settled emits the assistant text cached from message_end', () => {
     emitted.map((m) => (m.payload as { kind?: string }).kind),
     ['agent', 'usage', 'settled'],
   );
-  assert.deepEqual(emitted[2]!.payload, {
+  assert.deepEqual(emitted[2].payload, {
     kind: 'settled',
     text: 'the answer',
     truncated: false,
@@ -273,7 +273,7 @@ test('agent_settled emits the assistant text cached from message_end', () => {
 test('an oversized assistant message_end still yields its text, flagged truncated', () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const huge = { role: 'assistant', content: 'x'.repeat(MAX_RELAY_BYTES + 100) };
   harness.pi.handlers.get('message_end')!(
@@ -296,7 +296,7 @@ test('an oversized assistant message_end still yields its text, flagged truncate
 test('a user message_end does not clobber the cached assistant text', () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const handler = harness.pi.handlers.get('message_end')!;
   handler(
@@ -316,7 +316,7 @@ test('a user message_end does not clobber the cached assistant text', () => {
 test('a toolResult message_end does not clobber the cached assistant text', () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const handler = harness.pi.handlers.get('message_end')!;
   handler(
@@ -339,7 +339,7 @@ test('a toolResult message_end does not clobber the cached assistant text', () =
 test("a second turn's settle carries only the second turn's text", () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const handler = harness.pi.handlers.get('message_end')!;
   handler(
@@ -364,7 +364,7 @@ test("a second turn's settle carries only the second turn's text", () => {
 test('a settle with no assistant message carries empty text', () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const before = socket.sent.length;
   harness.pi.handlers.get('agent_settled')!({}, harness.startCtx);

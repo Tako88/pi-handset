@@ -123,6 +123,8 @@ test('a throwing onHandlerError sink cannot re-introduce the crash', async () =>
 
 test('a spawn rejection that is not an Error still maps to a string', async () => {
   const spawner = makeFakeSpawner();
+  // The rejection is deliberately not an Error: that is the case under test.
+  // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
   spawner.spawnImpl = () => Promise.reject('boom');
   const hub = await startHub({ spawner });
   const viewer = await connect(hub.viewerPort);

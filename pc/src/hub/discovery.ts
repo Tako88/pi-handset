@@ -103,7 +103,7 @@ export function childrenPath(runtimeDir: string): string {
  */
 export function isProcessAlive(
   pid: number,
-  kill: (pid: number, signal?: number) => unknown = process.kill,
+  kill: (pid: number, signal?: number) => unknown = (pid, signal) => process.kill(pid, signal),
 ): boolean {
   try {
     kill(pid, 0);

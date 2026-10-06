@@ -85,16 +85,27 @@ line count.
   `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX: … not supported in strip-only mode`, so without
   the flag it would pass `npm test` and explode on a machine running plain `node`.
   `npm run typecheck` catches it statically. Verified by injection, 2026-09-30.
-- **`npm test` does not run `typecheck`.** They are separate gates; run both.
+- **`npm test` runs neither `lint` nor `typecheck`.** They are separate gates; run
+  all three.
+- **`npm run lint` is the type-aware half of the static gate.** ESLint with
+  `typescript-eslint`'s `recommendedTypeChecked`, plus `switch-exhaustiveness-check`,
+  `no-deprecated` and `consistent-type-imports` — rules that need the compiler's types,
+  which is exactly why `tsc` cannot replace them. The style half of the strict preset
+  (`no-non-null-assertion`, `no-unnecessary-condition`, `no-confusing-void-expression`,
+  `return-await`) is deliberately off: measured 2026-10-06 it contributes 566 of the
+  1705 findings the full preset raises, and every one is a preference this codebase has
+  settled, not a defect. An `// eslint-disable-next-line` carries its reason on the same
+  comment.
 
 ```
 cd pc
 npm test                        # whole suite (glob: src/**/*.test.ts, test/**/*.test.ts)
 node --test src/foo.test.ts     # one file
+npm run lint                    # eslint, type-aware
 npm run typecheck               # tsc --noEmit
 ```
 
-Dev deps: `typescript`, `@types/node`, `@types/ws`, `@types/qrcode-terminal`.
+Dev deps: `typescript`, `typescript-eslint`, `eslint`, and four `@types/*` packages.
 Runtime deps: `ws`, `qrcode-terminal`.
 
 ## Tooling — `app/` (Flutter + Dart)
@@ -107,6 +118,10 @@ Runtime deps: `ws`, `qrcode-terminal`.
 - Android targets come from Flutter: compileSdk/targetSdk **36**, minSdk **24**.
 - **Pure logic must not import Flutter**, so it tests without a widget binding and
   stays fast.
+- **`analysis_options.yaml` turns on the three strict language modes** on top of
+  `flutter_lints`: `strict-casts`, `strict-inference` and `strict-raw-types`. They cost
+  six findings when introduced, and `strict-casts` is the one that matters here — the
+  client decodes untyped JSON maps.
 
 ```
 cd app
@@ -159,9 +174,10 @@ font-dependent by construction. A golden failure means "look at the diff".
 
 - New behavior was tested first and passes.
 - Both suites green: `cd pc && npm test`, `cd app && flutter test`.
-- Both static gates clean: `cd pc && npm run typecheck`, `cd app && flutter analyze`.
+- Both static gates clean: `cd pc && npm run lint && npm run typecheck`,
+  `cd app && flutter analyze`.
 - No skipped or `.only` tests left behind.
-- `.github/workflows/ci.yml` is the single definition of the four gates; it runs them
+- `.github/workflows/ci.yml` is the single definition of the five gates; it runs them
   on `develop`.
 - If a boundary genuinely cannot be tested yet, say so explicitly rather than
   silently skipping it.

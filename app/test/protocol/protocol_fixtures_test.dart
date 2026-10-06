@@ -332,7 +332,7 @@ void main() {
     final named =
         (jsonDecode(File('../protocol/fixtures/invalid/cases.json').readAsStringSync())
                 as Map<String, dynamic>)['cases']
-            .map((entry) => (entry as Map<String, dynamic>)['file'] as String)
+            .map((Object? entry) => (entry as Map<String, dynamic>)['file'] as String)
             .toList()
           ..sort();
     expect(

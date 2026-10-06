@@ -30,6 +30,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, test } from 'node:test';
 
+import { frameText } from '../support/hub-harness.ts';
+
 import { WebSocket } from 'ws';
 
 import { loadOrCreateToken } from '../../src/hub/auth.ts';
@@ -138,6 +140,9 @@ function waitExit(child: ChildProcess): Promise<void> {
       return;
     }
     const command = child.spawnargs.join(' ');
+    // `timer` is assigned only after `settle` closes over it, so `const` would hit
+    // the temporal dead zone if the child exited before the assignment returned.
+    // eslint-disable-next-line prefer-const
     let timer: ReturnType<typeof setTimeout>;
     const settle = (): void => {
       clearTimeout(timer);
@@ -188,10 +193,10 @@ function spawnPi(args: string[], extraEnv: Record<string, string> = {}): PiRun {
   let stdout = '';
   let stderr = '';
   let error: Error | null = null;
-  child.stdout!.on('data', (chunk) => {
+  child.stdout.on('data', (chunk) => {
     stdout += String(chunk);
   });
-  child.stderr!.on('data', (chunk) => {
+  child.stderr.on('data', (chunk) => {
     stderr += String(chunk);
   });
   child.on('error', (cause) => {
@@ -202,7 +207,7 @@ function spawnPi(args: string[], extraEnv: Record<string, string> = {}): PiRun {
     child,
     stdout: () => stdout,
     stderr: () => stderr,
-    send: (line) => child.stdin!.write(`${line}\n`),
+    send: (line) => child.stdin.write(`${line}\n`),
     spawnError: () => error,
   };
 }
@@ -314,7 +319,7 @@ function connectViewer(port: number, token: string): Promise<Viewer> {
   const ws = new WebSocket(`ws://127.0.0.1:${port}`);
   const queue = messageQueue();
   ws.on('message', (data) => {
-    queue.push(JSON.parse(String(data)) as Record<string, unknown>);
+    queue.push(JSON.parse(frameText(data)) as Record<string, unknown>);
   });
 
   return new Promise((resolve, reject) => {
@@ -649,28 +654,28 @@ test('history paging walks a long session back one page at a time and routes eac
   // Every page but the last must still have older entries behind it.
   for (let k = 1; k + 1 < pages.length; k++) {
     assert.equal(
-      pages[k]!.truncated,
+      pages[k].truncated,
       true,
       `sub-page ${k}: a non-final older page must report omitted older entries`,
     );
   }
 
   // ---- last page ----------------------------------------------------------
-  const last = pages[pages.length - 1]!;
+  const last = pages[pages.length - 1];
   assert.equal(last.older, true, 'sub-last: the final page is a genuinely older page');
   assert.ok(!('olderCursor' in last), 'sub-last: the final page must report no more');
   assert.equal(last.truncated, false, 'sub-last: the final page reached the beginning');
 
   // ---- contiguity / no duplicates ----------------------------------------
   for (let k = 0; k < pages.length; k++) {
-    const pageMarkers = markers(pages[k]!);
+    const pageMarkers = markers(pages[k]);
     for (let i = 1; i < pageMarkers.length; i++) {
-      assert.equal(pageMarkers[i], pageMarkers[i - 1]! + 1, `sub-contiguity: page ${k} markers must ascend by exactly 1`);
+      assert.equal(pageMarkers[i], pageMarkers[i - 1] + 1, `sub-contiguity: page ${k} markers must ascend by exactly 1`);
     }
   }
   for (let k = 0; k + 1 < pages.length; k++) {
-    const older = markers(pages[k + 1]!);
-    const newer = markers(pages[k]!);
+    const older = markers(pages[k + 1]);
+    const newer = markers(pages[k]);
     assert.equal(
       Math.max(...older),
       Math.min(...newer) - 1,

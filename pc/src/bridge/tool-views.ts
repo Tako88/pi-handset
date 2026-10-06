@@ -82,7 +82,7 @@ function parseDiff(diff: string): DiffLine[] {
         : 'ctx';
     const rest = raw.slice(1);
     const match = /^\s*\d+ ?(.*)$/.exec(rest);
-    lines.push({ kind, text: match !== null ? match[1]! : rest.trim() });
+    lines.push({ kind, text: match !== null ? match[1] : rest.trim() });
   }
   return lines;
 }
@@ -157,12 +157,12 @@ function grepView(input: ToolViewInput): ToolView {
     if (line.length === 0 || /^\[.*\]$/.test(line)) continue;
     const match = /^(.*?):(\d+): ?(.*)$/.exec(line);
     if (match !== null) {
-      matches.push({ file: match[1]!, line: Number(match[2]), text: match[3]! });
+      matches.push({ file: match[1], line: Number(match[2]), text: match[3] });
       continue;
     }
     const context = /^(.*?)-(\d+)- ?(.*)$/.exec(line);
     if (context !== null) {
-      matches.push({ file: context[1]!, line: Number(context[2]), text: context[3]! });
+      matches.push({ file: context[1], line: Number(context[2]), text: context[3] });
     }
   }
   return { type: 'matches', matches };
@@ -344,7 +344,10 @@ function trimToLineCap(view: ToolView): boolean {
         return true;
       }
       return false;
-    default:
+    // A generic view carries no bulk lines. Listed rather than left to a
+    // `default`, so a new view type is a build failure here instead of one
+    // that silently stops being trimmed.
+    case 'generic':
       return false;
   }
 }
@@ -376,7 +379,9 @@ function dropHalfBulk(view: ToolView): boolean {
       if (view.rows.length === 0) return false;
       view.rows.splice(Math.floor(view.rows.length / 2));
       return true;
-    default:
+    // Listed, not left to a `default`: a new view type must fail the build here
+    // rather than silently stop being halved.
+    case 'generic':
       return false;
   }
 }

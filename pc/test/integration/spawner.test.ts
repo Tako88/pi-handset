@@ -565,17 +565,20 @@ test('unsubscribing stops notifications', async () => {
 // recorded value could never match the reap-time value, so the guard would
 // silently spare every real orphan.
 
-/** The parsed children file at `path`, or null when it is missing/corrupt. */
-function readChildrenFile(path: string): {
+/** The shape the spawner writes to the pidfile. */
+interface ChildrenFileShape {
   version: number;
   tempRoot: string;
   bootId: string | null;
   children: ChildRecord[];
-} | null {
+}
+
+/** The parsed children file at `path`, or null when it is missing/corrupt. */
+function readChildrenFile(path: string): ChildrenFileShape | null {
   const raw = readText(path);
   if (raw === null) return null;
   try {
-    return JSON.parse(raw);
+    return JSON.parse(raw) as ChildrenFileShape;
   } catch {
     return null;
   }
@@ -608,7 +611,7 @@ async function spawnWithRecord(
     () => readChildrenFile(pidFile)?.children.length === 1,
     'the pidfile record',
   );
-  return { pid, record: readChildrenFile(pidFile)!.children[0]! };
+  return { pid, record: readChildrenFile(pidFile)!.children[0] };
 }
 
 /** Writes a tampered children file in a fresh scratch dir; returns its path. */
@@ -644,7 +647,7 @@ test('the spawner records a spawned child in the pidfile and removes it on exit'
   assert.equal(file.tempRoot, tempRoot);
   assert.equal(file.bootId, readBootId());
 
-  const record = file.children[0]!;
+  const record = file.children[0];
   assert.deepEqual(
     Object.keys(record).sort(),
     ['dir', 'pid', 'startTime'],
@@ -652,7 +655,7 @@ test('the spawner records a spawned child in the pidfile and removes it on exit'
   );
   assert.equal(record.pid, pid);
   assert.ok(record.dir !== null && record.dir.startsWith(tempRoot), 'the dir is under tempRoot');
-  assert.ok(basename(record.dir!).startsWith('pi-droid-session-'));
+  assert.ok(basename(record.dir).startsWith('pi-droid-session-'));
   assert.ok(
     Number.isSafeInteger(record.startTime) && record.startTime! > 0,
     `startTime must be a finite positive integer, got ${String(record.startTime)}`,
@@ -697,11 +700,11 @@ test("readProcStat reads a real child's start time and it is stable", async () =
   const first = readProcStat(pid);
   assert.ok(first !== null, 'a live child must have a readable stat');
   assert.ok(
-    Number.isSafeInteger(first!.startTime) && first!.startTime > 0,
-    `a real start time is a finite positive integer, got ${String(first!.startTime)}`,
+    Number.isSafeInteger(first.startTime) && first.startTime > 0,
+    `a real start time is a finite positive integer, got ${String(first.startTime)}`,
   );
   assert.deepEqual(readProcStat(pid), first, 'two reads of a live process must agree');
-  assert.equal(first!.startTime, record.startTime, 'the spawner recorded the same start time');
+  assert.equal(first.startTime, record.startTime, 'the spawner recorded the same start time');
 });
 
 test("readProcStat reports a real child's state and start time", async () => {
@@ -713,8 +716,8 @@ test("readProcStat reports a real child's state and start time", async () => {
   const { pid, record } = await spawnWithRecord(spawner, pidFile);
   const stat = readProcStat(pid);
   assert.ok(stat !== null);
-  assert.match(stat!.state, /^[RSDTtI]$/, `unexpected state ${stat!.state}`);
-  assert.equal(stat!.startTime, record.startTime);
+  assert.match(stat.state, /^[RSDTtI]$/, `unexpected state ${stat.state}`);
+  assert.equal(stat.startTime, record.startTime);
 });
 
 test('a subject that rewrites its own argv is still verified and reaped', async () => {
@@ -752,14 +755,14 @@ test('a subject that rewrites its own argv is still verified and reaped', async 
 
   const file = readChildrenFile(pidFile)!;
   assert.equal(
-    verifyChild(file.children[0]!, file.bootId, readBootId(), readProcStat(pid)),
+    verifyChild(file.children[0], file.bootId, readBootId(), readProcStat(pid)),
     true,
     'the fork-stable record must verify against a subject that mutated its argv',
   );
 
   assert.equal(reapOrphans(pidFile), 1, 'the guard must reach the reaper');
   await waitFor(() => !alive(pid), 'the reaped subject to die');
-  assert.equal(existsSync(file.children[0]!.dir!), false, 'its owned dir must be removed');
+  assert.equal(existsSync(file.children[0].dir!), false, 'its owned dir must be removed');
 });
 
 test('an unrelated live process is not killed when its start time differs', async () => {
@@ -871,13 +874,13 @@ test('a recorded tempRoot that differs from the current os.tmpdir() still reaps 
 test('parseProcStat treats a Z state as not alive', () => {
   const zombie = parseProcStat('4242 (pi) Z 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19');
   assert.ok(zombie !== null);
-  assert.equal(zombie!.state, 'Z');
-  assert.equal(zombie!.startTime, 19);
+  assert.equal(zombie.state, 'Z');
+  assert.equal(zombie.startTime, 19);
 
   const real = parseProcStat(readFileSync('/proc/self/stat', 'utf8'));
   assert.ok(real !== null);
-  assert.match(real!.state, /^[RSDTtI]$/);
-  assert.ok(Number.isSafeInteger(real!.startTime) && real!.startTime > 0);
+  assert.match(real.state, /^[RSDTtI]$/);
+  assert.ok(Number.isSafeInteger(real.startTime) && real.startTime > 0);
 });
 
 test('a corrupt pidfile is deleted and the reaper never throws', () => {

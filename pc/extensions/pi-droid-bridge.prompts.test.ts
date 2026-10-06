@@ -21,7 +21,7 @@ test('prompt asks pi to expand commands and templates instead of injecting text 
   // true, so this line cannot fail if the idle branch is absent.
   const ctx = harness.start();
   ctx.setIdle(true);
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'prompt', { text: '/implement-vetted' });
   // pi's extension API defaults `expandPromptTemplates` to false, which hands a
@@ -35,7 +35,7 @@ test('prompt asks pi to expand commands and templates instead of injecting text 
 test('steer injects the text with deliverAs steer', async () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'steer', { text: 'hi' });
   assert.deepEqual(harness.pi.userMessages, [
@@ -46,7 +46,7 @@ test('steer injects the text with deliverAs steer', async () => {
 test('followup injects the text with deliverAs followUp', async () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'followup', { text: 'hi' });
   assert.deepEqual(harness.pi.userMessages, [
@@ -58,7 +58,7 @@ test('a prompt while the agent is streaming is queued as a steer', async () => {
   const harness = makeHarness();
   const ctx = harness.start();
   ctx.setIdle(false);
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'prompt', { text: 'change direction' });
   // A plain `prompt` sent mid-turn is silently dropped by pi — the reply the
@@ -78,7 +78,7 @@ test('a prompt while the agent is streaming is queued as a steer', async () => {
 test('the prompt delivery mode is read per dispatch, not once at session start', async () => {
   const harness = makeHarness();
   const ctx = harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   ctx.setIdle(false);
   await sendCommand(harness.pi, socket, 'prompt', { text: 'a' });
@@ -94,7 +94,7 @@ test('the prompt delivery mode is read per dispatch, not once at session start',
 test('an explicit steer ignores the agent idle state', async () => {
   const harness = makeHarness();
   const ctx = harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   ctx.setIdle(true);
   await sendCommand(harness.pi, socket, 'steer', { text: 's1' });
@@ -110,7 +110,7 @@ test('an explicit steer ignores the agent idle state', async () => {
 test('an explicit followup ignores the agent idle state', async () => {
   const harness = makeHarness();
   const ctx = harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   ctx.setIdle(false);
   await sendCommand(harness.pi, socket, 'followup', { text: 'f1' });
@@ -125,7 +125,7 @@ test('an explicit followup ignores the agent idle state', async () => {
 test('a prompt with images maps them to pi content parts after the text', async () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'prompt', {
     text: 'look',
@@ -147,7 +147,7 @@ test('a prompt with images maps them to pi content parts after the text', async 
 test('a non-array images value is refused as malformed images', async () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'prompt', { text: 'x', images: 'nope' });
   // A malformed frame must fail loudly rather than send a text-only prompt the
@@ -165,7 +165,7 @@ test('a non-array images value is refused as malformed images', async () => {
 test('an image part with a missing mimeType is refused as malformed images', async () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'prompt', { text: 'x', images: [{ data: 'AA' }] });
   assert.deepEqual(parsed(socket).at(-1), {
@@ -181,7 +181,7 @@ test('an image part with a missing mimeType is refused as malformed images', asy
 test('an image part with an empty mimeType is refused as malformed images', async () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'prompt', {
     text: 'x',
@@ -200,7 +200,7 @@ test('an image part with an empty mimeType is refused as malformed images', asyn
 test('an empty images array is treated as absent', async () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'prompt', { text: 'x', images: [] });
   // The app may send an empty list; it must not make the content an array with
@@ -213,7 +213,7 @@ test('an empty images array is treated as absent', async () => {
 test('images without text are refused as missing text before parsing images', async () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'prompt', {
     images: [{ data: 'AA', mimeType: 'image/jpeg' }],
@@ -234,7 +234,7 @@ test('an isIdle() that throws fails the command loudly instead of crashing', asy
   const harness = makeHarness();
   const ctx = harness.start();
   ctx.setIdleError(new Error('runner is not active'));
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'prompt', { text: 'x' });
   // A pi lacking `isIdle` throws here. The failure must surface as a loud
@@ -253,7 +253,7 @@ test('an idle prompt reply carries no queued flag', async () => {
   const harness = makeHarness();
   const ctx = harness.start();
   ctx.setIdle(true);
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'prompt', { text: 'now' });
   // Only a steer chose to queue. An idle prompt is dispatched exactly as
@@ -270,7 +270,7 @@ test('an explicit steer reply carries no queued flag', async () => {
   const harness = makeHarness();
   const ctx = harness.start();
   ctx.setIdle(false);
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'steer', { text: 's' });
   // `steer` names its mode; it is not the bridge deciding to queue a plain
@@ -287,7 +287,7 @@ test('an explicit followup reply carries no queued flag', async () => {
   const harness = makeHarness();
   const ctx = harness.start();
   ctx.setIdle(false);
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'followup', { text: 'f' });
   // `followup` names its mode too — it forces `followUp` regardless of idle,
@@ -304,7 +304,7 @@ test('a refused prompt reply carries no queued flag', async () => {
   const harness = makeHarness();
   const ctx = harness.start();
   ctx.setIdle(false);
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'prompt', {});
   // A refusal is not a queue: `ok:false` must stand alone, with no queued hint

@@ -112,7 +112,7 @@ void main() {
     final fresh = FakeHubSocket();
     dials[1].complete(fresh);
     await pumpEventQueue();
-    fresh.receive({'protocolVersion': 1, 'type': 'sessions', 'sessions': []});
+    fresh.receive({'protocolVersion': 1, 'type': 'sessions', 'sessions': <Object?>[]});
     await pumpEventQueue();
     expect(client.state.status, HubConnectionStatus.connected);
 

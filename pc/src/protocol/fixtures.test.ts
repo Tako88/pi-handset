@@ -48,7 +48,7 @@ import {
   decode,
   encode,
 } from './protocol.ts';
-import type { DecodeResult, EventMessage } from './protocol.ts';
+import type { DecodeResult } from './protocol.ts';
 
 const validDir = fileURLToPath(new URL('../../../protocol/fixtures/valid/', import.meta.url));
 const invalidDir = fileURLToPath(new URL('../../../protocol/fixtures/invalid/', import.meta.url));
@@ -219,7 +219,7 @@ test('every event payload kind has a valid fixture', () => {
   for (const fixture of validFixtures()) {
     const result = decodeFixture(fixture);
     if (result.ok && result.value.type === 'event') {
-      covered.add((result.value as EventMessage).payload.kind);
+      covered.add((result.value).payload.kind);
     }
   }
   for (const kind of EVENT_PAYLOAD_KINDS) {

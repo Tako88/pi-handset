@@ -84,7 +84,7 @@ void main() {
     factory.last.receive({
       'protocolVersion': 1,
       'type': 'sessions',
-      'sessions': [],
+      'sessions': <Object?>[],
     });
     await pumpEventQueue();
 

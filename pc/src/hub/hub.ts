@@ -58,7 +58,7 @@ import {
 } from './folders.ts';
 import type { TicketStore } from './pairing.ts';
 import type { Spawner } from './spawner.ts';
-import type { Connection, Session, State } from './hub-state.ts';
+import type { Connection, State } from './hub-state.ts';
 import { ownedSession } from './hub-state.ts';
 import { broadcastAgentSettled, broadcastSessions, closeWith, pushSessions, sendToViewer } from './hub-outbound.ts';
 export { CLOSE_CAPABILITY, CLOSE_INTERNAL, CLOSE_PROTOCOL, CLOSE_RATE_LIMITED };
@@ -230,9 +230,22 @@ function authenticate(connection: Connection, text: string, state: State): void 
   pushSessions(state, connection);
 }
 
+/**
+ * Decodes a frame as text. `RawData` is `Buffer | ArrayBuffer | Buffer[]`, and
+ * all three need saying: `data.toString()` on an `ArrayBuffer` is
+ * `Object.prototype.toString` ("[object ArrayBuffer]"), and on a `Buffer[]` it
+ * joins the fragments with commas — both would mis-parse the JSON.
+ */
+function frameText(data: RawData): string {
+  if (typeof data === 'string') return data;
+  if (Buffer.isBuffer(data)) return data.toString('utf8');
+  if (Array.isArray(data)) return Buffer.concat(data).toString('utf8');
+  return Buffer.from(data).toString('utf8');
+}
+
 function handleMessage(state: State, connection: Connection, data: RawData): void {
   if (connection.closing) return;
-  const text = typeof data === 'string' ? data : data.toString('utf8');
+  const text = frameText(data);
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -293,7 +306,7 @@ function handleRegister(
   const spawner = state.config.spawner;
   const owned = pid !== undefined && spawner !== undefined && spawner.owns(pid);
   const origin: SessionOrigin = owned ? 'app' : 'pc';
-  if (owned && pid !== undefined) spawner!.confirm(pid);
+  if (owned && pid !== undefined) spawner.confirm(pid);
   // The child that was pending has now registered; forget its placeholder. A
   // re-register that changes nothing else must still republish, or the
   // placeholder row would stay on screen forever.

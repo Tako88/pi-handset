@@ -80,7 +80,7 @@ export function createTicketStore(deps: TicketStoreDeps = {}) {
       }
       // 256 is an exact multiple of 32, so masking a random byte is uniform.
       for (let i = 0; i < TICKET_LENGTH; i++) {
-        value += TICKET_ALPHABET[bytes[i]! & 31];
+        value += TICKET_ALPHABET[bytes[i] & 31];
       }
       active = { value, expiresAt: now() + TICKET_TTL_MS, failures: 0, burned: false };
       return `${value.slice(0, 4)}-${value.slice(4)}`;

@@ -309,7 +309,7 @@ export function readTrustStore(trustPath: string): Record<string, boolean | null
     throw new TrustStoreError(`Invalid trust store ${trustPath}: expected an object`);
   }
   const data: Record<string, boolean | null> = {};
-  for (const [key, value] of Object.entries(parsed)) {
+  for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
     if (value !== true && value !== false && value !== null) {
       throw new TrustStoreError(
         `Invalid trust store ${trustPath}: value for ${key} must be true, false, or null`,

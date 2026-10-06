@@ -194,8 +194,12 @@ test('one ticket redeemed twice yields exactly one success', async () => {
   // synchronous here, so this proves single-use, NOT interleaving.
   const { store } = setup();
   const ticket = store.issue();
+  // `redeem` is synchronous, so this iterable is not actually promises; the
+  // shape is deliberate and is what a future async redemption would need.
   const results: RedeemResult[] = await Promise.all([
+    // eslint-disable-next-line @typescript-eslint/await-thenable
     store.redeem(ticket),
+    // eslint-disable-next-line @typescript-eslint/await-thenable
     store.redeem(ticket),
   ]);
   assert.equal(results.filter((result) => result.ok).length, 1);

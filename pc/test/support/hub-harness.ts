@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { WebSocket } from 'ws';
+import type { RawData } from 'ws';
 
 // Deliberately `.ts`, and deliberately written before `hub.ts` exists: the red
 // run must fail with an unresolved import, not a loader error.
@@ -214,7 +215,7 @@ export function barrier(client: Client): Promise<void> {
 export function recordFrames(client: Client): Array<Record<string, unknown>> {
   const frames: Array<Record<string, unknown>> = [];
   client.ws.on('message', (data) =>
-    frames.push(JSON.parse(String(data)) as Record<string, unknown>),
+    frames.push(JSON.parse(frameText(data)) as Record<string, unknown>),
   );
   return frames;
 }
@@ -236,10 +237,23 @@ export function closed(
       },
       (error: unknown) => {
         clearTimeout(timer);
-        reject(error);
+        reject(error instanceof Error ? error : new Error(String(error)));
       },
     );
   });
+}
+
+/**
+ * Decodes a websocket frame as text. `RawData` is `Buffer | ArrayBuffer |
+ * Buffer[]`, and `String(data)` on the latter two is `Object.prototype.toString`
+ * ("[object ArrayBuffer]") rather than the payload. `ws` hands a server-side
+ * listener a `Buffer`, so this only ever takes the first branch in practice —
+ * which is exactly why it needs saying.
+ */
+export function frameText(data: RawData): string {
+  if (Buffer.isBuffer(data)) return data.toString('utf8');
+  if (Array.isArray(data)) return Buffer.concat(data).toString('utf8');
+  return Buffer.from(data).toString('utf8');
 }
 
 export function connect(port: number): Promise<Client> {
@@ -248,7 +262,7 @@ export function connect(port: number): Promise<Client> {
   const sessions = messageQueue();
 
   ws.on('message', (data) => {
-    const message = JSON.parse(String(data)) as Record<string, unknown>;
+    const message = JSON.parse(frameText(data)) as Record<string, unknown>;
     // `sessions` is unsolicited registry traffic. Keeping it out of the reply
     // queue lets a test read either stream without interleaving noise; the
     // sessions-specific tests read it explicitly via `nextSessions`.

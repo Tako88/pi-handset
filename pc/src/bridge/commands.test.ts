@@ -45,7 +45,7 @@ test('every allowlisted command is actually dispatched', async () => {
   for (const name of BRIDGE_COMMAND_ALLOWLIST) {
     const harness = makeHarness();
     harness.start();
-    const socket = harness.sockets[0]!;
+    const socket = harness.sockets[0];
     socket.open();
     // Deliberately empty args: every real case answers with its own specific
     // complaint (`missing text`, `missing model`, …) and only a missing case
@@ -73,7 +73,7 @@ test('every allowlisted command is actually dispatched', async () => {
 test('exec is refused, not ignored', async () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'exec', { command: 'rm', args: ['-rf', '/'] });
   const result = parsed(socket).at(-1) as { type: string; ok: boolean };
@@ -84,7 +84,7 @@ test('exec is refused, not ignored', async () => {
 test('shutdown is refused without shutting down', async () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'shutdown');
   assert.equal((parsed(socket).at(-1) as { ok: boolean }).ok, false);
@@ -93,7 +93,7 @@ test('shutdown is refused without shutting down', async () => {
 test('setActiveTools is refused', async () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'setActiveTools', { tools: ['bash'] });
   assert.equal((parsed(socket).at(-1) as { ok: boolean }).ok, false);
@@ -102,7 +102,7 @@ test('setActiveTools is refused', async () => {
 test('an unknown command is refused', async () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'definitelyNotACommand');
   assert.equal((parsed(socket).at(-1) as { ok: boolean }).ok, false);
@@ -111,7 +111,7 @@ test('an unknown command is refused', async () => {
 test('a command arriving after the session turns inert is refused', async () => {
   const harness = makeHarness();
   const ctx = harness.start('tui');
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   // A future socket path must not be able to dispatch once the mode is inert;
   // the guard is re-checked at dispatch, not only at session_start.
@@ -124,7 +124,7 @@ test('a command arriving after the session turns inert is refused', async () => 
 test('a command whose sessionId is not this session is refused', async () => {
   const harness = makeHarness();
   const ctx = harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   socket.message({
     protocolVersion: PROTOCOL_VERSION,
@@ -141,7 +141,7 @@ test('a command whose sessionId is not this session is refused', async () => {
 test('refusal is not defeatable by casing or whitespace', async () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   for (const name of ['Prompt', 'PROMPT', ' prompt', 'prompt ', 'exec ', 'Shutdown', 'setactivetools']) {
     await sendCommand(harness.pi, socket, name, { text: 'hi' });
@@ -178,7 +178,7 @@ test("listCommands omits the bridge's own session command", async () => {
     { name: 'ping' },
   ];
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   await sendCommand(harness.pi, socket, 'listCommands');
   const result = parsed(socket).at(-1) as { commands: Array<{ name: string }> };

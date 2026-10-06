@@ -97,7 +97,7 @@ export interface HistoryProjection {
  * unwrapped: a `{type:'message', message}` wrapper keeps its wrapper, a bare
  * `{role, content}` message stays bare. Null when the entry is not a message or
  * the trim could not rescue it. */
-function trimHistoryEntry(entry: unknown, maxBytes: number): unknown | null {
+function trimHistoryEntry(entry: unknown, maxBytes: number): unknown {
   const message = entryMessage(entry);
   if (message === null) return null;
   const trimmed = trimOversizedImageParts(message, maxBytes);

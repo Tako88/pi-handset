@@ -111,7 +111,7 @@ test('writeDiscovery creates the pi-droid directory 0700 and the file 0600', () 
 test('writeDiscovery writes exactly agentPort, viewerPort, pid, startedAt and protocolVersion', () => {
   writeDiscovery(runtimeDir, record({ viewerPort: 9123 }));
 
-  const parsed = JSON.parse(readFileSync(supervisorPath(runtimeDir), 'utf8'));
+  const parsed = JSON.parse(readFileSync(supervisorPath(runtimeDir), 'utf8')) as Record<string, unknown>;
   assert.deepEqual(Object.keys(parsed).sort(), [
     'agentPort',
     'pid',
@@ -192,7 +192,7 @@ test('readDiscovery returns null on a protocolVersion mismatch', () => {
 test('writeDiscovery records agentPort, viewerPort, pid and protocol version by value', () => {
   writeDiscovery(runtimeDir, record({ agentPort: 51234, viewerPort: 9123, pid: 4242 }));
 
-  const parsed = JSON.parse(readFileSync(supervisorPath(runtimeDir), 'utf8'));
+  const parsed = JSON.parse(readFileSync(supervisorPath(runtimeDir), 'utf8')) as Record<string, unknown>;
   assert.equal(parsed.agentPort, 51234);
   assert.equal(parsed.viewerPort, 9123);
   assert.equal(parsed.pid, 4242);
@@ -294,7 +294,7 @@ test('removeDiscovery with a mismatched pid leaves a successor hub file intact',
 
   removeDiscovery(runtimeDir, 4242);
 
-  const raw = JSON.parse(readFileSync(supervisorPath(runtimeDir), 'utf8'));
+  const raw = JSON.parse(readFileSync(supervisorPath(runtimeDir), 'utf8')) as Record<string, unknown>;
   assert.equal(raw.pid, 9999, 'a taken-over hub must not delete the new file');
 });
 

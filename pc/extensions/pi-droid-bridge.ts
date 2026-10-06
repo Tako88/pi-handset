@@ -29,7 +29,7 @@
 
 import { loadOrCreateToken, resolveConfigDir } from '../src/hub/auth.ts';
 import { readDiscovery, resolveRuntimeDir } from '../src/hub/discovery.ts';
-import { HISTORY_MAX_BYTES, PROTOCOL_VERSION, asObject, asString } from '../src/protocol/protocol.ts';
+import { HISTORY_MAX_BYTES, PROTOCOL_VERSION, asString } from '../src/protocol/protocol.ts';
 import type {
   AgentState,
   AgentToHubMessage,
@@ -41,13 +41,13 @@ import type {
   SlashCommand,
   TreeNodeSummary,
 } from '../src/protocol/protocol.ts';
-import type { BridgeCommandCtx, BridgeCtx, BridgePi, BridgeSocket, SocketFactory, BridgeDeps } from '../src/bridge/pi-types.ts';
+import type { BridgeCommandCtx, BridgeCtx, BridgePi, SocketFactory, BridgeDeps } from '../src/bridge/pi-types.ts';
 import { annotateToolViews, projectHistory, entryAnchor, mintCursor, parseHistoryCursor, projectModel, readContextUsage } from '../src/bridge/history.ts';
 import { sanitizeLabel, labelFromMessage, labelFromEntries } from '../src/bridge/labels.ts';
 import { parseCommand } from '../src/bridge/wire.ts';
 import { commandResultMessage, eventMessage, helloMessage, registerMessage } from '../src/bridge/outbound.ts';
 import { isActiveMode, COMMAND_ALLOWLIST, SESSION_COMMAND_NAME, COMMAND_NOT_ALLOWED } from '../src/bridge/commands.ts';
-import { dispatchCommand, type CommandOutcome } from '../src/bridge/command-dispatch.ts';
+import { dispatchCommand } from '../src/bridge/command-dispatch.ts';
 import { createRelay, type Relay } from '../src/bridge/relay.ts';
 import { createSocketLink, type SocketLink } from '../src/bridge/socket-link.ts';
 
@@ -112,7 +112,7 @@ function resolveDeps(deps: BridgeDeps): ResolvedDeps {
   return {
     env: deps.env ?? process.env,
     // Native WebSocket only — no `ws` in the extension.
-    socketFactory: deps.socketFactory ?? ((url) => new WebSocket(url) as unknown as BridgeSocket),
+    socketFactory: deps.socketFactory ?? ((url) => new WebSocket(url)),
     resolveEndpoint: deps.resolveEndpoint ?? (() => readEndpoint()),
     write: deps.write ?? ((_stream, text) => process.stderr.write(text)),
     rng: deps.rng ?? Math.random,
@@ -510,7 +510,7 @@ class Bridge {
       parsed.offset < annotated.length &&
       entryAnchor(parsed.offset, annotated[parsed.offset]) === parsed.anchor;
     const page = honoured
-      ? projectHistory(annotated, HISTORY_MAX_BYTES, parsed!.offset)
+      ? projectHistory(annotated, HISTORY_MAX_BYTES, parsed.offset)
       : projectHistory(annotated, HISTORY_MAX_BYTES);
     const message: HistoryMessage = {
       protocolVersion: PROTOCOL_VERSION,

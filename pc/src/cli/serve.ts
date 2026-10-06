@@ -92,7 +92,7 @@ export function parseArgs(argv: readonly string[]): ServeArgs {
     maxSessions: DEFAULT_MAX_SESSIONS,
   };
   for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i]!;
+    const arg = argv[i];
     switch (arg) {
       case '--port': {
         const value = argv[++i];

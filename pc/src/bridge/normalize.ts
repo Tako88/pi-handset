@@ -69,10 +69,10 @@ export const TRIM_MAX_ITERATIONS = 64;
  * needs this. Terminates because a marker part has no string `data` and so is
  * never chosen twice.
  */
-export function trimOversizedImageParts(message: unknown, maxBytes: number): unknown | null {
+export function trimOversizedImageParts(message: unknown, maxBytes: number): unknown {
   const obj = asObject(message);
   if (obj === null || !Array.isArray(obj.content)) return null;
-  const content = [...obj.content];
+  const content = [...(obj.content as unknown[])];
   const fits = (): boolean =>
     Buffer.byteLength(JSON.stringify({ ...obj, content })) <= maxBytes;
   let trimmed = false;

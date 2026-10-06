@@ -19,7 +19,7 @@ beforeEach(() => resetSessionLinkageForTests());
 test('an oversized toolResult message_end still emits its bounded tool frame alongside the trimmed message', () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const before = socket.sent.length;
   const image = imagePart(MAX_RELAY_BYTES + 1);
@@ -53,7 +53,7 @@ test('an oversized toolResult message_end still emits its bounded tool frame alo
 test('the message_end handler relays assistant, user and toolResult messages and ignores other roles', () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const before = socket.sent.length;
   const handler = harness.pi.handlers.get('message_end')!;
@@ -77,15 +77,15 @@ test('the message_end handler relays assistant, user and toolResult messages and
   assert.equal(emitted.length, 3, 'exactly one user, assistant and toolResult message must be relayed');
   const roles = emitted.map((m) => (m.payload as { message: { role: string } }).message.role);
   assert.deepEqual(roles, ['user', 'assistant', 'toolResult']);
-  assert.deepEqual(emitted[0]!.payload, { kind: 'message', message: user, truncated: false });
-  assert.deepEqual(emitted[1]!.payload, { kind: 'message', message: assistant, truncated: false });
-  assert.deepEqual(emitted[2]!.payload, { kind: 'message', message: toolResult, truncated: false });
+  assert.deepEqual(emitted[0].payload, { kind: 'message', message: user, truncated: false });
+  assert.deepEqual(emitted[1].payload, { kind: 'message', message: assistant, truncated: false });
+  assert.deepEqual(emitted[2].payload, { kind: 'message', message: toolResult, truncated: false });
 });
 
 test('consecutive text deltas get strictly increasing stream seqs', () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const before = socket.sent.length;
   const update = (delta: string): void => {
@@ -103,7 +103,7 @@ test('consecutive text deltas get strictly increasing stream seqs', () => {
 test('thinking and text deltas share one stream seq sequence', () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const before = socket.sent.length;
   const update = (assistantMessageEvent: AssistantMessageEvent): void => {
@@ -132,28 +132,28 @@ test('thinking and text deltas share one stream seq sequence', () => {
 test('agent_settled yields the terminal agent state', () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   const before = socket.sent.length;
   harness.pi.handlers.get('agent_settled')!({ type: 'agent_settled' }, harness.startCtx);
   // Settling is also a context-usage boundary, so the state frame is no longer
   // the last thing on the wire. Deliberate: the terminal state still comes first.
   const emitted = parsed(socket).slice(before);
-  assert.deepEqual(emitted[0]!.payload, { kind: 'agent', state: 'settled' });
-  assert.deepEqual(emitted[1]!.payload, {
+  assert.deepEqual(emitted[0].payload, { kind: 'agent', state: 'settled' });
+  assert.deepEqual(emitted[1].payload, {
     kind: 'usage',
     tokens: 23400,
     contextWindow: 128000,
     thinkingLevel: 'medium',
     model: { provider: 'test-provider', id: 'test-model', name: 'Test Model' },
   });
-  assert.deepEqual(emitted[2]!.payload, { kind: 'settled', text: '', truncated: false });
+  assert.deepEqual(emitted[2].payload, { kind: 'settled', text: '', truncated: false });
 });
 
 test('agent_start yields the running state', () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   harness.pi.handlers.get('agent_start')!({ type: 'agent_start' }, harness.startCtx);
   const last = parsed(socket).at(-1)!;
@@ -163,7 +163,7 @@ test('agent_start yields the running state', () => {
 test('agent_end does not yield the terminal state', () => {
   const harness = makeHarness();
   harness.start();
-  const socket = harness.sockets[0]!;
+  const socket = harness.sockets[0];
   socket.open();
   harness.pi.handlers.get('agent_start')!({ type: 'agent_start' }, harness.startCtx);
   // The bridge deliberately does not subscribe to `agent_end`; if it ever does,
@@ -180,14 +180,14 @@ test('agent_end does not yield the terminal state', () => {
 test('the terminal agent state is re-emitted after a reconnect', () => {
   const harness = makeHarness();
   harness.start();
-  const first = harness.sockets[0]!;
+  const first = harness.sockets[0];
   first.open();
   harness.pi.handlers.get('agent_settled')!({ type: 'agent_settled' }, harness.startCtx);
   first.drop();
   harness.fireTimer();
-  const second = harness.sockets[1]!;
+  const second = harness.sockets[1];
   second.open();
   const messages = parsed(second);
-  assert.equal(messages[1]!.type, 'register');
-  assert.deepEqual(messages[2]!.payload, { kind: 'agent', state: 'settled' });
+  assert.equal(messages[1].type, 'register');
+  assert.deepEqual(messages[2].payload, { kind: 'agent', state: 'settled' });
 });

@@ -7,10 +7,7 @@ import { test } from 'node:test';
 
 import {
   TOOL_VIEW_MAX_BYTES,
-  type CommandView,
   type DiffView,
-  type FileView,
-  type GenericView,
   type MatchesView,
   type ToolPayload,
 } from '../protocol/protocol.ts';
@@ -92,11 +89,11 @@ test('an edit without a usable details.diff is generic, never a reconstructed di
       name: 'edit',
       args: { path: 'a.ts', edits: [{ oldText: 'old', newText: 'new' }] },
       content: textContent('Successfully replaced 1 block(s) in a.ts.'),
-      details: details as Record<string, unknown> | undefined,
+      details: details,
       isError: false,
     });
     assert.equal(view.type, 'generic');
-    assert.equal((view as GenericView).target, 'a.ts');
+    assert.equal((view).target, 'a.ts');
   }
 });
 
@@ -163,8 +160,8 @@ test('a read stopped by the user limit derives its range from input.offset/limit
     isError: false,
   });
   assert.equal(view.type, 'file');
-  assert.equal((view as FileView).startLine, 1);
-  assert.equal((view as FileView).endLine, 3);
+  assert.equal((view).startLine, 1);
+  assert.equal((view).endLine, 3);
 });
 
 test('a pi-truncated read derives its range from the continuation notice', () => {
@@ -176,8 +173,8 @@ test('a pi-truncated read derives its range from the continuation notice', () =>
     isError: false,
   });
   assert.equal(view.type, 'file');
-  assert.equal((view as FileView).startLine, 10);
-  assert.equal((view as FileView).endLine, 11);
+  assert.equal((view).startLine, 10);
+  assert.equal((view).endLine, 11);
 });
 
 test('an image read is generic, never a text file view', () => {
@@ -221,7 +218,7 @@ test('a bash failure parses exitCode only from a trailing Command exited with co
     isError: true,
   });
   assert.equal(view.type, 'command');
-  assert.equal((view as CommandView).exitCode, 3);
+  assert.equal((view).exitCode, 3);
 });
 
 test('aborted, timed-out and signalled bash carry no exit code', () => {
@@ -239,7 +236,7 @@ test('aborted, timed-out and signalled bash carry no exit code', () => {
       isError: true,
     });
     assert.equal(view.type, 'command');
-    assert.equal((view as CommandView).exitCode, undefined, `${text} must not yield a code`);
+    assert.equal((view).exitCode, undefined, `${text} must not yield a code`);
   }
 });
 

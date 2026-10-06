@@ -35,7 +35,7 @@ void main() {
     factory.last.receive({
       'protocolVersion': 1,
       'type': 'sessions',
-      'sessions': const [],
+      'sessions': const <Object?>[],
       'capabilities': ?capabilities,
     });
     await pumpEventQueue();

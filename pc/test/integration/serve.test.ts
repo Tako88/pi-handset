@@ -27,6 +27,7 @@ import {
   TITLE_REWRITER_PID_ENV,
   writeTitleRewriter,
 } from './title_rewriter.ts';
+import { frameText } from '../support/hub-harness.ts';
 
 const pcRoot = fileURLToPath(new URL('../..', import.meta.url));
 const serveEntry = fileURLToPath(new URL('../../src/cli/serve.ts', import.meta.url));
@@ -99,11 +100,11 @@ function startServe(
   });
   spawned.push(child);
   let stdout = '';
-  child.stdout!.on('data', (chunk) => {
+  child.stdout.on('data', (chunk) => {
     stdout += String(chunk);
   });
   let stderr = '';
-  child.stderr!.on('data', (chunk) => {
+  child.stderr.on('data', (chunk) => {
     stderr += String(chunk);
   });
   return { child, stdout: () => stdout, stderr: () => stderr };
@@ -119,7 +120,8 @@ function lockFile(): string {
 
 function readPid(): number | null {
   try {
-    return JSON.parse(readFileSync(discoveryFile(), 'utf8')).pid;
+    const parsed = JSON.parse(readFileSync(discoveryFile(), 'utf8')) as { pid?: number };
+    return parsed.pid ?? null;
   } catch {
     return null;
   }
@@ -127,7 +129,7 @@ function readPid(): number | null {
 
 function readRecord(): Record<string, unknown> | null {
   try {
-    return JSON.parse(readFileSync(discoveryFile(), 'utf8'));
+    return JSON.parse(readFileSync(discoveryFile(), 'utf8')) as Record<string, unknown>;
   } catch {
     return null;
   }
@@ -160,6 +162,9 @@ function waitExit(child: ChildProcess): Promise<{ code: number | null; signal: s
       return;
     }
     const command = child.spawnargs.join(' ');
+    // `timer` is assigned only after `settle` closes over it, so `const` would hit
+    // the temporal dead zone if the child exited before the assignment returned.
+    // eslint-disable-next-line prefer-const
     let timer: ReturnType<typeof setTimeout>;
     const settle = (): void => {
       clearTimeout(timer);
@@ -253,10 +258,10 @@ async function runPairProcess(): Promise<{ code: number | null; stdout: string; 
   spawned.push(child);
   let stdout = '';
   let stderr = '';
-  child.stdout!.on('data', (chunk) => {
+  child.stdout.on('data', (chunk) => {
     stdout += String(chunk);
   });
-  child.stderr!.on('data', (chunk) => {
+  child.stderr.on('data', (chunk) => {
     stderr += String(chunk);
   });
   const { code } = await waitExit(child);
@@ -284,7 +289,7 @@ async function acceptsTicket(port: number, code: string): Promise<boolean> {
       }
     }, 5000);
     socket.on('message', (data) => {
-      const message = JSON.parse(String(data)) as Record<string, unknown>;
+      const message = JSON.parse(frameText(data)) as Record<string, unknown>;
       if (message.type === 'paired') finish(true);
     });
     socket.on('close', () => finish(false));
@@ -320,7 +325,7 @@ function awaitPaired(socket: WebSocket): Promise<Record<string, unknown>> {
       5000,
     );
     socket.on('message', (data) => {
-      const message = JSON.parse(String(data)) as Record<string, unknown>;
+      const message = JSON.parse(frameText(data)) as Record<string, unknown>;
       if (message.type === 'paired') {
         clearTimeout(timer);
         resolve(message);
@@ -347,7 +352,7 @@ async function authViewer(port: number): Promise<WebSocket> {
   const socket = await connectViewer(port);
   const ready = new Promise<void>((resolve) => {
     socket.on('message', (data) => {
-      const message = JSON.parse(String(data)) as Record<string, unknown>;
+      const message = JSON.parse(frameText(data)) as Record<string, unknown>;
       if (message.type === 'sessions') resolve();
     });
   });
@@ -374,7 +379,7 @@ function awaitMessage(
       timeoutMs,
     );
     socket.on('message', (data) => {
-      const message = JSON.parse(String(data)) as Record<string, unknown>;
+      const message = JSON.parse(frameText(data)) as Record<string, unknown>;
       if (message.type === type) {
         clearTimeout(timer);
         resolve(message);
@@ -405,7 +410,7 @@ test('SIGUSR1 prints a pairing code that the hub actually redeems', async () => 
 
   serve.child.kill('SIGUSR1');
   await waitFor(() => printedCodes(serve.stdout()).length === 1, 'the pairing code');
-  const code = printedCodes(serve.stdout())[0]!;
+  const code = printedCodes(serve.stdout())[0];
 
   const paired = await redeem(port, code);
   assert.equal(paired.token, persistedToken(), 'the printed code must exchange for the token');
@@ -427,7 +432,7 @@ test('SIGUSR1 twice prints a second code that also redeems', async () => {
   const [first, second] = printedCodes(serve.stdout());
   assert.notEqual(first, second, 'a re-issue must mint a fresh code');
 
-  const paired = await redeem(port, second!);
+  const paired = await redeem(port, second);
   assert.equal(paired.token, persistedToken(), 'the second code must also exchange');
 
   const exited = waitExit(serve.child);
@@ -740,7 +745,7 @@ test('end to end: main.ts serve then main.ts pair prints a code the hub redeems'
   assert.equal(codes.length, 1, `expected one printed code in: ${pair.stdout}`);
   assert.match(pair.stdout, /pidroid:\/\/pair\?v=1&code=/);
 
-  const paired = await redeem(port, codes[0]!);
+  const paired = await redeem(port, codes[0]);
   assert.equal(paired.token, persistedToken(), 'the printed code must redeem');
 
   const exited = waitExit(serve.child);
@@ -753,10 +758,10 @@ test('a pair mint invalidates an earlier SIGUSR1 code', async () => {
   const serve = await startReadyServe(port);
   serve.child.kill('SIGUSR1');
   await waitFor(() => printedCodes(serve.stdout()).length === 1, 'the SIGUSR1 code');
-  const sigusr1Code = printedCodes(serve.stdout())[0]!;
+  const sigusr1Code = printedCodes(serve.stdout())[0];
 
   const pair = await runPairProcess();
-  const pairCode = printedCodes(pair.stdout)[0]!;
+  const pairCode = printedCodes(pair.stdout)[0];
   assert.notEqual(pairCode, sigusr1Code);
 
   assert.equal(await acceptsTicket(port, sigusr1Code), false, 'the older code is dead');
@@ -771,11 +776,11 @@ test('a SIGUSR1 mint invalidates an earlier pair code', async () => {
   const port = await freePort();
   const serve = await startReadyServe(port);
   const pair = await runPairProcess();
-  const pairCode = printedCodes(pair.stdout)[0]!;
+  const pairCode = printedCodes(pair.stdout)[0];
 
   serve.child.kill('SIGUSR1');
   await waitFor(() => printedCodes(serve.stdout()).length === 1, 'the SIGUSR1 code');
-  const sigusr1Code = printedCodes(serve.stdout())[0]!;
+  const sigusr1Code = printedCodes(serve.stdout())[0];
 
   assert.equal(await acceptsTicket(port, pairCode), false, 'the older pair code is dead');
   assert.equal(await acceptsTicket(port, sigusr1Code), true, 'the SIGUSR1 code is live');
@@ -828,7 +833,7 @@ test('serve spawns bare pi on start-session and SIGTERM kills the group', async 
     'production must spawn bare pi --mode rpc --no-session',
   );
   assert.ok(
-    recorded[1]!.startsWith(tmpdir()),
+    recorded[1].startsWith(tmpdir()),
     `the child cwd must be under ${tmpdir()}, got ${recorded[1]}`,
   );
 
