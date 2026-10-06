@@ -10,13 +10,11 @@
 library;
 
 import 'dart:async';
-import 'dart:math';
 
 import 'package:flutter/material.dart';
 
 import '../client/endpoint_store.dart';
 import '../client/attachment.dart';
-import '../client/context_usage.dart';
 import '../client/hub_client_view.dart';
 import '../client/notification_policy.dart';
 import '../client/notification_presenter.dart';
@@ -27,15 +25,15 @@ import '../platform/qr_scanner.dart';
 import '../protocol/protocol.dart';
 import 'attachment_actions.dart';
 import 'command_suggestions.dart';
-import 'compose_bar.dart';
 import 'model_actions.dart';
-import 'pairing_screen.dart';
+import 'pairing_route.dart';
 import 'session_actions.dart';
 import 'session_list.dart';
-import 'session_menu.dart';
-import 'status_indicator.dart';
+import 'status_banner.dart';
 import 'theme.dart';
-import 'transcript_view.dart';
+import 'transcript_app_bar.dart';
+import 'transcript_composer.dart';
+import 'transcript_search_controller.dart';
 import 'tree_actions.dart';
 
 class PiDroidApp extends StatefulWidget {
@@ -169,32 +167,9 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
   /// into this state, so the `/` overlay is fresh at the point of use.
   bool _commandDraftOpen = false;
 
-  /// Whether the find-in-transcript query field is open.
-  bool _searchOpen = false;
-
-  /// The find-in-transcript query. Cleared when the search opens, closes, or
-  /// the session switches.
-  final TextEditingController _searchController = TextEditingController();
-
-  /// The query field's focus, held so opening the search can focus it.
-  final FocusNode _searchFocus = FocusNode();
-
-  /// The id of the current match, or null. Tracked by id (not index) so a
-  /// prepend or append keeps the current row; an id that disappears falls back
-  /// to the first match.
-  String? _searchCurrentBlockId;
-
-  /// The memoised matches for [_searchMatchesQuery]/[_searchBlocksForMatches].
-  List<TranscriptBlock> _searchMatches = const [];
-
-  /// The **blocks list** [_searchMatches] was computed from - not the matches.
-  /// The identity check against this is what keeps streaming frames (whose
-  /// `blocks` identity is stable) from re-scanning the transcript.
-  List<TranscriptBlock>? _searchBlocksForMatches;
-
-  /// The query [_searchMatches] was computed for, so a rebuild with an
-  /// unchanged query and blocks reuses the list.
-  String _searchMatchesQuery = '';
+  /// The find-in-transcript state: the query field, its focus, whether it is
+  /// open, the current match and the match memo. Constructed in [initState].
+  late final TranscriptSearchController _search;
 
   /// The extracted composer/dialog actions. Constructed in [initState] with the
   /// shell's live probes once, so each controller reads current state at the
@@ -207,6 +182,12 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    _search = TranscriptSearchController(
+      controller: TextEditingController(),
+      focus: FocusNode(),
+      isMounted: () => mounted,
+      onChanged: () => setState(() {}),
+    );
     _attachmentActions = AttachmentActions(isMounted: () => mounted);
     _modelActions = ModelActions(
       client: widget.client,
@@ -242,8 +223,7 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
     _composer.removeListener(_onComposerChanged);
     _composer.dispose();
     _composerFocus.dispose();
-    _searchController.dispose();
-    _searchFocus.dispose();
+    _search.dispose();
     super.dispose();
   }
 
@@ -378,9 +358,7 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
         // abandons it rather than letting a later leaf prefill it.
         _pendingTreeTap = null;
         // A find-in-transcript query belongs to the session it was typed in.
-        _searchOpen = false;
-        _searchCurrentBlockId = null;
-        _searchController.clear();
+        _search.reset();
       }
       // A hub that loses the capability must not resurrect a stale pick if the
       // capability later returns.
@@ -584,12 +562,20 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
   void _openPairing() {
     if (_pairingRoute != null) return;
     final route = MaterialPageRoute<void>(
-      builder: (_) => PopScope<void>(
-        canPop: true,
-        onPopInvokedWithResult: (didPop, _) {
-          if (didPop) _pairingRoute = null;
-        },
-        child: _pairingScreen(showBack: true),
+      builder: (_) => PairingPage(
+        showBack: true,
+        onPopped: () => _pairingRoute = null,
+        onSubmit: _pair,
+        onScanned: _pairScanned,
+        onCandidate: _connectCandidate,
+        candidates: _candidates,
+        scanQr: widget.scanQr,
+        lastError: _state.lastError ?? _bootstrapError,
+        busy: _pairingAttempt,
+        initialHost: _candidates.isEmpty ? '' : _candidates.first.host,
+        initialPort: _candidates.isEmpty
+            ? '8787'
+            : _candidates.first.port.toString(),
       ),
     );
     _pairingRoute = route;
@@ -615,85 +601,6 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
     }
     _commandDraftOpen = open;
   }
-
-  /// The matches for [blocks], memoised so a streaming frame (which keeps the
-  /// same `blocks` identity) does not re-scan the transcript. Closed means no
-  /// matches.
-  List<TranscriptBlock> _matchesFor(List<TranscriptBlock> blocks) {
-    if (!_searchOpen) return const [];
-    if (_searchController.text == _searchMatchesQuery &&
-        identical(blocks, _searchBlocksForMatches)) {
-      return _searchMatches;
-    }
-    final matches = blocksMatching(blocks, _searchController.text);
-    _searchMatches = matches;
-    _searchBlocksForMatches = blocks;
-    _searchMatchesQuery = _searchController.text;
-    return matches;
-  }
-
-  /// The current match's index in [matches], falling back to the first when the
-  /// tracked id is gone (a prepend/append that dropped it), or -1 when empty.
-  int _currentMatchIndex(List<TranscriptBlock> matches) {
-    if (matches.isEmpty) return -1;
-    final index = matches.indexWhere((b) => b.id == _searchCurrentBlockId);
-    return index < 0 ? 0 : index;
-  }
-
-  void _openSearch() {
-    _searchController.clear();
-    setState(() {
-      _searchOpen = true;
-      _searchCurrentBlockId = null;
-    });
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _searchFocus.requestFocus();
-    });
-  }
-
-  void _closeSearch() {
-    _searchController.clear();
-    _searchFocus.unfocus();
-    setState(() {
-      _searchOpen = false;
-      _searchCurrentBlockId = null;
-    });
-  }
-
-  /// Steps the current match by [delta], wrapping around the matches.
-  void _searchStep(int delta, List<TranscriptBlock> matches) {
-    if (matches.isEmpty) return;
-    final index = _currentMatchIndex(matches);
-    final next = (index + delta + matches.length) % matches.length;
-    setState(() => _searchCurrentBlockId = matches[next].id);
-  }
-
-  /// The find-in-transcript query field, shown in place of the title.
-  Widget _searchField() => TextField(
-    key: const Key('transcript-search-field'),
-    controller: _searchController,
-    focusNode: _searchFocus,
-    // Any edit re-anchors the current match to the first hit.
-    onChanged: (_) => setState(() => _searchCurrentBlockId = null),
-    decoration: const InputDecoration(
-      hintText: 'Search transcript',
-      border: InputBorder.none,
-    ),
-  );
-
-  /// The counted n/N readout. The KEY is the contract, not its slot: at a large
-  /// text scale this can move into the field's `suffixText` (same key) if it
-  /// overflows the bar.
-  Widget _searchCount(int currentIndex, int total) => Center(
-    child: Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 4),
-      child: Text(
-        total == 0 ? '0/0' : '${currentIndex + 1}/$total',
-        key: const Key('transcript-search-count'),
-        style: piMono(fontSize: 12),
-      ),
-    ),
-  );
 
   void _open(SessionSummary session) => _queueOpen(session.sessionId);
 
@@ -749,30 +656,24 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
     return 'pi sessions · $first +${_candidates.length - 1}';
   }
 
-  /// The pairing widget, shared by the boot path (as the root) and the pushed
-  /// route (over the live list). [showBack] is true only for the pushed case:
-  /// the boot root has nothing behind it, so it must not offer a way back.
-  Widget _pairingScreen({bool showBack = false}) => PairingScreen(
-    showBack: showBack,
-    onSubmit: _pair,
-    onScanned: _pairScanned,
-    onCandidate: _connectCandidate,
-    candidates: _candidates,
-    scanQr: widget.scanQr,
-    lastError: _state.lastError ?? _bootstrapError,
-    busy: _pairingAttempt,
-    initialHost: _candidates.isEmpty ? '' : _candidates.first.host,
-    initialPort: _candidates.isEmpty
-        ? '8787'
-        : _candidates.first.port.toString(),
-  );
-
   Widget _home(BuildContext context) {
     if (_loading) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
     if (!_authenticated) {
-      return _pairingScreen();
+      return PairingPage(
+        onSubmit: _pair,
+        onScanned: _pairScanned,
+        onCandidate: _connectCandidate,
+        candidates: _candidates,
+        scanQr: widget.scanQr,
+        lastError: _state.lastError ?? _bootstrapError,
+        busy: _pairingAttempt,
+        initialHost: _candidates.isEmpty ? '' : _candidates.first.host,
+        initialPort: _candidates.isEmpty
+            ? '8787'
+            : _candidates.first.port.toString(),
+      );
     }
 
     // The list is always the `home` route. The transcript, when one is open, is
@@ -792,9 +693,12 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
           ),
         ],
       ),
-      body: _withStatusBanner(
-        context,
-        SessionList(
+      body: StatusBanner(
+        error: _state.lastError,
+        dismissedError: _dismissedError,
+        connected: _state.status == HubConnectionStatus.connected,
+        onDismiss: () => setState(() => _dismissedError = _state.lastError),
+        child: SessionList(
           sessions: _state.sessions,
           pendingSessions: _state.pendingSessions,
           onOpen: _open,
@@ -824,236 +728,85 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
         _state.transcripts[activeId] ?? const SessionTranscript();
     final attachmentsEnabled =
         _state.capabilities.contains(capabilityAttachments);
-    final matches = _matchesFor(transcript.blocks);
-    final currentIndex = _currentMatchIndex(matches);
+    final matches = _search.matchesFor(transcript.blocks);
+    final currentIndex = _search.currentIndex(matches);
     final search = TranscriptSearch(
-      open: _searchOpen,
+      open: _search.open,
       matches: matches,
       current: currentIndex,
     );
     final view = Scaffold(
-      appBar: AppBar(
-        title: _searchOpen
-            ? _searchField()
-            : _transcriptTitle(activeId, transcript),
-        leading: _searchOpen
-            ? IconButton(
-                key: const Key('transcript-search-close'),
-                icon: const Icon(Icons.close),
-                onPressed: _closeSearch,
-                tooltip: 'Close search',
+      appBar: TranscriptAppBar(
+        transcript: transcript,
+        sessionName: _sessionLabel(activeId),
+        search: _search,
+        muted: _notifyPolicy.isMuted(activeId),
+        onToggleNotify: () => _toggleNotify(activeId),
+        onCompact: () => _sessionActions.compact(context),
+        onRename: () => _sessionActions.rename(activeId, context),
+        onThinkingLevel: () =>
+            _modelActions.setThinkingLevel(activeId, context),
+        onModel: () => _modelActions.setModel(activeId, context),
+        // New and fork replace the session: only a hub advertising the
+        // capability can, and without it the items are omitted rather than
+        // offered and refused.
+        onNewSession: _state.capabilities.contains(capabilitySessionControl)
+            ? () => _sessionActions.newSession(context)
+            : null,
+        onFork: _state.capabilities.contains(capabilitySessionControl)
+            ? () => _treeActions.fork(activeId, context)
+            : null,
+        onTree: _state.capabilities.contains(capabilitySessionControl)
+            ? () => _treeActions.navigate(
+                activeId,
+                context,
+                arm: (tap) => _pendingTreeTap = tap,
+                disarm: () => _pendingTreeTap = null,
               )
-            : IconButton(
-                icon: const Icon(Icons.arrow_back),
-                onPressed: _close,
-                tooltip: 'Sessions',
-              ),
-        actions: _searchOpen
-            ? [
-                _searchCount(currentIndex, matches.length),
-                IconButton(
-                  key: const Key('transcript-search-prev'),
-                  icon: const Icon(Icons.keyboard_arrow_up),
-                  onPressed: matches.isEmpty
-                      ? null
-                      : () => _searchStep(-1, matches),
-                  tooltip: 'Previous match',
-                ),
-                IconButton(
-                  key: const Key('transcript-search-next'),
-                  icon: const Icon(Icons.keyboard_arrow_down),
-                  onPressed: matches.isEmpty
-                      ? null
-                      : () => _searchStep(1, matches),
-                  tooltip: 'Next match',
-                ),
-              ]
-            : [
-                IconButton(
-                  key: const Key('transcript-search'),
-                  icon: const Icon(Icons.search),
-                  onPressed: _openSearch,
-                  tooltip: 'Search transcript',
-                ),
-                SessionMenuButton(
-                  muted: _notifyPolicy.isMuted(activeId),
-                  onToggleNotify: () => _toggleNotify(activeId),
-                  thinkingLevel: transcript.thinkingLevel,
-                  model: transcript.currentModel?.name,
-                  onCompact: () => _sessionActions.compact(context),
-                  onRename: () => _sessionActions.rename(activeId, context),
-                  onThinkingLevel: () =>
-                      _modelActions.setThinkingLevel(activeId, context),
-                  onModel: () => _modelActions.setModel(activeId, context),
-                  // New and fork replace the session: only a hub advertising
-                  // the capability can, and without it the items are omitted
-                  // rather than offered and refused.
-                  onNewSession:
-                      _state.capabilities.contains(capabilitySessionControl)
-                      ? () => _sessionActions.newSession(context)
-                      : null,
-                  onFork:
-                      _state.capabilities.contains(capabilitySessionControl)
-                      ? () => _treeActions.fork(activeId, context)
-                      : null,
-                  onTree:
-                      _state.capabilities.contains(capabilitySessionControl)
-                      ? () => _treeActions.navigate(
-                          activeId,
-                          context,
-                          arm: (tap) => _pendingTreeTap = tap,
-                          disarm: () => _pendingTreeTap = null,
-                        )
-                      : null,
-                ),
-              ],
+            : null,
+        onBack: _close,
       ),
       // The composer lives in the BODY, not the bottomNavigationBar slot:
       // resizeToAvoidBottomInset only resizes the body, so a nav bar stays
       // pinned to the screen bottom and the keyboard covers it.
-      body: Column(
-        children: [
-          Expanded(
-            child: LayoutBuilder(
-              builder: (context, constraints) => Stack(
-                children: [
-                  _withStatusBanner(
-                    context,
-                    // Keyed on the session: a new session is a new view, so its
-                    // scroll position and following state are not inherited from
-                    // the last one.
-                    TranscriptView(
-                      key: ValueKey(activeId),
-                      transcript: transcript,
-                      onLoadOlder: () => widget.client.loadOlder(activeId),
-                      search: search,
-                    ),
-                  ),
-                  // The suggestions float over the transcript instead of taking
-                  // a Column slot, so there is no `Flex` here to overflow. The
-                  // real safety is the `min(200, ...)` cap: an oversized
-                  // `Positioned` would be hard-clipped, not resized.
-                  Positioned(
-                    left: 0,
-                    right: 0,
-                    bottom: 0,
-                    // Inside the `Positioned`, so typing rebuilds only the
-                    // panel — never the transcript.
-                    child: ValueListenableBuilder<TextEditingValue>(
-                      valueListenable: _composer,
-                      builder: (context, value, _) {
-                        final suggestions = suggestionsFor(
-                          _state.commands[activeId] ?? const <SlashCommand>[],
-                          value.text,
-                        );
-                        if (suggestions.isEmpty) {
-                          return const SizedBox.shrink();
-                        }
-                        return CommandSuggestionPanel(
-                          commands: suggestions,
-                          maxHeight: min(200, constraints.maxHeight),
-                          onPick: _pickCommand,
-                        );
-                      },
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          StatusIndicator(transcript: transcript),
-          ComposeBar(
-            controller: _composer,
-            focusNode: _composerFocus,
-            enabled: _state.status == HubConnectionStatus.connected,
-            thinkingLevel: transcript.thinkingLevel,
-            attachment: attachmentsEnabled ? _attachment : null,
-            onAttach: attachmentsEnabled
-                ? () => _attachmentActions.pick(
-                    context,
-                    pickImage: widget.pickImage,
-                    onPicked: (image) => setState(() => _attachment = image),
-                  )
-                : null,
-            onRemoveAttachment: () => setState(() => _attachment = null),
-            onSend: (text) => widget.client.sendCommand(
-              activeId,
-              'prompt',
-              args: _composeArgs(text),
-            ),
-            onAbort: () => widget.client.sendCommand(activeId, 'abort'),
-            onFollowUp: (text) => widget.client.sendCommand(
-              activeId,
-              'followup',
-              args: _composeArgs(text),
-            ),
-          ),
-        ],
+      body: TranscriptComposer(
+        activeId: activeId,
+        transcript: transcript,
+        search: search,
+        error: _state.lastError,
+        dismissedError: _dismissedError,
+        connected: _state.status == HubConnectionStatus.connected,
+        onDismissError: () =>
+            setState(() => _dismissedError = _state.lastError),
+        commands: _state.commands[activeId] ?? const <SlashCommand>[],
+        controller: _composer,
+        focusNode: _composerFocus,
+        enabled: _state.status == HubConnectionStatus.connected,
+        attachment: _attachment,
+        attachmentsEnabled: attachmentsEnabled,
+        onPickCommand: _pickCommand,
+        onAttach: () => _attachmentActions.pick(
+          context,
+          pickImage: widget.pickImage,
+          onPicked: (image) => setState(() => _attachment = image),
+        ),
+        onRemoveAttachment: () => setState(() => _attachment = null),
+        onSend: (text) => widget.client.sendCommand(
+          activeId,
+          'prompt',
+          args: _composeArgs(text),
+        ),
+        onAbort: () => widget.client.sendCommand(activeId, 'abort'),
+        onFollowUp: (text) => widget.client.sendCommand(
+          activeId,
+          'followup',
+          args: _composeArgs(text),
+        ),
+        onLoadOlder: () => widget.client.loadOlder(activeId),
       ),
     );
 
     return view;
-  }
-
-  /// The transcript's title: the session name plus the context reading.
-  ///
-  /// The reading takes priority over the name: the name is a reminder of which
-  /// session this is, while the reading is a number you cannot guess from
-  /// anything else on screen. So the name is the flexible half, and it is the
-  /// one that gets cut when the two compete for room.
-  ///
-  /// The reading is laid out before the name (non-flex children are measured
-  /// first) and is never ellipsized. At a large text scale it can want more
-  /// room than the title has at all, which would overflow the row — so it is
-  /// capped to the available width and scaled down rather than truncated: a
-  /// slightly smaller number beats a cut-off one.
-  Widget _transcriptTitle(String activeId, SessionTranscript transcript) {
-    final usage = transcript.contextUsage;
-    final usageLabel = usage == null ? null : formatContextUsage(usage);
-    // A running compaction takes the reading's slot: the number is exactly what
-    // the compaction is about to invalidate, and an app bar that sits unchanged
-    // for the length of a summarization call reads as a hang.
-    final barLabel = transcript.compacting ? 'Compacting…' : usageLabel;
-    return LayoutBuilder(
-      builder: (context, constraints) => Row(
-        children: [
-          Expanded(
-            child: Text(
-              _sessionLabel(activeId),
-              key: const Key('session-name'),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              // The session's name is a session's name, not prose: the app bar
-              // speaks in the machine's voice, like every other label that
-              // names a thing.
-              style: piMono(fontSize: 13),
-            ),
-          ),
-          if (barLabel != null)
-            ConstrainedBox(
-              constraints: BoxConstraints(maxWidth: constraints.maxWidth),
-              // The gap lives inside the cap, so the padding cannot push the
-              // row past the width the label was measured against.
-              child: Padding(
-                padding: const EdgeInsets.only(left: 8),
-                child: FittedBox(
-                  fit: BoxFit.scaleDown,
-                  alignment: Alignment.centerRight,
-                  child: Text(
-                    barLabel,
-                    key: Key(
-                      transcript.compacting ? 'compacting' : 'context-usage',
-                    ),
-                    maxLines: 1,
-                    softWrap: false,
-                    style: piMono(fontSize: 12),
-                  ),
-                ),
-              ),
-            ),
-        ],
-      ),
-    );
   }
 
   /// Keeps the pushed transcript route in step with [_state.activeSessionId].
@@ -1089,12 +842,12 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
             // a gesture commit would pop the route with nothing left to call
             // `_close()`, and the next state emit would push the transcript
             // straight back over the list.
-            canPop: !_searchOpen,
+            canPop: !_search.open,
             onPopInvokedWithResult: (didPop, _) {
               if (!didPop) {
                 // The route declined the pop because the search is open: close
                 // it and stay on the transcript.
-                if (_searchOpen) _closeSearch();
+                if (_search.open) _search.closeSearch();
                 return;
               }
               // Clear the latch BEFORE `_close()`. `_close()` unsubscribes, and
@@ -1125,49 +878,6 @@ class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
     } else {
       navigator.removeRoute(route);
     }
-  }
-
-  /// A thin banner so a dropped connection, a dead-end resync or a send failure
-  /// is never silent. Shown whenever there is an error, whatever the status —
-  /// not only while disconnected.
-  Widget _withStatusBanner(BuildContext context, Widget child) {
-    final error = _state.lastError;
-    final showError = error != null && error != _dismissedError;
-    final showReconnect = _state.status != HubConnectionStatus.connected;
-    if (!showError && !showReconnect) return child;
-    return Column(
-      children: [
-        Container(
-          width: double.infinity,
-          color: Theme.of(context).colorScheme.errorContainer,
-          padding: const EdgeInsets.only(left: 8, right: 8),
-          child: Row(
-            children: [
-              Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 8),
-                  child: Text(
-                    showError ? error : 'Reconnecting to the hub…',
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.onErrorContainer,
-                    ),
-                  ),
-                ),
-              ),
-              if (showError)
-                IconButton(
-                  key: const Key('dismiss-error'),
-                  icon: const Icon(Icons.close),
-                  tooltip: 'Dismiss',
-                  onPressed: () =>
-                      setState(() => _dismissedError = _state.lastError),
-                ),
-            ],
-          ),
-        ),
-        Expanded(child: child),
-      ],
-    );
   }
 
   String _sessionLabel(String sessionId) {
