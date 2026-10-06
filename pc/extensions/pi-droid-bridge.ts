@@ -41,16 +41,15 @@ import type {
   SlashCommand,
   TreeNodeSummary,
 } from '../src/protocol/protocol.ts';
-import type { BridgeCommandCtx, BridgeCtx, BridgePi, AssistantMessageEvent, MessageEndEvent, BridgeCloseEvent, BridgeSocket, SocketFactory, BridgeDeps } from '../src/bridge/pi-types.ts';
-import { normalizeAssistantEvent, normalizeMessageEnd } from '../src/bridge/normalize.ts';
-import { toolCallPayloads, toolResultPayload, boundToolPayload } from '../src/bridge/tool-views.ts';
-import { collectToolArgs, collectUnpairedToolArgs, annotateToolViews, projectHistory, entryAnchor, mintCursor, parseHistoryCursor, projectModel, readContextUsage } from '../src/bridge/history.ts';
-import { messageText, SETTLED_TEXT_MAX_CODE_POINTS, settleText, sanitizeLabel, labelFromMessage, labelFromEntries } from '../src/bridge/labels.ts';
+import type { BridgeCommandCtx, BridgeCtx, BridgePi, BridgeCloseEvent, BridgeSocket, SocketFactory, BridgeDeps } from '../src/bridge/pi-types.ts';
+import { annotateToolViews, projectHistory, entryAnchor, mintCursor, parseHistoryCursor, projectModel, readContextUsage } from '../src/bridge/history.ts';
+import { sanitizeLabel, labelFromMessage, labelFromEntries } from '../src/bridge/labels.ts';
 import { RATE_LIMITED_RECONNECT_MS, computeBackoff } from '../src/bridge/backoff.ts';
 import { encodeAgentMessage, parseCommand } from '../src/bridge/wire.ts';
 import { commandResultMessage, eventMessage, helloMessage, registerMessage } from '../src/bridge/outbound.ts';
 import { isActiveMode, COMMAND_ALLOWLIST, SESSION_COMMAND_NAME, COMMAND_NOT_ALLOWED } from '../src/bridge/commands.ts';
 import { dispatchCommand, type CommandOutcome } from '../src/bridge/command-dispatch.ts';
+import { createRelay, type Relay } from '../src/bridge/relay.ts';
 
 
 /**
@@ -128,19 +127,11 @@ class Bridge {
   private readonly pi: BridgePi;
   private readonly deps: ResolvedDeps;
   private readonly debug: (stream: 'stderr', text: string) => void;
+  private readonly relay: Relay;
   private socket: BridgeSocket | null = null;
   private ctx: BridgeCtx | null = null;
-  private seq = 0;
   private lastLabel: string | null = null;
   private state: AgentState = 'idle';
-  /** Tool-call arguments by call id, held only while a call can still resolve
-   * its `toolResult` (which carries none). Filled by the live assistant
-   * `message_end` and, at session start, only for entries calls with no recorded
-   * result; released when the result is emitted and cleared when the turn
-   * settles. A completed call is never held — see issue #20. */
-  private readonly toolArgs = new Map<string, unknown>();
-  /** The current turn's final assistant snippet, reset at each turn start. */
-  private lastSettled: { text: string; truncated: boolean } = { text: '', truncated: false };
   private attempt = 0;
   private reconnectTimer: unknown = null;
   private closed = false;
@@ -155,6 +146,7 @@ class Bridge {
     this.debug = (stream, text) => {
       if (deps.env.PI_DROID_DEBUG === '1') deps.write(stream, text);
     };
+    this.relay = createRelay({ sendEvent: (payload) => this.sendEvent(payload), relabelFromMessage: (message) => this.relabelFromMessage(message) });
   }
 
   install(): void {
@@ -166,10 +158,10 @@ class Bridge {
       this.guard(() => this.onSessionStart(ctx, event)),
     );
     this.pi.on('session_shutdown', () => this.guard(() => this.onSessionShutdown()));
-    this.pi.on('message_update', (event) => this.guard(() => this.onMessageUpdate(event)));
+    this.pi.on('message_update', (event) => this.guard(() => this.relay.onMessageUpdate(event)));
     // Real pi's assistant-completion signal. `message_update` never carries a
     // `done`, so this is the only live source of the `message` payload.
-    this.pi.on('message_end', (event) => this.guard(() => this.onMessageEnd(event)));
+    this.pi.on('message_end', (event) => this.guard(() => this.relay.onMessageEnd(event)));
     // `/session-name` in the TUI emits `session_info_changed`; subscribing keeps
     // the phone's label current without waiting for the next prompt.
     this.pi.on('session_info_changed', () =>
@@ -177,21 +169,17 @@ class Bridge {
     );
     this.pi.on('agent_start', () =>
       this.guard(() => {
-        // A new turn starts with no reply, so a settle before any assistant
-        // message cannot inherit the previous turn's text.
-        this.lastSettled = { text: '', truncated: false };
+        this.relay.resetTurn();
         this.setAgentState('running');
       }),
     );
     // Terminal state is `agent_settled`, deliberately not `agent_end`.
     this.pi.on('agent_settled', () =>
       this.guard(() => {
-        // A settled turn has no in-flight calls, so anything still held is an
-        // aborted call no result will ever consume.
-        this.toolArgs.clear();
+        this.relay.clearHeldArgs();
         this.setAgentState('settled');
         this.sendUsageEvent();
-        this.sendSettleEvent();
+        this.relay.sendSettled();
       }),
     );
     // Compaction is an LLM summarization call, so without this the app sits
@@ -226,7 +214,7 @@ class Bridge {
     // that the branch changed. pi emits it after `branch()`/`resetLeaf()`, so a
     // re-requesting viewer re-baselines on the new branch. Guarded like every
     // other subscription so a mapping failure cannot escape into pi.
-    this.pi.on('session_tree', (event) => this.guard(() => this.onSessionTree(event)));
+    this.pi.on('session_tree', (event) => this.guard(() => this.relay.onSessionTree(event)));
     // `ctx.compact()` is fire-and-forget and passes no `onError`, so a failed
     // compaction is otherwise invisible. Surface every reason (manual, overflow,
     // threshold) — an auto-compaction failure is more consequential, not less.
@@ -236,7 +224,7 @@ class Bridge {
     this.pi.on('session_compact_failed', (event) =>
       this.guard(() => {
         this.sendCompactingEvent(false);
-        this.onCompactFailed(event);
+        this.relay.onCompactFailed(event);
       }),
     );
   }
@@ -338,19 +326,11 @@ class Bridge {
     this.cancelReconnect();
     this.ctx = ctx;
     this.closed = false;
-    this.seq = 0;
+    this.relay.resetSession();
     this.state = 'idle';
-    this.lastSettled = { text: '', truncated: false };
     this.attempt = 0;
-    // Only calls with no recorded result can still be in flight: a call whose
-    // `toolResult` is already in the entries can never produce another, so
-    // seeding it would retain its arguments for the session. `reload` is the
-    // reason that can strand an unpaired call across an instance boundary.
-    this.toolArgs.clear();
     try {
-      for (const [id, args] of collectUnpairedToolArgs(ctx.sessionManager.getEntries())) {
-        this.toolArgs.set(id, args);
-      }
+      this.relay.seedToolArgs(ctx.sessionManager.getEntries());
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.debug('stderr', `pi-droid bridge: tool-arg seeding failed: ${message}\n`);
@@ -512,6 +492,10 @@ class Bridge {
     this.sendRegister(label);
   }
 
+  private relabelFromMessage(message: unknown): void {
+    this.refreshLabel(this.resolveLabel(() => labelFromMessage(message)));
+  }
+
   private sendAgentState(): void {
     this.sendEvent({ kind: 'agent', state: this.state });
   }
@@ -519,57 +503,6 @@ class Bridge {
   private setAgentState(state: AgentState): void {
     this.state = state;
     this.sendEvent({ kind: 'agent', state });
-  }
-
-  private onMessageUpdate(event: unknown): void {
-    const assistantEvent = (event as { assistantMessageEvent?: AssistantMessageEvent })
-      .assistantMessageEvent;
-    if (assistantEvent === undefined) return;
-    const candidate = this.seq + 1;
-    const normalized = normalizeAssistantEvent(assistantEvent, candidate);
-    if (normalized.kind === 'ignore') return;
-    if (normalized.payload.kind === 'stream') this.seq = candidate;
-    this.sendEvent(normalized.payload);
-  }
-
-  private onMessageEnd(event: unknown): void {
-    const normalized = normalizeMessageEnd(event as MessageEndEvent);
-    if (normalized.kind === 'ignore') return;
-    this.sendEvent(normalized.payload);
-    // A tool call/result follows its own message frame, so the app can pair the
-    // normalized view with the row the message produced.
-    const original = (event as { message?: unknown }).message;
-    const originalRole =
-      typeof original === 'object' && original !== null
-        ? (original as { role?: unknown }).role
-        : undefined;
-    if (originalRole === 'assistant') {
-      for (const payload of toolCallPayloads(original, this.toolArgs)) {
-        this.sendEvent(boundToolPayload(payload));
-      }
-      for (const [id, args] of collectToolArgs([original])) this.toolArgs.set(id, args);
-    } else if (originalRole === 'toolResult') {
-      const payload = toolResultPayload(original, this.toolArgs);
-      // Delete before the send: the result is the only reader that needs the
-      // arguments, and a throw out of `sendEvent` must not skip the release.
-      const toolCallId = asString((original as { toolCallId?: unknown }).toolCallId);
-      if (toolCallId !== null) this.toolArgs.delete(toolCallId);
-      if (payload !== null) this.sendEvent(boundToolPayload(payload));
-    }
-    // The snippet comes from the ORIGINAL message, never the bounded payload:
-    // an oversized reply is replaced by a `{truncated:true,bytes}` marker, and
-    // caching that marker would make every huge reply notify `'No reply'`.
-    if (originalRole === 'assistant') {
-      this.lastSettled = settleText(
-        messageText((original as { content?: unknown }).content),
-        SETTLED_TEXT_MAX_CODE_POINTS,
-      );
-    }
-    // The live path uses the event's own message, never the entries scan: pi
-    // persists the message only after this event, so `getEntries()` is stale.
-    this.refreshLabel(
-      this.resolveLabel(() => labelFromMessage((event as { message?: unknown }).message)),
-    );
   }
 
   private onMessage(event: unknown): void {
@@ -736,41 +669,6 @@ class Bridge {
    */
   private sendCompactingEvent(active: boolean): void {
     this.sendEvent({ kind: 'status', event: 'compacting', active });
-  }
-
-  /**
-   * Surfaces a failed compaction as an error notice. Gated on a non-empty
-   * `errorMessage`, which also excludes a deliberately aborted compaction (pi
-   * leaves `errorMessage` undefined for those). No `reason` filter: manual,
-   * overflow and threshold failures are all reported.
-   */
-  private onCompactFailed(event: unknown): void {
-    const errorMessage =
-      typeof event === 'object' && event !== null
-        ? (event as { errorMessage?: unknown }).errorMessage
-        : undefined;
-    if (typeof errorMessage !== 'string' || errorMessage.length === 0) return;
-    this.sendEvent({ kind: 'status', event: 'error', message: errorMessage });
-  }
-
-  /** Emits the cached turn snippet, after the terminal state and usage. */
-  private sendSettleEvent(): void {
-    this.sendEvent({
-      kind: 'settled',
-      text: this.lastSettled.text,
-      truncated: this.lastSettled.truncated,
-    });
-  }
-
-  /**
-   * Maps pi's `session_tree` event to the `leaf` payload. A `null` `newLeafId`
-   * (navigated to the root) is preserved, not omitted: absent means "an older
-   * bridge", which the app cannot tell from "at the root".
-   */
-  private onSessionTree(event: unknown): void {
-    const raw = (event as { newLeafId?: unknown } | null)?.newLeafId;
-    const leafId = typeof raw === 'string' && raw.length > 0 ? raw : null;
-    this.sendEvent({ kind: 'leaf', leafId });
   }
 
   private sendCommandResult(
