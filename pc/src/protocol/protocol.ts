@@ -53,9 +53,10 @@ export const HISTORY_MAX_BYTES = 768 * 1024;
  * - `4002` capability/protocol violation: a message a listener does not permit,
  *   a non-`hello` message before authentication, a bad `protocolVersion`,
  *   malformed JSON, a missing required field, or a permitted type with no
- *   dispatch branch (the hub fails closed).
+ *   dispatch branch (the hub fails closed). Terminal: a retry re-sends the same
+ *   message and is rejected identically.
  * - `4003` a listener-bound capability violation for a message this listener
- *   does not permit (see `hub.ts`, the enforcement site).
+ *   does not permit (see `hub.ts`, the enforcement site). Terminal, likewise.
  * - `4008` rate limited: the per-connection failed-credential cap was reached.
  *   It arrives **after a short delay** (~250 ms), deliberately, so a socket
  *   cannot be used as a fast token oracle. Treat it as "wait, then retry", not
