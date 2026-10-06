@@ -27,6 +27,21 @@ SessionTranscript tall(int count) => SessionTranscript(
   ],
 );
 
+/// A transcript of uniform, deliberately tall rows. A window growth inserts a
+/// whole chunk — far more than `ListView.builder`'s cache — so the row the
+/// correction captured is always unmounted and the growth takes its extent-delta
+/// fallback path rather than the anchor path.
+SessionTranscript tallRows(int count) => SessionTranscript(
+  blocks: [
+    for (var i = 0; i < count; i++)
+      TranscriptBlock(
+        kind: TranscriptBlockKind.text,
+        id: 'b$i',
+        text: 'message $i\nsecond line\nthird line\nfourth line',
+      ),
+  ],
+);
+
 /// A transcript with *variable* row heights: every fifth row is a tall
 /// multiline block. `ListView.builder` estimates `maxScrollExtent` from the
 /// rows laid out so far, so on a shape like this a one-shot jump targets an
@@ -45,15 +60,19 @@ SessionTranscript mixed(int count) => SessionTranscript(
   ],
 );
 
-Widget wrap(SessionTranscript transcript, {Key? key}) =>
-    MaterialApp(
-      theme: piTheme(Brightness.dark),
-      home: TranscriptView(
-        key: key,
-        transcript: transcript,
-        onLoadOlder: () {},
-      ),
-    );
+Widget wrap(
+  SessionTranscript transcript, {
+  Key? key,
+  TranscriptSearch search = TranscriptSearch.none,
+}) => MaterialApp(
+  theme: piTheme(Brightness.dark),
+  home: TranscriptView(
+    key: key,
+    transcript: transcript,
+    onLoadOlder: () {},
+    search: search,
+  ),
+);
 
 /// The scroll offset of the transcript's list. In a natural-order list the
 /// bottom is `maxScrollExtent`, not 0.
@@ -475,6 +494,144 @@ void main() {
             'a prepend must not follow-jump a short transcript to the bottom',
       );
       expect(scrollOffset(tester), 0);
+    },
+  );
+
+  testWidgets(
+    'reaching the top of the window reveals older loaded blocks without moving the content',
+    (tester) async {
+      await tester.pumpWidget(wrap(tall(200)));
+      await tester.pumpAndSettle();
+      expect(find.text('message 199'), findsOneWidget);
+      expect(
+        find.text('message 169'),
+        findsNothing,
+        reason: 'the window holds the newest 30 blocks',
+      );
+      // Snapshot the extent: `position` is a live reference, so comparing
+      // `position.maxScrollExtent` to itself can never fail (the plan's
+      // original test did exactly that — see the milestone report).
+      final before = tester
+          .state<ScrollableState>(find.byType(Scrollable))
+          .position
+          .maxScrollExtent;
+
+      // Drive the position directly rather than by a 4000 px drag: a drag can
+      // clamp or overscroll and would not deterministically exercise the armed
+      // growth branch (Open Question 3 in Revision 1, now removed by construction).
+      tester.state<ScrollableState>(find.byType(Scrollable)).position.jumpTo(0);
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('message 170'),
+        findsOneWidget,
+        reason: 'the row at the top of the window is still on screen',
+      );
+      expect(
+        tester
+            .state<ScrollableState>(find.byType(Scrollable))
+            .position
+            .maxScrollExtent,
+        greaterThan(before),
+        reason: 'the window grew, so there is more to scroll up into',
+      );
+
+      // The content did not move: the row that was pinned at the top of the
+      // viewport before the growth is still at the top after it. This is the
+      // witness for the anchor correction (delete it and this is ~1200 px down).
+      final listTop = tester.getTopLeft(find.byType(ListView)).dy;
+      final pinnedTop = tester.getTopLeft(find.text('message 170')).dy;
+      expect(
+        pinnedTop - listTop,
+        lessThan(60),
+        reason: 'the inserted chunk was compensated on the same frame',
+      );
+
+      // The plan asserted 'message 169' here, but a jump to the very top arms
+      // another growth chunk (140 -> 110) and pins the row that was at the top
+      // (140), so 169 sits 29 rows below the viewport. Assert the row that is
+      // actually revealed and reachable: the top of the first revealed chunk,
+      // which the pre-window view never rendered.
+      tester.state<ScrollableState>(find.byType(Scrollable)).position.jumpTo(0);
+      await tester.pumpAndSettle();
+      expect(
+        find.text('message 140'),
+        findsOneWidget,
+        reason: 'the revealed chunk is reachable by scrolling, with no round trip',
+      );
+    },
+  );
+
+  testWidgets(
+    'a scroll during a window growth is preserved, not discarded',
+    (tester) async {
+      await tester.pumpWidget(wrap(tallRows(200)));
+      await tester.pumpAndSettle();
+      final position = tester
+          .state<ScrollableState>(find.byType(Scrollable))
+          .position;
+
+      // Arm the growth at the top of the window and let its setState run. The
+      // correction callback is queued for the next frame's post-frame phase and
+      // the layout is still the old one, so oldMax here is the value that
+      // callback captures.
+      position.jumpTo(0);
+      await tester.pump();
+      final oldMax = position.maxScrollExtent;
+
+      // Scroll again in the gap before that callback runs. The inserted height
+      // must be layered on the *live* offset (100 + inserted), not on the
+      // offset the growth was scheduled from (0 + inserted): the latter throws
+      // the new scroll away.
+      position.jumpTo(100);
+
+      await tester.pump();
+      final inserted = position.maxScrollExtent - oldMax;
+      expect(inserted, greaterThan(0), reason: 'the window really grew');
+      expect(
+        scrollOffset(tester),
+        100 + inserted,
+        reason:
+            'the correction must compensate the insertion at the live offset',
+      );
+    },
+  );
+
+  testWidgets(
+    'a search opening in the growth frame keeps the position it owns',
+    (tester) async {
+      await tester.pumpWidget(wrap(tall(200)));
+      await tester.pumpAndSettle();
+      final position = tester
+          .state<ScrollableState>(find.byType(Scrollable))
+          .position;
+      final before = position.maxScrollExtent;
+
+      // Arm the growth at the top of the window and let its setState run; its
+      // correction callback is now queued for the next frame.
+      position.jumpTo(0);
+      await tester.pump();
+
+      // The search opens in the very frame the grown window is laid out in. It
+      // owns the scroll position now — it is about to bisect for its current
+      // match — so the growth correction must bail rather than yank the offset
+      // out from under the seek.
+      await tester.pumpWidget(
+        wrap(tall(200), search: const TranscriptSearch(open: true)),
+      );
+      await tester.pump();
+
+      expect(
+        position.maxScrollExtent,
+        greaterThan(before),
+        reason: 'the window really grew',
+      );
+      expect(
+        scrollOffset(tester),
+        0,
+        reason:
+            'the growth correction must not move a position the search owns',
+      );
     },
   );
 }

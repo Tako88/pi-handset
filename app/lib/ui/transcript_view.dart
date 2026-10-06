@@ -26,6 +26,18 @@
 /// estimates and which under-measures when the pre-prepend content fitted the
 /// viewport (that case is skipped rather than guessed).
 ///
+/// **The rendered list is a bounded suffix of the loaded blocks.** On open the
+/// view renders only the newest [TranscriptView.windowBlocks] blocks, so a long
+/// transcript's first frame builds O(window) rows instead of walking the whole
+/// loaded page. Reaching the top of that window silently reveals one more
+/// [TranscriptView.windowChunk] chunk, anchored so the row being read does not
+/// move — an insertion above a natural-order list would otherwise slide the
+/// content down by the inserted height. The window only grows, never shrinks,
+/// within a mounted view, and it is open at the bottom, so a streaming append
+/// is always included. Row state survives the growth because the framework
+/// retakes the alive `GlobalKey`s in ascending index order — a framework
+/// guarantee this code relies on but does not test.
+///
 /// Presentational: block derivation happens in the client, not here, so a
 /// stream delta never re-walks the transcript.
 library;
@@ -163,6 +175,19 @@ class _TranscriptViewState extends State<TranscriptView> {
   /// and only grows upward. 0 renders the whole transcript.
   int _windowStart = 0;
 
+  /// Whether the viewer has scrolled upward at least once since the view
+  /// settled. Growth is armed only by an upward move, so the initial
+  /// `offset == 0` frame (before the open's jump-to-bottom) cannot grow the
+  /// window and defeat the bounded open. See NC-1.
+  bool _windowArmed = false;
+
+  /// The last scroll offset seen by [_onScroll], so an upward move is
+  /// detectable: `offset < _lastOffset`.
+  double _lastOffset = 0;
+
+  /// Coalesces grow checks so at most one is scheduled per frame.
+  bool _growScheduled = false;
+
   /// Whether the viewer is following the bottom. It is *not* recomputed from
   /// the offset after content growth (in a forward list that would read as "not
   /// at the bottom" the instant `maxScrollExtent` grew), so it must be read
@@ -212,6 +237,12 @@ class _TranscriptViewState extends State<TranscriptView> {
       _searchWasFollowing = _following;
       _following = false;
     }
+    // The window cannot fill a very tall viewport in one chunk, and a list with
+    // nothing to scroll never fires _onScroll; grow it from the open's own
+    // post-frame path. Scheduled before the jump-to-bottom so it reads the
+    // pre-settle offset; the _windowArmed gate is what keeps that initial
+    // offset == 0 frame from growing the window (see NC-1).
+    _scheduleGrowCheck();
     final matchId = widget.search.currentMatch?.id;
     if (matchId != null) {
       // The search is already open with a current match: reveal it rather than
@@ -281,6 +312,10 @@ class _TranscriptViewState extends State<TranscriptView> {
               windowStart: _windowStart,
             );
     }
+    // Covers the undersized window even when no scroll event fires (and the
+    // prepend branch below returns early). A no-op unless the window cannot
+    // scroll or the viewer is armed and near the top.
+    _scheduleGrowCheck();
     // A prepend grows the list at the top. In a natural-order list `pixels` is
     // preserved, so the viewed content would slide down by the inserted height;
     // correct it in a post-frame callback, when the new extent is measurable.
@@ -338,11 +373,121 @@ class _TranscriptViewState extends State<TranscriptView> {
     // the next append yank the view off the current match.
     if (widget.search.open) return;
     if (!_controller.hasClients) return;
+    // Arm growth only on an upward move. _lastOffset is seeded by the open's
+    // own jump-to-bottom, so the first downward move does not arm.
+    final offset = _controller.offset;
+    if (offset < _lastOffset) _windowArmed = true;
+    _lastOffset = offset;
     final atBottom = isAtBottom(
       _controller.offset,
       _controller.position.maxScrollExtent,
     );
     if (atBottom != _following) setState(() => _following = atBottom);
+    _scheduleGrowCheck();
+  }
+
+  /// Schedule at most one grow check for the next frame.
+  void _scheduleGrowCheck() {
+    if (_growScheduled) return;
+    _growScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _growScheduled = false;
+      _maybeGrowWindow();
+    });
+  }
+
+  /// Grow the rendered window by one chunk when the viewer has scrolled to the
+  /// top of it. Two triggers:
+  ///  * the window cannot scroll at all (maxScrollExtent <= 0) — it could
+  ///    never reveal anything, so a tall viewport needs a bigger window; or
+  ///  * the viewer is armed by an upward scroll and the offset is within
+  ///    [TranscriptView.windowGrowThreshold] of the top.
+  /// Never grows while a search owns the position (the seek grows it itself).
+  void _maybeGrowWindow() {
+    if (!mounted || !_controller.hasClients) return;
+    if (widget.search.open) return;
+    if (_windowStart <= 0) return;
+    final canGrow =
+        _controller.position.maxScrollExtent <= 0 ||
+        (_windowArmed &&
+            _controller.offset <= TranscriptView.windowGrowThreshold);
+    if (!canGrow) return;
+    _growWindowTo(_windowStart - TranscriptView.windowChunk);
+  }
+
+  /// The topmost built row's id and its screen y, or null when none is
+  /// measurable. Used to pin the content across a growth, so the anchor is read
+  /// before the new rows are laid out.
+  (String, double)? _topAnchor() {
+    final blocks = widget.transcript.blocks;
+    for (var i = _windowStart; i < blocks.length; i++) {
+      final object = _rowKeys[blocks[i].id]?.currentContext?.findRenderObject();
+      if (object is RenderBox && object.attached) {
+        return (blocks[i].id, object.localToGlobal(Offset.zero).dy);
+      }
+    }
+    return null;
+  }
+
+  /// Reveal a chunk ending at [newStart] while keeping the content the viewer
+  /// is reading fixed on screen.
+  ///
+  /// The inserted rows push everything below them down. The preferred correction
+  /// re-measures the topmost built row (the anchor) by block id: its screen
+  /// delta *is* the inserted height, exactly, even for variable-height rows.
+  /// A full chunk is taller than the builder's cache (30 rows ≈ 1140 px vs a
+  /// 250 px default), so the anchor row is systematically unmounted by the
+  /// growth; when that happens (but an anchor *was* identified) fall back to
+  /// the extent delta — the same estimate the prepend correction uses. With no
+  /// anchor at all, do not guess. Then re-check: a successful correction leaves
+  /// the offset well above the top, so the chain stops after one chunk per
+  /// scroll-to-top.
+  void _growWindowTo(int newStart) {
+    final target = newStart < 0 ? 0 : newStart;
+    if (target >= _windowStart) return;
+    final anchor = _topAnchor(); // captured with a current layout
+    final oldMax = _controller.position.maxScrollExtent;
+    setState(() => _windowStart = target);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_controller.hasClients) return;
+      // A search that opened in the same frame owns the position now: correcting
+      // would yank the offset the seek is about to bisect from. Every other
+      // growth entry bails when a search is open; so does this one.
+      if (widget.search.open) return;
+      var corrected = false;
+      if (anchor != null) {
+        final object = _rowKeys[anchor.$1]?.currentContext?.findRenderObject();
+        if (object is RenderBox && object.attached) {
+          final delta = object.localToGlobal(Offset.zero).dy - anchor.$2;
+          if (delta > 0) {
+            _controller.jumpTo(
+              (_controller.offset + delta).clamp(
+                0.0,
+                _controller.position.maxScrollExtent,
+              ),
+            );
+            corrected = true;
+          }
+        }
+      }
+      // The anchor moved out of the builder's cache (a whole chunk is taller
+      // than it). Measure the insertion from the extent delta instead. Use the
+      // live offset, exactly as the anchor path does: the insertion
+      // compensation layers on wherever the finger has since moved, so scroll
+      // input landing between the setState and this callback is preserved.
+      if (anchor != null && !corrected) {
+        final inserted = _controller.position.maxScrollExtent - oldMax;
+        if (inserted > 0) {
+          _controller.jumpTo(
+            (_controller.offset + inserted).clamp(
+              0.0,
+              _controller.position.maxScrollExtent,
+            ),
+          );
+        }
+      }
+      _maybeGrowWindow(); // chains the undersized case, one chunk per frame
+    });
   }
 
   void _jumpToBottom() => _settleToBottom(0);
@@ -401,6 +546,22 @@ class _TranscriptViewState extends State<TranscriptView> {
       );
       return;
     }
+    // The match can only be reached if it is inside the rendered window. A
+    // match above it (the far-match cases) grows the window down to the match
+    // and then re-settles, because the seek's index space is the window's.
+    final blockIndex = widget.transcript.blocks.indexWhere((b) => b.id == id);
+    if (blockIndex < 0) {
+      _endSeek();
+      return;
+    }
+    if (blockIndex < _windowStart) {
+      _endSeek();
+      _growWindowTo(blockIndex - TranscriptView.windowChunk); // clamps at 0
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _controller.hasClients) _settleToMatch(id);
+      });
+      return;
+    }
     final targetIndex = _listIndexOf(id);
     if (targetIndex == null) {
       // The block this match names is gone from the transcript (a prepend or
@@ -427,6 +588,8 @@ class _TranscriptViewState extends State<TranscriptView> {
     final range = _builtIndexRange();
 
     if (range == null) {
+      // Unwitnessed defensive path (cf. NC-6): every settle entry is
+      // post-layout, so range is non-null in all tests.
       // Nothing laid out to measure: aim at the proportional estimate, retry.
       final count = _itemCount();
       if (count <= 1) {
