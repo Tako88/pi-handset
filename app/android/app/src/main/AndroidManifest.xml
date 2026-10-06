@@ -20,9 +20,10 @@
     <uses-permission android:name="android.permission.CAMERA"/>
     <application
         android:enableOnBackInvokedCallback="true"
-        android:label="pi_droid"
+        android:label="pi-droid"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round">
         <activity
             android:name=".MainActivity"
             android:exported="true"
