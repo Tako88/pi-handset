@@ -5,30 +5,18 @@ import type { AgentSettledMessage, SessionsMessage } from '../protocol/protocol.
 import type { Connection, Session, State } from './hub-state.ts';
 
 /**
- * Application close codes (4000–4999). The full table and the message shapes
- * live in `protocol.ts`; this is the enforcement site.
+ * Application close codes (4000–4999). What each one means on the wire, and
+ * what a client should do about it, is in `protocol.ts`; this is the
+ * enforcement site, so only the reasons *this* hub closes for are listed here.
  *
- * - `CLOSE_PROTOCOL` (4002): malformed JSON, a bad `protocolVersion`, a missing
- *   required field, an explicit session takeover displacing an agent, or a
- *   permitted type with no dispatch branch (dispatch fails closed).
+ * - `CLOSE_PROTOCOL` (4002): an explicit session takeover displacing an agent.
  * - `CLOSE_CAPABILITY` (4003): a message this listener does not permit.
- * - `CLOSE_RATE_LIMITED` (4008): the failed-credential cap was reached, an
- *   unauthenticated connection outlived its auth deadline, or the
- *   unauthenticated-viewer cap was exceeded. After a failed credential it is
- *   sent **after a short delay** so the socket cannot be used as a fast token
- *   oracle.
- * - `CLOSE_INTERNAL` (4500): an unexpected error escaped a message handler and
- *   was contained to one connection. Transient by assumption — both clients
- *   retry it, unlike the terminal 4002.
+ * - `CLOSE_RATE_LIMITED` (4008): an unauthenticated connection outlived its
+ *   auth deadline, or the unauthenticated-viewer cap was exceeded.
  */
 export const CLOSE_PROTOCOL = 4002;
 export const CLOSE_CAPABILITY = 4003;
 export const CLOSE_RATE_LIMITED = 4008;
-/**
- * 4500: an unexpected error escaped a message handler and was contained to
- * one connection. Transient by assumption — both clients retry it, unlike
- * the terminal 4002.
- */
 export const CLOSE_INTERNAL = 4500;
 
 export function send(connection: Connection, message: unknown): void {
