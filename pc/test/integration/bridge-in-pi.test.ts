@@ -43,7 +43,7 @@
 // ---------------------------------------------------------------------------
 
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, test } from 'node:test';
@@ -53,7 +53,7 @@ import { createSpawner } from '../../src/hub/spawner.ts';
 import type { Spawner } from '../../src/hub/spawner.ts';
 import { PROTOCOL_VERSION } from '../../src/protocol/protocol.ts';
 
-import { harnessPath, FAUX_TEXT, TEMPLATE_MARKER, TEMPLATE_DESCRIPTION_SENTINEL, BUILTIN_COMMAND_NAMES, BOOT_TIMEOUT_MS, STREAM_TIMEOUT_MS, tmpRoot, runtimeDir, configDir, setupBridgeInPi, cleanupBridgeInPi, waitFor, alive, startHub, publishDiscovery, type Viewer, connectViewer, waitForAppSession, waitForMessage, waitForReplacement, collectPrompt, collectCommandResult, waitForBothFauxModels, collectSwitch, bootPi, drivePrompt, messageText, reportChildOutput, describeCollected } from '../support/bridge-in-pi-harness.ts';
+import { harnessPath, bridgePath, FAUX_TEXT, TEMPLATE_MARKER, TEMPLATE_DESCRIPTION_SENTINEL, BUILTIN_COMMAND_NAMES, BOOT_TIMEOUT_MS, STREAM_TIMEOUT_MS, tmpRoot, runtimeDir, configDir, setupBridgeInPi, cleanupBridgeInPi, waitFor, alive, startHub, publishDiscovery, spawnPi, startAgentProxy, type Viewer, connectViewer, waitForSession, waitForAppSession, waitForMessage, waitForReplacement, collectPrompt, collectCommandResult, waitForBothFauxModels, collectSwitch, bootPi, drivePrompt, messageText, reportChildOutput, describeCollected } from '../support/bridge-in-pi-harness.ts';
 
 beforeEach(setupBridgeInPi);
 afterEach(cleanupBridgeInPi);
@@ -514,4 +514,131 @@ test('a spawned bare pi registers, prompts and dies on kill-session', async () =
     'the spawned process group to be gone after the kill',
     5000,
   );
+});
+
+test('a bridge that loses its socket mid-turn tells its viewer to resync and the turn survives', async () => {
+  const { token } = loadOrCreateToken(configDir);
+  const reachedFile = join(tmpRoot, 'gate-reached');
+  const releaseFile = join(tmpRoot, 'gate-release');
+  const settledFile = join(tmpRoot, 'turn-settled');
+
+  const hub = await startHub({ token });
+  const proxy = await startAgentProxy(hub.agentPort);
+  // Point the bridge at the proxy, before pi dials.
+  publishDiscovery(hub, { agentPort: proxy.port });
+
+  spawnPi(
+    [
+      '--mode',
+      'rpc',
+      '-ne',
+      '-e',
+      harnessPath,
+      '-e',
+      bridgePath,
+      '--provider',
+      'faux',
+      '--model',
+      'faux-1',
+      '--no-session',
+      '-nc',
+    ],
+    {
+      PI_HANDSET_FAUX_TEXT: FAUX_TEXT,
+      PI_HANDSET_FAUX_GATE_REACHED: reachedFile,
+      PI_HANDSET_FAUX_GATE_RELEASE: releaseFile,
+      PI_HANDSET_FAUX_SETTLED: settledFile,
+    },
+  );
+
+  const viewer = await connectViewer(hub.viewerPort, token);
+  const session = await waitForSession(viewer, BOOT_TIMEOUT_MS);
+  // Subscribe, but do NOT request history: the attach snapshot would be a
+  // baseline, and this test must see only the recovery snapshot.
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'subscribe',
+    sessionId: session.sessionId,
+  });
+  // A model call made before the prompt would consume the gate and leave the
+  // prompt's own turn ungated, so the gate files are cleared after boot.
+  rmSync(reachedFile, { force: true });
+  rmSync(releaseFile, { force: true });
+  rmSync(settledFile, { force: true });
+
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'command',
+    id: 'prompt-1',
+    sessionId: session.sessionId,
+    name: 'prompt',
+    args: { text: 'say the word' },
+  });
+  const collecting = collectPrompt(viewer, 'prompt-1', STREAM_TIMEOUT_MS, session.sessionId);
+
+  // The turn is parked inside the model call, before any assistant output.
+  await waitFor(
+    () => existsSync(reachedFile),
+    'the bridge to reach the gated model call',
+    BOOT_TIMEOUT_MS,
+  );
+
+  // Sever the transport before the turn can emit anything. `hold()` then
+  // `cut()` are synchronous, so no reconnect can slip through; the release
+  // file lets the parked turn run — against a dead socket.
+  proxy.hold();
+  proxy.cut();
+  writeFileSync(releaseFile, '');
+
+  // The whole turn has now been emitted and dropped.
+  await waitFor(
+    () => existsSync(settledFile),
+    'the cut turn to reach agent_settled',
+    STREAM_TIMEOUT_MS,
+  );
+
+  proxy.resume();
+  const collected = await collecting;
+
+  assert.equal(
+    collected.recovered,
+    true,
+    `the viewer was never told to resync${describeCollected(collected)}`,
+  );
+  assert.equal(
+    collected.settled,
+    true,
+    `the recovered turn never settled${describeCollected(collected)}`,
+  );
+  assert.equal(collected.sawSessionGone, false, 'a takeover must not retire the session');
+  assert.equal(
+    collected.streams.length,
+    0,
+    `the cut turn's stream events must have been lost${describeCollected(collected)}`,
+  );
+  const folded = collected.messages.map((entry) => messageText(entry.payload)).join('');
+  assert.ok(
+    folded.includes(FAUX_TEXT),
+    `the recovery snapshot must carry the lost turn${describeCollected(collected)}`,
+  );
+
+  // Recoverability, independently of the recovery snapshot folded above.
+  viewer.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'history-request',
+    sessionId: session.sessionId,
+  });
+  const snapshot = await waitForMessage(
+    viewer,
+    (message) => message.type === 'snapshot' && message.sessionId === session.sessionId,
+    STREAM_TIMEOUT_MS,
+  );
+  const entries = (snapshot.entries ?? []) as Array<Record<string, unknown>>;
+  const text = entries
+    .filter((entry) => entry.type === 'message')
+    .map((entry) => messageText({ message: entry.message }))
+    .join('');
+  assert.ok(text.includes(FAUX_TEXT), 'the turn must survive in the session');
+
+  await proxy.close();
 });

@@ -316,6 +316,9 @@ export function freePort(): Promise<number> {
 export interface AgentProxy {
   readonly port: number;
   cut(): void;
+  /** Refuse every new bridge connection (destroyed at accept) until `resume()`. */
+  hold(): void;
+  resume(): void;
   close(): Promise<void>;
 }
 
@@ -329,8 +332,19 @@ export interface AgentProxy {
 export async function startAgentProxy(targetPort: number): Promise<AgentProxy> {
   const bridgeSides = new Set<Socket>();
   const pairs: Array<{ bridge: Socket; hub: Socket }> = [];
+  let holding = false;
 
   const server = createServer((bridge) => {
+    // Checked before the socket joins `bridgeSides`, so `cut()`'s set stays the
+    // single source of truth: a held connection is destroyed here and no hub
+    // socket is ever created for it.
+    if (holding) {
+      bridge.on('error', () => {
+        // A destroyed socket can emit ECONNRESET; not a failure of the proxy.
+      });
+      bridge.destroy();
+      return;
+    }
     const hub = createConnection(targetPort, '127.0.0.1');
     bridgeSides.add(bridge);
     pairs.push({ bridge, hub });
@@ -362,10 +376,17 @@ export async function startAgentProxy(targetPort: number): Promise<AgentProxy> {
       for (const bridge of bridgeSides) bridge.destroy();
       bridgeSides.clear();
     },
+    hold() {
+      holding = true;
+    },
+    resume() {
+      holding = false;
+    },
     close() {
       // Idempotent: cleanupBridgeInPi may close a proxy a test already closed.
       if (closed) return Promise.resolve();
       closed = true;
+      holding = false;
       const index = proxies.indexOf(proxy);
       if (index !== -1) proxies.splice(index, 1);
       for (const { bridge, hub } of pairs) {
