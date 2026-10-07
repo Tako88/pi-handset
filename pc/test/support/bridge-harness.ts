@@ -70,6 +70,11 @@ export class FakeSocket implements BridgeSocket {
     this.dispatch('close', { code, reason });
   }
 
+  /** Models the transport's own `error` event, which carries the failure. */
+  error(event: unknown): void {
+    this.dispatch('error', event);
+  }
+
   private dispatch(type: string, event: unknown): void {
     for (const handler of this.listeners.get(type) ?? []) handler(event);
   }

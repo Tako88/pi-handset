@@ -34,6 +34,21 @@ export interface SocketLinkCallbacks {
 
 const SOCKET_OPEN = 1;
 
+/**
+ * The transport's own account of a socket failure, when the event carries one.
+ * A bare `socket error` cannot tell a reset from a refused dial from a peer that
+ * went away — which is the whole reason the line is written. The underlying
+ * error wins: an `ErrorEvent`'s own message is the generic "WebSocket error".
+ */
+export function describeSocketError(event: unknown): string {
+  if (typeof event !== 'object' || event === null) return '';
+  const cause = (event as { error?: unknown }).error;
+  if (cause instanceof Error && cause.message !== '') return `: ${cause.message}`;
+  const message = (event as { message?: unknown }).message;
+  if (typeof message === 'string' && message !== '') return `: ${message}`;
+  return '';
+}
+
 export function createSocketLink(deps: SocketLinkDeps, callbacks: SocketLinkCallbacks): SocketLink {
   let socket: BridgeSocket | null = null;
   let attempt = 0;
@@ -87,8 +102,8 @@ export function createSocketLink(deps: SocketLinkDeps, callbacks: SocketLinkCall
       }),
     );
     current.addEventListener('message', (event) => deps.guard(() => callbacks.onFrame(event)));
-    current.addEventListener('error', () =>
-      deps.guard(() => deps.debug('pi-handset bridge: socket error\n')),
+    current.addEventListener('error', (event) =>
+      deps.guard(() => deps.debug(`pi-handset bridge: socket error${describeSocketError(event)}\n`)),
     );
     current.addEventListener('close', (event) => deps.guard(() => onSocketClose(current, event)));
   }

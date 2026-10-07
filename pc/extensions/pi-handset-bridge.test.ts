@@ -426,6 +426,16 @@ test('a failed compaction reaches the transcript as an error notice', () => {
   });
 });
 
+test("a socket error reaches the debug sink with the transport's own words", () => {
+  const harness = makeHarness({ env: { PI_HANDSET_DEBUG: '1' } });
+  harness.start();
+  harness.sockets[0].error(new Error('read ECONNRESET'));
+  assert.equal(
+    harness.writes.at(-1)?.text,
+    'pi-handset bridge: socket error: read ECONNRESET\n',
+  );
+});
+
 test('an overflow compaction failure also reaches the transcript', () => {
   const harness = makeHarness();
   const ctx = harness.start();
