@@ -528,6 +528,15 @@ test('a re-register for the same session replaces the old agent', async () => {
   second.send({ protocolVersion: PROTOCOL_VERSION, type: 'register', sessionId: 's1' });
   await barrier(second);
 
+  // The takeover first tells the retained subscriber to resync (its own test
+  // asserts that frame too); consume it so the event relay below is unambiguous.
+  assert.deepEqual(await viewer.next(2000), {
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'resync-required',
+    sessionId: 's1',
+    reason: 'reconnect',
+  });
+
   // The session survives the old owner's replacement; the new owner's events
   // arrive. (The displaced agent's close is asserted in its own test.)
   second.send({
@@ -538,6 +547,30 @@ test('a re-register for the same session replaces the old agent', async () => {
   const relayed = await viewer.next();
   assert.equal(relayed.type, 'event');
   assert.deepEqual(relayed.payload, { kind: 'stream', seq: 1, text: 'from the new owner' });
+});
+
+test("a re-register that replaces the agent tells the session's subscribers to resync", async () => {
+  const hub = await startHub();
+  const first = await connect(hub.agentPort);
+  const second = await connect(hub.agentPort);
+  const viewer = await connect(hub.viewerPort);
+  await helloTokened(first);
+  await helloTokened(second);
+  await helloViewer(viewer);
+
+  first.send({ protocolVersion: PROTOCOL_VERSION, type: 'register', sessionId: 's1' });
+  await barrier(first);
+  viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'subscribe', sessionId: 's1' });
+  await barrier(viewer);
+
+  second.send({ protocolVersion: PROTOCOL_VERSION, type: 'register', sessionId: 's1' });
+
+  assert.deepEqual(await viewer.next(2000), {
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'resync-required',
+    sessionId: 's1',
+    reason: 'reconnect',
+  });
 });
 
 test('re-registering a session explicitly closes the displaced agent', async () => {
@@ -635,6 +668,7 @@ test('exceeding the byte budget drops events, resyncs, and preserves agentState'
   }
   assert.notEqual(resync, undefined, 'the viewer must be told to resync');
   assert.equal(resync!.sessionId, 's1');
+  assert.equal(resync!.reason, 'backpressure');
 
   viewer.send({
     protocolVersion: PROTOCOL_VERSION,

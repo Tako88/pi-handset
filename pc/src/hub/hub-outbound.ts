@@ -91,14 +91,14 @@ export function broadcastAgentSettled(
  * `resync-required` would strand a throttled viewer forever. The cap exists to
  * bound unsolicited bulk, which all goes through `sendToViewer`.
  */
-function announceResync(viewer: Connection, sessionId: string): void {
+export function announceResync(viewer: Connection, sessionId: string, reason: string): void {
   if (viewer.resyncAnnounced.has(sessionId)) return;
   viewer.resyncAnnounced.add(sessionId);
   send(viewer, {
     protocolVersion: PROTOCOL_VERSION,
     type: 'resync-required',
     sessionId,
-    reason: 'backpressure',
+    reason,
   });
 }
 
@@ -124,7 +124,7 @@ export function sendToViewer(
     viewer.socket.send(text, () => viewer.budget.drain(bytes));
     return;
   }
-  if (sessionId !== null) announceResync(viewer, sessionId);
+  if (sessionId !== null) announceResync(viewer, sessionId, 'backpressure');
 }
 
 export function closeWith(connection: Connection, code: number, reason?: string): void {

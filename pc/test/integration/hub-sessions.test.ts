@@ -162,6 +162,38 @@ test('a re-register with an unchanged label does not push the session list again
   ]);
 });
 
+test('a re-register on the same connection does not tell viewers to resync', async () => {
+  const hub = await startHub();
+  const agent = await connect(hub.agentPort);
+  await helloTokened(agent);
+  agent.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'register',
+    sessionId: 's1',
+    name: 'same',
+  });
+  await barrier(agent);
+
+  const viewer = await connect(hub.viewerPort);
+  await helloViewer(viewer);
+  viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'subscribe', sessionId: 's1' });
+  await barrier(viewer);
+
+  // The same connection re-registering with a new label is a refresh, not a
+  // takeover: the registry push is expected, a resync is not.
+  agent.send({
+    protocolVersion: PROTOCOL_VERSION,
+    type: 'register',
+    sessionId: 's1',
+    name: 'changed',
+  });
+
+  assert.deepEqual((await viewer.nextSessions(2000)).sessions, [
+    { sessionId: 's1', label: 'changed', agentState: 'idle', origin: 'pc' },
+  ]);
+  assert.equal(await viewer.tryNext(300), undefined);
+});
+
 test('stream events do not push the session list; an agent-state transition does', async () => {
   const hub = await startHub();
   const agent = await connect(hub.agentPort);

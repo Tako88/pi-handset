@@ -60,7 +60,7 @@ import type { TicketStore } from './pairing.ts';
 import type { Spawner } from './spawner.ts';
 import type { Connection, State } from './hub-state.ts';
 import { ownedSession } from './hub-state.ts';
-import { broadcastAgentSettled, broadcastSessions, closeWith, pushSessions, sendToViewer } from './hub-outbound.ts';
+import { announceResync, broadcastAgentSettled, broadcastSessions, closeWith, pushSessions, sendToViewer } from './hub-outbound.ts';
 export { CLOSE_CAPABILITY, CLOSE_INTERNAL, CLOSE_PROTOCOL, CLOSE_RATE_LIMITED };
 import { handleChildExit, removePendingByPid } from './hub-pending.ts';
 import { handleCommand, handleCommandResult, handleHistory, handleHistoryRequest, handleKillSession, handleListDirs, handleStartSession, handleSubscribe, handleUnsubscribe } from './hub-commands.ts';
@@ -326,11 +326,22 @@ function handleRegister(
     // A takeover is explicit: the displaced agent is closed now, with a reason,
     // rather than being left to discover it on its next event (which would earn
     // a protocol close anyway, but incidentally).
-    if (existing.agent !== connection) {
+    const replaced = existing.agent !== connection;
+    if (replaced) {
       closeWith(existing.agent, CLOSE_PROTOCOL, 'session taken over');
     }
     existing.agent = connection;
     existing.pid = pid;
+    // A replacement agent may have missed events emitted while its socket was
+    // down (the bridge drops whatever it tries to send with no socket open), so
+    // its retained subscribers are told to re-fetch a snapshot. Announced
+    // unconditionally on the swap, never folded into the label broadcast below:
+    // a reconnect that changes nothing else still loses a turn's tail.
+    if (replaced) {
+      for (const subscriber of existing.subscribers) {
+        announceResync(subscriber, sessionId, 'reconnect');
+      }
+    }
     // Only a label or origin change is worth a broadcast: the bridge
     // re-registers on every reconnect, and non-bridge agents may re-register
     // unchanged too. An origin change matters because it flips whether the app
