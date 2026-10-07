@@ -90,7 +90,17 @@ are `cd pc && npm run serve` and `npm run pair`. Use the link rather than
 `node_modules`, so an installed `.ts` bin cannot run — the link points at the
 checkout instead. Tracked as issue #50.
 
-Then build and install the app:
+Then install the app. Every release carries a signed arm64 APK — Android 7.0 or
+later, and arm64 covers every phone from roughly 2017 on. Download it on the phone
+from the [latest release](https://github.com/Tako88/pi-handset/releases/latest), or
+fetch it on the PC and install it over adb:
+
+```sh
+curl -LO https://github.com/Tako88/pi-handset/releases/latest/download/app-arm64-v8a-release.apk
+adb install app-arm64-v8a-release.apk
+```
+
+Or build it yourself:
 
 ```sh
 cd app
