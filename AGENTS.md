@@ -2,7 +2,7 @@
 
 ## Project
 
-pi-droid — an Android chat client for pi. A supervisor and a pi extension run on
+pi-handset — an Android chat client for pi. A supervisor and a pi extension run on
 the PC; a native Android client talks to them.
 
 ## Repo layout
@@ -114,7 +114,7 @@ Runtime deps: `ws`, `qrcode-terminal`.
 - **JDK:** Android Studio's bundled JBR (`/opt/android-studio/jbr`). No system JDK is
   installed; Gradle 9.3.1 accepts it. Java 25 emits a benign "restricted method"
   warning — not an error.
-- **AVD:** `pi-droid` (API 36, x86_64, host GPU).
+- **AVD:** `pi-droid` (API 36, x86_64, host GPU) — left as-is by the rename.
 - Android targets come from Flutter: compileSdk/targetSdk **36**, minSdk **24**.
 - **Pure logic must not import Flutter**, so it tests without a widget binding and
   stays fast.
@@ -186,7 +186,7 @@ font-dependent by construction. A golden failure means "look at the diff".
 
 Split by *kind*, not by size:
 
-- **Actionable work → [GitHub issues](https://github.com/Tako88/PI-Droid/issues).**
+- **Actionable work → [GitHub issues](https://github.com/Tako88/pi-handset/issues).**
   Bugs and gaps are issues. When a commit resolves one, put `Fixes #12` in the message
   so GitHub closes it — that is the whole point of it being an issue rather than a
   README bullet, which rots silently.

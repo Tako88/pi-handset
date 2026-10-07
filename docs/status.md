@@ -2,7 +2,7 @@
 
 The engineering record: what is built, what each change costs to deploy, and what
 the manual passes caught that the suites could not. The short version is in
-[`../README.md`](../README.md); what is *left* is the [issue tracker](https://github.com/Tako88/PI-Droid/issues),
+[`../README.md`](../README.md); what is *left* is the [issue tracker](https://github.com/Tako88/pi-handset/issues),
 and what is *deliberately absent* is [`known-limits.md`](known-limits.md).
 
 
@@ -174,7 +174,7 @@ deliberate limits are recorded separately.
 
 ## What is left
 
-**Actionable work lives in the [issue tracker](https://github.com/Tako88/PI-Droid/issues).**
+**Actionable work lives in the [issue tracker](https://github.com/Tako88/pi-handset/issues).**
 Bugs and gaps are tracked there so that a commit can close them — `Fixes #12` — which
 prose in a README cannot do. Each issue says what is wrong, what it would take, and
 where the code is.

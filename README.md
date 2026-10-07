@@ -1,4 +1,4 @@
-# pi-droid
+# pi-handset
 
 An Android chat client for [pi](https://github.com/earendil-works/pi). pi runs on
 your PC; this puts it in your pocket — read a long reply from the sofa, check on an
@@ -48,7 +48,7 @@ fixtures both sides assert against.
   open.
 
 What is not built — and what is deliberately left out — is in the
-[issue tracker](https://github.com/Tako88/PI-Droid/issues) and
+[issue tracker](https://github.com/Tako88/pi-handset/issues) and
 [`docs/known-limits.md`](docs/known-limits.md).
 
 ## Quick start
@@ -61,8 +61,8 @@ the hub serves plain `ws://`, so anything that can read the connection's frames 
 pairing token and everything it grants.
 
 ```sh
-git clone https://github.com/Tako88/PI-Droid
-cd PI-Droid
+git clone https://github.com/Tako88/pi-handset
+cd pi-handset
 
 pi install ./pc                 # load the bridge into every pi you start
 node pc/src/cli/main.ts serve   # start the hub (port 8787 by default)
@@ -86,7 +86,7 @@ Notes for the first run:
   to the running hub over a `0600` Unix socket, so it only works on the same machine.
 - The token is stored per phone, so pairing happens once. A *changed signing key* or an
   `adb uninstall` loses it; a plain `adb install -r` or a hub restart does not.
-- The QR encodes a `pidroid://pair` URI carrying the code and every address the hub can
+- The QR encodes a `pihandset://pair` URI carrying the code and every address the hub can
   advertise; with `--no-lan` it carries the code alone. `kill -USR1 <pid>` still prints a
   code, but `pair` is the supported path.
 - **If pairing just spins, suspect the firewall.** With `ufw` on its default `DROP`

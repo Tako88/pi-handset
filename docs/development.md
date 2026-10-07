@@ -35,7 +35,7 @@ spends money:
 ```sh
 cd app
 flutter test test_live/attach_live_test.dart       # one short paid call
-PI_DROID_LIVE_MODEL=provider/model flutter test test_live/attach_live_test.dart
+PI_HANDSET_LIVE_MODEL=provider/model flutter test test_live/attach_live_test.dart
 ```
 
 It lives outside `test/` so `flutter test` never picks it up, and it is deliberately
@@ -45,7 +45,7 @@ project rejects. Run it by hand when the provider integration matters.
 
 ## Local setup
 
-This section describes the machine pi-droid is currently developed on. Paths are
+This section describes the machine pi-handset is currently developed on. Paths are
 absolute and machine-specific; adjust for a new box.
 
 ### Node
@@ -110,6 +110,9 @@ fallback is `sudo pacman -S jdk21-openjdk` plus
 
 AVD **`pi-droid`**: pixel_7 profile, x86_64, API 36, 4 cores, 4 GB RAM, host GPU.
 
+The AVD predates the rename and was left alone — creating a new one to change its
+name is not worth re-installing the system image, and nothing in the code names it.
+
 Two defaults were changed and matter: `flutter create`'s AVD arrived with
 `hw.gpu.enabled=no` and 2 GB RAM, i.e. **software rendering**, which makes any frame
 timing measurement meaningless. They are now `hw.gpu.mode=host` and 4 GB.
@@ -159,7 +162,7 @@ extension: it only exists inside a running `pi`. `pc/` is a pi package, so insta
 with pi's own package command:
 
 ```sh
-pi install /path/to/pi-droid/pc
+pi install /path/to/pi-handset/pc
 ```
 
 That records the package in `~/.pi/agent/settings.json` and loads the bridge from
@@ -183,15 +186,15 @@ Two things to know about the recorded path:
 
 **The `.ignore` file is load-bearing.** A package's `extensions/` directory is
 scanned for `*.ts`/`*.js`, including `*.test.ts`, so `pc/extensions/.ignore`
-(containing `*.test.ts`) is what keeps `pi-droid-bridge.test.ts` from being loaded
+(containing `*.test.ts`) is what keeps `pi-handset-bridge.test.ts` from being loaded
 as a live extension.
 
 To confirm the bridge loaded without starting a hub, point the runtime dir at an
 empty one and watch for its complaint:
 
 ```sh
-XDG_RUNTIME_DIR=/tmp/empty PI_DROID_DEBUG=1 pi --mode rpc --no-session -nc
-# pi-droid bridge: no hub discovered   <- loaded, and looking for a hub
+XDG_RUNTIME_DIR=/tmp/empty PI_HANDSET_DEBUG=1 pi --mode rpc --no-session -nc
+# pi-handset bridge: no hub discovered   <- loaded, and looking for a hub
 ```
 
 

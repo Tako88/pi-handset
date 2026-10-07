@@ -22,6 +22,6 @@ void main() {
       isTrue,
       reason: 'expected ../README.md relative to ${Directory.current.path}',
     );
-    expect(file.readAsStringSync(), contains('pi-droid'));
+    expect(file.readAsStringSync(), contains('pi-handset'));
   });
 }

@@ -1,8 +1,8 @@
 # Known limits
 
-Things pi-droid deliberately does not do, and why. This is a record of **accepted
+Things pi-handset deliberately does not do, and why. This is a record of **accepted
 behaviour, not a work list** — anything actionable lives in the
-[issue tracker](https://github.com/Tako88/PI-Droid/issues).
+[issue tracker](https://github.com/Tako88/pi-handset/issues).
 
 Most entries are consequences of how pi itself behaves, or of a design decision that
 traded one problem for a smaller one. Each states the reason so nobody has to
@@ -188,8 +188,8 @@ rather than guess at it.
 - **A protocol mismatch stops the bridge, and the only notice is debug-gated.** The hub
   closes a version mismatch — and any other protocol violation — with `4002`, and the
   bridge now treats that close as terminal rather than reconnecting forever. The single
-  line naming the reason (`pi-droid bridge: protocol close 4002; not reconnecting`) is
-  written only when `PI_DROID_DEBUG=1`, because the bridge's silence guarantee — it must
+  line naming the reason (`pi-handset bridge: protocol close 4002; not reconnecting`) is
+  written only when `PI_HANDSET_DEBUG=1`, because the bridge's silence guarantee — it must
   never write to pi's stderr unprompted — is deliberate. Retrying would only reach the
   same rejection, and a mismatched pair is a deploy-time error the operator fixes with
   `pi /reload`, not a transient failure. Upgrade path if a default-visible signal is ever
@@ -225,11 +225,11 @@ rather than guess at it.
   `sh -c 'sleep 300'` child in the identical spawn shape survives, which is what proves the
   measurement rather than the harness. So the process leak this limit originally described
   does **not** reproduce for the production spawn shape: the residue is an empty
-  `pi-droid-session-*` directory plus the stale file. An idle child was measured; a
+  `pi-handset-session-*` directory plus the stale file. An idle child was measured; a
   mid-turn child could outlive the kill and was not, so the reaper's *kill* branch is
   witnessed by a surviving-child fixture (a shell shim) rather than by a real `pi`, and the
   live pass exercised its *not-alive* branch. The record
-  (`<runtimeDir>/pi-droid/children.json`, `{version, tempRoot, bootId, children}`) is
+  (`<runtimeDir>/pi-handset/children.json`, `{version, tempRoot, bootId, children}`) is
   written at the spawner's `'spawn'` event and stores **only** `pid`, `dir` (null for a
   project spawn) and `startTime` — deliberately **no `cmdline` and no `exe`**. Those are
   exec-dependent: a real `pi` re-execs through `env` and rewrites its own argv with
@@ -241,7 +241,7 @@ rather than guess at it.
   inside it leaks one child. At reap, a boot-id mismatch declines to signal (the child
   cannot be alive on this boot) but still removes its owned dir. A dir is removed only on a
   branch where the child is certainly gone, and only when its basename starts with
-  `pi-droid-session-` **and** its parent is the *recorded* `tempRoot` — not the boot-time
+  `pi-handset-session-` **and** its parent is the *recorded* `tempRoot` — not the boot-time
   `os.tmpdir()`, which closes the TMPDIR-changed case. `kill(pid,0)` reports a zombie as
   alive, so a `state === 'Z'` stat is treated as not alive: the dir is removed and no
   signal is sent. The real-zombie integration cannot be constructed deterministically under
@@ -535,7 +535,7 @@ rather than guess at it.
   quit key — with no meaning on a phone. pi excludes them from the command list it
   exposes to extensions, so the bridge cannot offer them; typing one still reaches the
   model as prose (the built-ins trap above). Not built.
-- **`/resume` is out of scope (issue [#28](https://github.com/Tako88/PI-Droid/issues/28)).**
+- **`/resume` is out of scope (issue [#28](https://github.com/Tako88/pi-handset/issues/28)).**
   A session list is not reachable from an extension: `SessionManager.list`/`listAll` are
   statics, and the `ctx.sessionManager` the bridge holds is a `ReadonlySessionManager`
   exposing only `getSessionDir()`. The bridge cannot import pi, so the list cannot be
@@ -637,15 +637,15 @@ rather than guess at it.
   replacement the follow is keyed on the `sessions` push rather than the ack, so the
   loss does not by itself strand the follow. Pre-existing hub behaviour, not specific to
   session control.
-- **A future extension registering `pi-droid-session` would make the trigger fall
+- **A future extension registering `pi-handset-session` would make the trigger fall
   through to the model.** pi disambiguates a duplicate command name as `name:occurrence`,
-  while the bridge triggers the bare `/pi-droid-session …`; if another extension ever
+  while the bridge triggers the bare `/pi-handset-session …`; if another extension ever
   registered that name the bare lookup would miss, the prompt would reach the model as
   prose, and the bridge would already have acked `ok:true`. **Verified clear today** — no
   extension in this deployment registers the name — and the internal command is filtered
   out of the app's `/` overlay, so it is never offered back. A name collision would be a
   silent wrong-state ack, which is why it is recorded rather than assumed away.
-- **The internal command is visible to a PC terminal user.** `pi-droid-session` appears
+- **The internal command is visible to a PC terminal user.** `pi-handset-session` appears
   in pi's own command list inside a terminal, because pi concatenates every registered
   extension command; the bridge filters it out of the **app's** `/` overlay only. Running
   it from the PC is harmless (it is the same action the phone triggers), but a terminal
@@ -700,7 +700,7 @@ rather than guess at it.
   app must be given the address by hand. A LAN hub with no RFC1918 address (for example a
   public-IP-only host) advertises nothing for the same reason.
 - **The control socket's only protection is filesystem permissions**: the `0700`
-  `<runtimeDir>/pi-droid` directory plus a `0600` `control.sock`. There is no protocol-level
+  `<runtimeDir>/pi-handset` directory plus a `0600` `control.sock`. There is no protocol-level
   authentication, deliberately — any same-UID process can already read the token file, so
   the socket adds no exposure beyond that.
 - **A `SIGKILL`ed hub leaves its `control.sock` behind.** The next `serve` reclaims the stale
@@ -715,7 +715,7 @@ rather than guess at it.
   authenticate against that single value, and a redeemed ticket hands the same value to
   each new device — so a lost or lent phone cannot be un-paired on its own. `rotateToken()`
   exists and is tested but has no production caller, and the CLI dispatches only `serve`
-  and `pair`, so the only revocation is deleting `<configDir>/pi-droid/token` and
+  and `pair`, so the only revocation is deleting `<configDir>/pi-handset/token` and
   restarting, which de-pairs every device at once. Tracked as issue #66.
 - **The viewer listener serves plain `ws://` and the token travels in the `hello`
   frame.** Anyone able to observe the connection — a shared or untrusted network, a
@@ -750,13 +750,15 @@ rather than guess at it.
   `compileSdk 36` is satisfied. The **bundled ML Kit backend is the default**, so scanning
   works offline, at a **+3–10 MB APK** cost; the unbundled (Play Services) backend is opt-in
   via `android/gradle.properties`.
-- **The candidate list lives under a new key, so a downgrade cannot decode garbage.**
-  `pi_droid_endpoints` holds the newline-joined list while `pi_droid_endpoint` keeps its
-  original single-`host:port` format; the new build writes the *first* candidate to the
-  legacy key and never the list. An older build therefore reads a single endpoint it
-  understands, or nothing when that key is unset and re-pairs cleanly — it never sees the
-  newline string, so it never runs it through `lastIndexOf(':')` to produce a
-  newline-bearing garbage host.
+- **The candidate list lives under its own key, so a decoder cannot see garbage.**
+  `pi_handset_endpoints` holds the newline-joined list while `pi_handset_endpoint` keeps its
+  original single-`host:port` format; the build writes the *first* candidate to the legacy
+  key and never the list. A reader that only knows the legacy key therefore reads one
+  endpoint it understands, or nothing when that key is unset and re-pairs cleanly — it
+  never sees the newline string, so it never runs it through `lastIndexOf(':')` to produce
+  a newline-bearing garbage host. The app rename moved *both* literals, so a pre-rename
+  build reads neither key and just re-pairs; the net now covers a future key migration
+  rather than that downgrade.
 
 ## Navigation
 

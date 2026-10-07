@@ -1,6 +1,6 @@
 # Changelog
 
-Notable changes to pi-droid. Versions are one semver shared by the app and the PC
+Notable changes to pi-handset. Versions are one semver shared by the app and the PC
 package; `PROTOCOL_VERSION` is a separate integer, bumped only when the wire breaks.
 
 ## [0.1.0] - 2026-10-04
@@ -18,5 +18,5 @@ First release.
 - **Install** — load the bridge with `pi install <checkout>/pc`; the app is a Flutter
   profile APK. There is no published package yet ([#50]).
 
-[0.1.0]: https://github.com/Tako88/PI-Droid/releases/tag/v0.1.0
-[#50]: https://github.com/Tako88/PI-Droid/issues/50
+[0.1.0]: https://github.com/Tako88/pi-handset/releases/tag/v0.1.0
+[#50]: https://github.com/Tako88/pi-handset/issues/50
