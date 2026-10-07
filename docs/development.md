@@ -203,6 +203,24 @@ from a session the app started would reach nobody at all. A session you started
 yourself is unaffected: that bridge writes to the terminal pi runs in.
 
 
+## Running the hub
+
+`pc/` is also the hub's CLI. Linking the package puts `pi-handset` on `PATH`:
+
+```sh
+cd pc
+npm link          # once; `pi-handset` then resolves to this checkout
+pi-handset serve  # the hub (port 8787 by default)
+pi-handset pair   # mint a pairing code, print a QR
+```
+
+`npm run serve` and `npm run pair` do the same from `pc/` without linking.
+
+**`npm link`, not `npm install -g`.** Node refuses to strip types from any file
+under a real `node_modules` (`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`), so a
+globally *installed* `.ts` bin is dead on arrival; the link is a symlink to the
+checkout, so it is not. Publishing needs a build step first — issue #50.
+
 ## Release signing
 
 Anything handed to someone else is signed with a real release key, never the

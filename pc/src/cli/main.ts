@@ -1,7 +1,8 @@
+#!/usr/bin/env node
 /**
  * The `pi-handset` CLI dispatcher. Deliberately not guarded on `process.argv[1]`
- * (that guard is what breaks under a `bin` symlink in #37) — nothing imports
- * this module, so running it is the only way it executes.
+ * (that guard is what breaks under the `bin` symlink `npm link` installs) —
+ * nothing imports this module, so running it is the only way it executes.
  */
 
 import { runPair } from './pair.ts';

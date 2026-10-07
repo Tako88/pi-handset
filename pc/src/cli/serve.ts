@@ -130,15 +130,16 @@ function warn(message: string): void {
 }
 
 /**
- * The startup hint: how to ask for a pairing code. It names the absolute
- * `main.ts` path so it is runnable from any cwd before #37 installs the
- * `pi-handset` bin. The phone cannot read the token file, so this line is the
- * only path from a fresh device to a code.
+ * The startup hint: how to ask for a pairing code. It leads with the installed
+ * command — `npm link` in `pc/` is what puts `pi-handset` on PATH — and keeps
+ * the absolute `main.ts` path as the fallback for a checkout that was never
+ * linked. The phone cannot read the token file, so this line is the only path
+ * from a fresh device to a code.
  */
 export function pairingHint(mainPath: string): string {
   return (
-    `pi-handset serve: ready. Pair a phone: run \`node ${mainPath} pair\` to print a ` +
-    `code and QR (valid for ${TICKET_TTL_MS / 60_000} minutes).\n`
+    `pi-handset serve: ready. Pair a phone: run \`pi-handset pair\` (or \`node ${mainPath} ` +
+    `pair\`) to print a code and QR (valid for ${TICKET_TTL_MS / 60_000} minutes).\n`
   );
 }
 

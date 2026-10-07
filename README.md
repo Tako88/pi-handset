@@ -77,10 +77,18 @@ pairing token and everything it grants.
 git clone https://github.com/Tako88/pi-handset
 cd pi-handset
 
-pi install ./pc                 # load the bridge into every pi you start
-node pc/src/cli/main.ts serve   # start the hub (port 8787 by default)
-node pc/src/cli/main.ts pair    # print a pairing code and a QR
+pi install ./pc          # load the bridge into every pi you start
+(cd pc && npm link)      # put `pi-handset` on PATH — once
+
+pi-handset serve         # start the hub (port 8787 by default)
+pi-handset pair          # print a pairing code and a QR
 ```
+
+`npm link` is what makes `pi-handset` a command; without it the same two commands
+are `cd pc && npm run serve` and `npm run pair`. Use the link rather than
+`npm install -g`: Node refuses to strip types from a file under a real
+`node_modules`, so an installed `.ts` bin cannot run — the link points at the
+checkout instead. Tracked as issue #50.
 
 Then build and install the app:
 

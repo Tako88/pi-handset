@@ -15,8 +15,13 @@
       "./extensions/pi-handset-bridge.ts"
     ]
   },
+  "bin": {
+    "pi-handset": "./src/cli/main.ts"
+  },
   "scripts": {
     "test": "node --test 'src/**/*.test.ts' 'test/**/*.test.ts' 'extensions/**/*.test.ts'",
+    "serve": "node src/cli/main.ts serve",
+    "pair": "node src/cli/main.ts pair",
     "typecheck": "tsc --noEmit",
     "lint": "eslint ."
   },

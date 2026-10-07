@@ -393,10 +393,14 @@ test('serve announces the pair command', async () => {
   const serve = startServe(['--port', String(port)]);
   await waitFor(() => readPid() === serve.child.pid, 'the discovery file');
 
+  // The hint leads with the installed command — `npm link` in `pc/` makes it
+  // real — and keeps the absolute path as the fallback for a checkout that was
+  // never linked, which is the only hint a fresh device ever sees.
   await waitFor(
-    () => serve.stdout().includes('main.ts pair'),
+    () => serve.stdout().includes('pi-handset pair'),
     'the startup pairing hint',
   );
+  assert.match(serve.stdout(), /pi-handset pair/);
   assert.match(serve.stdout(), /main\.ts pair/);
 
   const exited = waitExit(serve.child);
