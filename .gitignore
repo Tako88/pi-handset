@@ -9,6 +9,9 @@ dist/
 # Audit reports are not versioned
 .pi/audits/
 
+# Issue-body drafts are not versioned
+.pi/issue-edits/
+
 # Flutter golden-test failure artifacts — written beside the test file, and not
 # covered by the generated app/.gitignore
 **/test/**/failures/
