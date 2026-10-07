@@ -6,8 +6,8 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { createServer } from 'node:net';
-import type { AddressInfo } from 'node:net';
+import { createConnection, createServer } from 'node:net';
+import type { AddressInfo, Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -73,6 +73,8 @@ export let childCwd: string;
 export const children: ChildProcess[] = [];
 export const hubs: Hub[] = [];
 export const viewers: Viewer[] = [];
+/** Started by `startAgentProxy`; torn down between children and hubs. */
+const proxies: AgentProxy[] = [];
 
 export function setupBridgeInPi(): void {
   tmpRoot = mkdtempSync(join(tmpdir(), 'pi-handset-in-pi-'));
@@ -105,6 +107,12 @@ export async function cleanupBridgeInPi(): Promise<void> {
   });
   await Promise.all(exits);
   children.length = 0;
+
+  // Between children and hubs: a proxy left open keeps a listener (and the
+  // file) alive. A test that already closed its proxy finds a no-op here.
+  while (proxies.length > 0) {
+    await proxies.pop()!.close();
+  }
 
   while (hubs.length > 0) {
     await hubs.pop()!.close();
@@ -305,6 +313,76 @@ export function freePort(): Promise<number> {
 // Hub + viewer helpers
 // ---------------------------------------------------------------------------
 
+export interface AgentProxy {
+  readonly port: number;
+  cut(): void;
+  close(): Promise<void>;
+}
+
+/**
+ * A TCP proxy in front of the hub's agent port. It lets a test sever the
+ * bridge's transport while the hub end stays open, which is what forces a
+ * takeover rather than a retire. Manual forwarding, never `pipe({end:false})`:
+ * on bridge close this proxy deliberately does nothing to the hub side, so
+ * "the hub keeps believing it owns the session" is a line of our own code.
+ */
+export async function startAgentProxy(targetPort: number): Promise<AgentProxy> {
+  const bridgeSides = new Set<Socket>();
+  const pairs: Array<{ bridge: Socket; hub: Socket }> = [];
+
+  const server = createServer((bridge) => {
+    const hub = createConnection(targetPort, '127.0.0.1');
+    bridgeSides.add(bridge);
+    pairs.push({ bridge, hub });
+    bridge.on('data', (chunk) => {
+      if (!hub.destroyed) hub.write(chunk);
+    });
+    hub.on('data', (chunk) => {
+      if (!bridge.destroyed) bridge.write(chunk);
+    });
+    // On bridge close, do nothing to the hub side — the load-bearing line.
+    bridge.on('error', () => {
+      // A destroyed socket can emit ECONNRESET; not a failure of the proxy.
+    });
+    hub.on('error', () => {
+      // Same.
+    });
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => resolve());
+  });
+  const { port } = server.address() as AddressInfo;
+
+  let closed = false;
+  const proxy: AgentProxy = {
+    port,
+    cut() {
+      for (const bridge of bridgeSides) bridge.destroy();
+      bridgeSides.clear();
+    },
+    close() {
+      // Idempotent: cleanupBridgeInPi may close a proxy a test already closed.
+      if (closed) return Promise.resolve();
+      closed = true;
+      const index = proxies.indexOf(proxy);
+      if (index !== -1) proxies.splice(index, 1);
+      for (const { bridge, hub } of pairs) {
+        bridge.destroy();
+        hub.destroy();
+      }
+      pairs.length = 0;
+      bridgeSides.clear();
+      return new Promise<void>((resolve) => {
+        server.close(() => resolve());
+      });
+    },
+  };
+  proxies.push(proxy);
+  return proxy;
+}
+
 export async function startHub(overrides: Partial<Parameters<typeof createHub>[0]> = {}): Promise<Hub> {
   const hub = await createHub({
     token: loadOrCreateToken(configDir).token,
@@ -317,9 +395,9 @@ export async function startHub(overrides: Partial<Parameters<typeof createHub>[0
   return hub;
 }
 
-export function publishDiscovery(hub: Hub): void {
+export function publishDiscovery(hub: Hub, override?: { agentPort?: number }): void {
   writeDiscovery(runtimeDir, {
-    agentPort: hub.agentPort,
+    agentPort: override?.agentPort ?? hub.agentPort,
     viewerPort: hub.viewerPort,
     pid: process.pid,
     startedAt: new Date().toISOString(),
@@ -512,6 +590,12 @@ export interface Collected {
   attachUsage: boolean;
   /** True when a reading arrived after the terminal state, i.e. the turn refresh. */
   settledUsage: boolean;
+  /** True when a resync/session-gone was followed by a snapshot. A baseline
+   * snapshot alone never sets this (see `collectPrompt`). */
+  recovered: boolean;
+  /** True when the hub reported the session gone — the retire-first path,
+   * not a takeover. The ordering pin that separates the two. */
+  sawSessionGone: boolean;
   result: Record<string, unknown> | null;
 }
 
@@ -537,7 +621,9 @@ export function describeCollected(collected: Collected): string {
   return (
     ` — streams=${String(collected.streams.length)} phases=${String(collected.phases.length)}` +
     ` messages=${roles} usages=${String(collected.usages.length)} running=${String(collected.running)}` +
-    ` settledUsage=${String(collected.settledUsage)} result=${result}`
+    ` settled=${String(collected.settled)} settledUsage=${String(collected.settledUsage)}` +
+    ` recovered=${String(collected.recovered)} sawSessionGone=${String(collected.sawSessionGone)}` +
+    ` result=${result}`
   );
 }
 
@@ -545,8 +631,19 @@ export function describeCollected(collected: Collected): string {
  * Reads relayed events until the prompt has fully settled: the terminal message
  * and `agent` state, plus the `command-result`. Absence is a real failure, not
  * a quietly shorter list.
+ *
+ * When `sessionId` is given, a `resync-required` or `session-gone` for it is
+ * answered with a fresh `history-request` (and a `subscribe` after gone), and a
+ * snapshot that follows counts as recovery. `onTurnStart` fires once, when the
+ * turn demonstrably begins.
  */
-export async function collectPrompt(viewer: Viewer, id: string, timeoutMs: number): Promise<Collected> {
+export async function collectPrompt(
+  viewer: Viewer,
+  id: string,
+  timeoutMs: number,
+  sessionId?: string,
+  onTurnStart?: () => void,
+): Promise<Collected> {
   const collected: Collected = {
     streams: [],
     phases: [],
@@ -558,15 +655,57 @@ export async function collectPrompt(viewer: Viewer, id: string, timeoutMs: numbe
     usages: [],
     attachUsage: false,
     settledUsage: false,
+    recovered: false,
+    sawSessionGone: false,
     result: null,
   };
+  // Set only by a resync/session-gone, so a baseline (attach) snapshot is
+  // ignored outright: without this, every happy-path collection "recovers" and
+  // the strict streaming assertions become dead code.
+  let resyncSeen = false;
+  let turnStarted = false;
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     // The turn's reading lands immediately after the terminal state, so settling
-    // alone is not the end of what this test asserts.
-    if (collected.result !== null && collected.settled && collected.settledUsage) break;
+    // alone is not the end of what this test asserts. A recovered turn may have
+    // lost its `command-result` in the gap, so it exits on settled alone.
+    if (
+      (collected.result !== null && collected.settled && collected.settledUsage) ||
+      (collected.recovered && collected.settled)
+    ) {
+      break;
+    }
     const message = await viewer.tryNext(Math.min(1000, Math.max(1, deadline - Date.now())));
     if (message === undefined) continue;
+    if (sessionId !== undefined) {
+      if (message.type === 'resync-required' && message.sessionId === sessionId) {
+        resyncSeen = true;
+        viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'history-request', sessionId });
+        continue;
+      }
+      if (message.type === 'session-gone' && message.sessionId === sessionId) {
+        resyncSeen = true;
+        collected.sawSessionGone = true;
+        viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'subscribe', sessionId });
+        viewer.send({ protocolVersion: PROTOCOL_VERSION, type: 'history-request', sessionId });
+        continue;
+      }
+      if (message.type === 'snapshot' && message.sessionId === sessionId) {
+        if (!resyncSeen) continue;
+        collected.recovered = true;
+        if (Array.isArray(message.entries)) {
+          for (const raw of message.entries) {
+            const entry = raw as Record<string, unknown>;
+            if (entry.type !== 'message') continue;
+            const body = entry.message as Record<string, unknown> | undefined;
+            const role = typeof body?.role === 'string' ? body.role : 'unknown';
+            collected.messages.push({ role, payload: { kind: 'message', message: body } });
+          }
+        }
+        if (message.agentState === 'settled') collected.settled = true;
+        continue;
+      }
+    }
     if (message.type === 'command-result' && message.id === id) {
       collected.result = message;
       continue;
@@ -574,6 +713,10 @@ export async function collectPrompt(viewer: Viewer, id: string, timeoutMs: numbe
     if (message.type !== 'event') continue;
     const payload = message.payload as Record<string, unknown> | undefined;
     if (payload === undefined) continue;
+    if (!turnStarted && (payload.kind === 'stream' || (payload.kind === 'agent' && payload.state === 'running'))) {
+      turnStarted = true;
+      onTurnStart?.();
+    }
     if (payload.kind === 'stream') {
       if (payload.phase !== undefined) {
         collected.phases.push({ seq: payload.seq as number, payload });
@@ -787,7 +930,7 @@ export async function drivePrompt(
     args: { text: promptText },
   });
 
-  return collectPrompt(viewer, id, STREAM_TIMEOUT_MS);
+  return collectPrompt(viewer, id, STREAM_TIMEOUT_MS, session.sessionId);
 }
 
 /**
