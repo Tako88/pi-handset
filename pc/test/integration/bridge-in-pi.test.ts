@@ -53,7 +53,7 @@ import { createSpawner } from '../../src/hub/spawner.ts';
 import type { Spawner } from '../../src/hub/spawner.ts';
 import { PROTOCOL_VERSION } from '../../src/protocol/protocol.ts';
 
-import { harnessPath, FAUX_TEXT, TEMPLATE_MARKER, TEMPLATE_DESCRIPTION_SENTINEL, BUILTIN_COMMAND_NAMES, BOOT_TIMEOUT_MS, STREAM_TIMEOUT_MS, tmpRoot, runtimeDir, configDir, setupBridgeInPi, cleanupBridgeInPi, waitFor, alive, startHub, publishDiscovery, type Viewer, connectViewer, waitForAppSession, waitForMessage, waitForReplacement, collectPrompt, collectCommandResult, waitForBothFauxModels, collectSwitch, bootPi, drivePrompt, messageText } from '../support/bridge-in-pi-harness.ts';
+import { harnessPath, FAUX_TEXT, TEMPLATE_MARKER, TEMPLATE_DESCRIPTION_SENTINEL, BUILTIN_COMMAND_NAMES, BOOT_TIMEOUT_MS, STREAM_TIMEOUT_MS, tmpRoot, runtimeDir, configDir, setupBridgeInPi, cleanupBridgeInPi, waitFor, alive, startHub, publishDiscovery, type Viewer, connectViewer, waitForAppSession, waitForMessage, waitForReplacement, collectPrompt, collectCommandResult, waitForBothFauxModels, collectSwitch, bootPi, drivePrompt, messageText, reportChildOutput, describeCollected } from '../support/bridge-in-pi-harness.ts';
 
 beforeEach(setupBridgeInPi);
 afterEach(cleanupBridgeInPi);
@@ -422,7 +422,12 @@ test('a spawned bare pi registers, prompts and dies on kill-session', async () =
       XDG_CONFIG_HOME: configDir,
       PI_CODING_AGENT_DIR: agentDir,
       PI_HANDSET_FAUX_TEXT: FAUX_TEXT,
+      // The bridge writes its diagnostics only under this flag, and the spawner
+      // forwards them only to a sink. Both are needed for the close code to be
+      // visible if this test fails the way it once did in CI.
+      PI_HANDSET_DEBUG: '1',
     },
+    debug: reportChildOutput,
   });
   const pids: number[] = [];
   // Wrap the real spawner only to observe the pid it hands back; every
@@ -478,7 +483,7 @@ test('a spawned bare pi registers, prompts and dies on kill-session', async () =
     true,
     `prompt was refused: ${String(collected.result.error)}`,
   );
-  assert.ok(collected.settled, 'the spawned agent never settled');
+  assert.ok(collected.settled, `the spawned agent never settled${describeCollected(collected)}`);
   assert.equal(
     collected.streams.map((stream) => stream.text).join(''),
     FAUX_TEXT,

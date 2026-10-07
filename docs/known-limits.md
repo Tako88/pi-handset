@@ -190,7 +190,9 @@ rather than guess at it.
   bridge now treats that close as terminal rather than reconnecting forever. The single
   line naming the reason (`pi-handset bridge: protocol close 4002; not reconnecting`) is
   written only when `PI_HANDSET_DEBUG=1`, because the bridge's silence guarantee — it must
-  never write to pi's stderr unprompted — is deliberate. Retrying would only reach the
+  never write to pi's stderr unprompted — is deliberate. Under that flag the hub also
+  forwards a **spawned** session's bridge lines to its own stderr; without a sink there,
+  the spawner's drain would throw them away. Retrying would only reach the
   same rejection, and a mismatched pair is a deploy-time error the operator fixes with
   `pi /reload`, not a transient failure. Upgrade path if a default-visible signal is ever
   wanted: a status frame surfaced in the app, not an unconditional stderr write.

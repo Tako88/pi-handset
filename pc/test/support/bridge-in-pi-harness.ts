@@ -516,6 +516,32 @@ export interface Collected {
 }
 
 /**
+ * Forwards one line of a spawned child's output to this process's stderr. The
+ * spawner drains a child's pipes, so without a sink the bridge's own diagnostics
+ * — the socket close code above all — are unreachable for a session the hub
+ * started. The capstone test takes this path; every other test drives a
+ * foreground `pi`, whose stderr `spawnPi` already captures.
+ */
+export function reportChildOutput(text: string): void {
+  process.stderr.write(text);
+}
+
+/**
+ * What a failed `collectPrompt` actually saw, for the assertion message. "Never
+ * settled" alone cannot tell a turn that never started from one whose end was
+ * lost: the events that did arrive are the evidence.
+ */
+export function describeCollected(collected: Collected): string {
+  const roles = collected.messages.map((entry) => entry.role).join(',') || 'none';
+  const result = collected.result === null ? 'none' : String(collected.result.ok);
+  return (
+    ` — streams=${String(collected.streams.length)} phases=${String(collected.phases.length)}` +
+    ` messages=${roles} usages=${String(collected.usages.length)} running=${String(collected.running)}` +
+    ` settledUsage=${String(collected.settledUsage)} result=${result}`
+  );
+}
+
+/**
  * Reads relayed events until the prompt has fully settled: the terminal message
  * and `agent` state, plus the `command-result`. Absence is a real failure, not
  * a quietly shorter list.

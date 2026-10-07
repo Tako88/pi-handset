@@ -849,6 +849,71 @@ test('serve spawns bare pi on start-session and SIGTERM kills the group', async 
   await waitFor(() => !alive(shimPid), 'the shim to die with the supervisor', 5000);
 });
 
+test("serve forwards a spawned child's stderr when PI_HANDSET_DEBUG is on", async () => {
+  // The bridge reports a lost socket — the close code above all — on its stderr,
+  // and the spawner drains a child's pipes. Without this the only account of why
+  // an app-started session went quiet is thrown away.
+  const port = await freePort();
+  const shimDir = mkdtempSync(join(tmpdir(), 'pi-handset-serve-debug-shim-'));
+  scratchShimDirs.push(shimDir);
+  writeFileSync(
+    join(shimDir, 'pi'),
+    '#!/bin/sh\necho "pi-handset bridge: WITNESS" >&2\nsleep 30\n',
+    { mode: 0o755 },
+  );
+
+  const serve = startServe(['--port', String(port)], {
+    PATH: `${shimDir}:${process.env.PATH ?? ''}`,
+    PI_HANDSET_DEBUG: '1',
+  });
+  await waitFor(() => readPid() === serve.child.pid, 'the discovery file');
+
+  const viewer = await authViewer(port);
+  viewer.send(
+    JSON.stringify({ protocolVersion: PROTOCOL_VERSION, type: 'start-session', id: 'start-1' }),
+  );
+  const result = await awaitMessage(viewer, 'command-result');
+  assert.equal(result.ok, true, `start was refused: ${String(result.error)}`);
+
+  await waitFor(
+    () => serve.stderr().includes('pi-handset bridge: WITNESS'),
+    `the child's stderr to reach the supervisor's, saw ${JSON.stringify(serve.stderr())}`,
+  );
+});
+
+test("serve stays quiet about a spawned child's stderr without the flag", async () => {
+  const port = await freePort();
+  const shimDir = mkdtempSync(join(tmpdir(), 'pi-handset-serve-quiet-shim-'));
+  scratchShimDirs.push(shimDir);
+  const ran = join(shimDir, 'ran.txt');
+  writeFileSync(
+    join(shimDir, 'pi'),
+    `#!/bin/sh\necho "pi-handset bridge: WITNESS" >&2\necho ran > ${ran}\nsleep 30\n`,
+    { mode: 0o755 },
+  );
+
+  const serve = startServe(['--port', String(port)], {
+    PATH: `${shimDir}:${process.env.PATH ?? ''}`,
+  });
+  await waitFor(() => readPid() === serve.child.pid, 'the discovery file');
+
+  const viewer = await authViewer(port);
+  viewer.send(
+    JSON.stringify({ protocolVersion: PROTOCOL_VERSION, type: 'start-session', id: 'start-1' }),
+  );
+  const result = await awaitMessage(viewer, 'command-result');
+  assert.equal(result.ok, true, `start was refused: ${String(result.error)}`);
+  await waitFor(() => existsSync(ran), 'the shim to run');
+  // An absence needs a bound to be a claim: the shim wrote its line before the
+  // marker, so anything forwarded is already in stderr by the time this settles.
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(
+    serve.stderr().includes('pi-handset bridge: WITNESS'),
+    false,
+    `a child's stderr leaked without the flag: ${JSON.stringify(serve.stderr())}`,
+  );
+});
+
 test('--max-sessions caps the number of app-started sessions', async () => {
   const port = await freePort();
   const shimDir = mkdtempSync(join(tmpdir(), 'pi-handset-serve-cap-shim-'));

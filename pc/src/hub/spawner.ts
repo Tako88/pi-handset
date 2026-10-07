@@ -158,6 +158,24 @@ function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
+/**
+ * Hands one stderr chunk to the diagnostic sink, one line per call. A spawned
+ * pi's stderr is otherwise discarded, which makes the bridge's own diagnostics
+ * — the socket close code above all — unreachable for a session the hub
+ * started. Stdout is deliberately absent: a spawned pi prints its entire rpc
+ * event stream there as JSON, which nobody reads and which would put the whole
+ * transcript in the hub's log.
+ */
+function forwardChildLines(
+  debug: ((text: string) => void) | undefined,
+  chunk: Buffer,
+): void {
+  if (debug === undefined) return;
+  for (const line of chunk.toString().split('\n')) {
+    if (line.trim() !== '') debug(`stderr: ${line}\n`);
+  }
+}
+
 export function createSpawner(options: SpawnerOptions = {}): Spawner {
   const command = options.command ?? 'pi';
   const args = options.args ?? ['--mode', 'rpc', '--no-session'];
@@ -271,9 +289,11 @@ export function createSpawner(options: SpawnerOptions = {}): Spawner {
       if (owned) removeDir(dir);
       return Promise.reject(toError(error));
     }
-    // Drain both pipes; never touch stdin (rpc reads commands from it).
+    // Drain both pipes; never touch stdin (rpc reads commands from it). The
+    // drain is the point — an unread pipe blocks a chatty child in write(2) —
+    // so only the sink decides whether the read stderr lines go anywhere.
     child.stdout?.on('data', () => {});
-    child.stderr?.on('data', () => {});
+    child.stderr?.on('data', (chunk: Buffer) => forwardChildLines(debug, chunk));
     return new Promise<number>((resolve, reject) => {
       let pid: number | null = null;
       child.once('spawn', () => {

@@ -197,6 +197,11 @@ XDG_RUNTIME_DIR=/tmp/empty PI_HANDSET_DEBUG=1 pi --mode rpc --no-session -nc
 # pi-handset bridge: no hub discovered   <- loaded, and looking for a hub
 ```
 
+The same flag on the **hub** carries a *spawned* session's bridge output — its stderr,
+not the rpc event stream the same child prints on stdout — to the hub's stderr. Every child's pipes are drained, so without this a `socket closed (4002)` line
+from a session the app started would reach nobody at all. A session you started
+yourself is unaffected: that bridge writes to the terminal pi runs in.
+
 
 ## Release signing
 

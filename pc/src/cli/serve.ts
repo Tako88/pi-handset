@@ -334,6 +334,12 @@ export async function runServe(argv: readonly string[]): Promise<number> {
   const spawner = createSpawner({
     maxSessions: args.maxSessions,
     pidFile: childrenPath(runtimeDir),
+    // One switch for the whole diagnostic chain: the bridge writes its socket
+    // close codes only under PI_HANDSET_DEBUG, and the spawner drains the child's
+    // pipes, so without a sink here those lines reach nobody.
+    ...(process.env.PI_HANDSET_DEBUG === '1'
+      ? { debug: (text: string) => process.stderr.write(text) }
+      : {}),
   });
   try {
     hub = await createHub({

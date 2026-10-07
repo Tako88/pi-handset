@@ -725,6 +725,56 @@ test("readProcStat reports a real child's state and start time", async () => {
   assert.equal(stat.startTime, record.startTime);
 });
 
+test("a debug sink receives the spawned child's stderr and nothing else", async () => {
+  const tempRoot = scratch();
+  const lines: string[] = [];
+  const spawner = createSpawner({
+    // Stdout first, then a pause: seeing the stderr line means the stdout line
+    // was written to its pipe before this ever looked, so the exclusion below
+    // is a claim rather than a race.
+    command: 'sh',
+    args: ['-c', 'echo out-line; sleep 0.2; echo err-line >&2; sleep 30'],
+    tempRoot,
+    debug: (text) => lines.push(text),
+  });
+  spawners.push(spawner);
+
+  await spawner.spawn();
+  await waitFor(
+    () => lines.some((line) => line.includes('err-line')),
+    'the child stderr line to reach the debug sink',
+  );
+  assert.ok(
+    lines.every((line) => line.startsWith('stderr: ')),
+    `a line did not name its stream: ${JSON.stringify(lines)}`,
+  );
+  // A spawned pi prints its whole rpc event stream on stdout. Forwarding that
+  // would put every transcript into the hub's log.
+  assert.equal(
+    lines.some((line) => line.includes('out-line')),
+    false,
+    `the child's stdout was forwarded: ${JSON.stringify(lines)}`,
+  );
+});
+
+test('a child that floods its pipes still exits without a debug sink', async () => {
+  // The listeners are a drain first and a diagnostic second: without one, a
+  // 400 KB write fills the 64 KiB pipe buffer and the child blocks in write(2)
+  // at the flood, so the marker after it is never written. Discarding the
+  // output is fine; not reading it is not.
+  const tempRoot = scratch();
+  const marker = join(tempRoot, 'flood.done');
+  const spawner = createSpawner({
+    command: 'sh',
+    args: ['-c', `yes x | head -c 400000 >&2; echo done > ${marker}`],
+    tempRoot,
+  });
+  spawners.push(spawner);
+
+  await spawner.spawn();
+  await waitFor(() => existsSync(marker), 'the marker after a 400 KB stderr flood', 3000);
+});
+
 test('a subject that rewrites its own argv is still verified and reaped', async () => {
   const tempRoot = scratch();
   const scratchDir = scratch();
