@@ -3,7 +3,7 @@
  *
  * One 256-bit token is minted on first use and never regenerated: restarting
  * the supervisor must not de-pair the phone. It lives at
- * `<configDir>/pi-droid/token` where `<configDir>` is an absolute
+ * `<configDir>/pi-handset/token` where `<configDir>` is an absolute
  * `$XDG_CONFIG_HOME` falling back to `~/.config`.
  *
  * The config dir is a parameter, not a global, so tests exercise the real
@@ -17,7 +17,7 @@
  * characters is *regenerated* — returning it verbatim would let an empty
  * candidate authenticate.
  *
- * `<configDir>/pi-droid` is ours, so it is repaired to `0700` when wider, and a
+ * `<configDir>/pi-handset` is ours, so it is repaired to `0700` when wider, and a
  * symlink at that path is refused (a leaf-only check would write the token
  * outside the directory whose mode this module relies on). `<configDir>` itself
  * belongs to the user and is never modified; if it is group- or world-writable
@@ -25,7 +25,7 @@
  *
  * Accepted residuals, reviewed and deliberately not engineered around:
  * - The `lstat`-then-use TOCTOU window is bounded by repairing
- *   `<configDir>/pi-droid` to `0700`; no other local user can write into it.
+ *   `<configDir>/pi-handset` to `0700`; no other local user can write into it.
  * - A concurrent first-create can race and mint two tokens. That window is
  *   closed at the hub level: M4's lock (an exclusive create held for the whole
  *   process lifetime) serializes startup before any token is read, so only one
@@ -84,7 +84,7 @@ export function resolveConfigDir(
 
 /** The token file path under a config dir; exported so callers share one construction. */
 export function tokenPath(configDir: string): string {
-  return join(configDir, 'pi-droid', 'token');
+  return join(configDir, 'pi-handset', 'token');
 }
 
 function lstatOrNull(path: string): Stats | null {
@@ -100,9 +100,9 @@ function lstatOrNull(path: string): Stats | null {
   }
 }
 
-/** Ensures `<configDir>/pi-droid` exists as a real directory at mode 0700. */
+/** Ensures `<configDir>/pi-handset` exists as a real directory at mode 0700. */
 function ensureConfigDir(configDir: string): void {
-  const dir = join(configDir, 'pi-droid');
+  const dir = join(configDir, 'pi-handset');
   const existing = lstatOrNull(dir);
 
   if (existing === null) {

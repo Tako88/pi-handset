@@ -43,10 +43,10 @@ let sockets: WebSocket[];
 const scratchShimDirs: string[] = [];
 
 beforeEach(() => {
-  runtimeDir = mkdtempSync(join(tmpdir(), 'pi-droid-serve-'));
+  runtimeDir = mkdtempSync(join(tmpdir(), 'pi-handset-serve-'));
   // The supervisor loads the real token; point its config at a temp dir so the
   // suite never touches the user's `~/.config`.
-  configDir = mkdtempSync(join(tmpdir(), 'pi-droid-serve-config-'));
+  configDir = mkdtempSync(join(tmpdir(), 'pi-handset-serve-config-'));
   spawned = [];
   sockets = [];
 });
@@ -92,7 +92,7 @@ function startServe(
     cwd: pcRoot,
     env: {
       ...process.env,
-      PI_DROID_RUNTIME_DIR: runtimeDir,
+      PI_HANDSET_RUNTIME_DIR: runtimeDir,
       XDG_CONFIG_HOME: configDir,
       ...extraEnv,
     },
@@ -111,11 +111,11 @@ function startServe(
 }
 
 function discoveryFile(): string {
-  return join(runtimeDir, 'pi-droid', 'supervisor.json');
+  return join(runtimeDir, 'pi-handset', 'supervisor.json');
 }
 
 function lockFile(): string {
-  return join(runtimeDir, 'pi-droid', 'supervisor.lock');
+  return join(runtimeDir, 'pi-handset', 'supervisor.lock');
 }
 
 function readPid(): number | null {
@@ -252,7 +252,7 @@ async function startReadyServe(port: number): Promise<ServeHandle> {
 async function runPairProcess(): Promise<{ code: number | null; stdout: string; stderr: string }> {
   const child = spawn(process.execPath, [mainEntry, 'pair'], {
     cwd: pcRoot,
-    env: { ...process.env, PI_DROID_RUNTIME_DIR: runtimeDir, XDG_CONFIG_HOME: configDir },
+    env: { ...process.env, PI_HANDSET_RUNTIME_DIR: runtimeDir, XDG_CONFIG_HOME: configDir },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   spawned.push(child);
@@ -344,7 +344,7 @@ async function redeem(port: number, code: string): Promise<Record<string, unknow
 
 /** The token serve persisted in the temp config dir. */
 function persistedToken(): string {
-  return readFileSync(join(configDir, 'pi-droid', 'token'), 'utf8').trim();
+  return readFileSync(join(configDir, 'pi-handset', 'token'), 'utf8').trim();
 }
 
 /** Authenticates a viewer with the persisted token and drains its auth push. */
@@ -446,7 +446,7 @@ test('serve writes a 0600 discovery file with both ports and removes it on SIGTE
 
   await waitFor(() => readPid() === first.child.pid, 'the discovery file');
   assert.equal(statSync(discoveryFile()).mode & 0o777, 0o600);
-  assert.equal(statSync(join(runtimeDir, 'pi-droid')).mode & 0o777, 0o700);
+  assert.equal(statSync(join(runtimeDir, 'pi-handset')).mode & 0o777, 0o700);
 
   const raw = readRecord()!;
   assert.equal(raw.pid, first.child.pid);
@@ -508,7 +508,7 @@ test('two simultaneous serves: exactly one survives, the other exits non-zero', 
 
 test('a stale discovery file naming a dead pid is reclaimed, not refused', async () => {
   const stale = await deadPid();
-  mkdirSync(join(runtimeDir, 'pi-droid'), { recursive: true, mode: 0o700 });
+  mkdirSync(join(runtimeDir, 'pi-handset'), { recursive: true, mode: 0o700 });
   writeFileSync(
     discoveryFile(),
     JSON.stringify({
@@ -617,12 +617,12 @@ test('serve exits 2 on an unknown flag', async () => {
 test('serve exits 2 when the runtime dir is not a directory', async () => {
   const file = join(runtimeDir, 'not-a-dir');
   writeFileSync(file, 'x');
-  const { code } = await runServeToExit([], { PI_DROID_RUNTIME_DIR: file });
+  const { code } = await runServeToExit([], { PI_HANDSET_RUNTIME_DIR: file });
   assert.equal(code, 2);
 });
 
 test('serve exits 1 and releases the lock when a live discovery record exists', async () => {
-  mkdirSync(join(runtimeDir, 'pi-droid'), { recursive: true, mode: 0o700 });
+  mkdirSync(join(runtimeDir, 'pi-handset'), { recursive: true, mode: 0o700 });
   writeFileSync(
     discoveryFile(),
     JSON.stringify({
@@ -642,10 +642,10 @@ test('serve exits 1 and releases the lock when a live discovery record exists', 
 
 test('serve exits 2 and releases the lock when the token cannot be loaded', async () => {
   const config = join(runtimeDir, 'config');
-  mkdirSync(join(config, 'pi-droid'), { recursive: true });
+  mkdirSync(join(config, 'pi-handset'), { recursive: true });
   // Replace the would-be config dir with a file so `ensureConfigDir` throws.
-  rmSync(join(config, 'pi-droid'), { recursive: true, force: true });
-  writeFileSync(join(config, 'pi-droid'), 'not a dir');
+  rmSync(join(config, 'pi-handset'), { recursive: true, force: true });
+  writeFileSync(join(config, 'pi-handset'), 'not a dir');
 
   const { code } = await runServeToExit([], { XDG_CONFIG_HOME: config });
   assert.equal(code, 2);
@@ -666,14 +666,14 @@ test('serve exits 1 and releases the lock when the viewer port is taken', async 
 });
 
 test('serve exits 1 and releases the lock when the control socket cannot start', async () => {
-  mkdirSync(join(runtimeDir, 'pi-droid', 'control.sock'), { recursive: true, mode: 0o700 });
+  mkdirSync(join(runtimeDir, 'pi-handset', 'control.sock'), { recursive: true, mode: 0o700 });
   const { code } = await runServeToExit(['--port', String(await freePort())]);
   assert.equal(code, 1);
   assert.equal(existsSync(lockFile()), false, 'the lock must be released');
 });
 
 test('serve exits 2, releases the lock, and closes the control socket on a discovery failure', async () => {
-  mkdirSync(join(runtimeDir, 'pi-droid', 'supervisor.json'), {
+  mkdirSync(join(runtimeDir, 'pi-handset', 'supervisor.json'), {
     recursive: true,
     mode: 0o700,
   });
@@ -681,7 +681,7 @@ test('serve exits 2, releases the lock, and closes the control socket on a disco
   assert.equal(code, 2);
   assert.equal(existsSync(lockFile()), false, 'the lock must be released');
   assert.equal(
-    existsSync(join(runtimeDir, 'pi-droid', 'control.sock')),
+    existsSync(join(runtimeDir, 'pi-handset', 'control.sock')),
     false,
     'the control socket must be removed',
   );
@@ -691,7 +691,7 @@ test('serve exits 0 on SIGTERM and removes the control socket', async () => {
   const port = await freePort();
   const serve = startServe(['--port', String(port)]);
   await waitFor(() => readPid() === serve.child.pid, 'the discovery file');
-  const socket = join(runtimeDir, 'pi-droid', 'control.sock');
+  const socket = join(runtimeDir, 'pi-handset', 'control.sock');
   assert.equal(existsSync(socket), true, 'the control socket exists once serving');
 
   const exited = waitExit(serve.child);
@@ -708,7 +708,7 @@ test('a SIGTERM during startup still tears down, leaving no lock or socket', asy
   // record all come after it. A stop requested the moment it appears therefore
   // lands inside startup, before there is anything to serve.
   await waitFor(() => existsSync(lockFile()), 'the lock file');
-  const socket = join(runtimeDir, 'pi-droid', 'control.sock');
+  const socket = join(runtimeDir, 'pi-handset', 'control.sock');
 
   const exited = waitExit(serve.child);
   serve.child.kill('SIGTERM');
@@ -722,7 +722,7 @@ test('a SIGTERM during startup still tears down, leaving no lock or socket', asy
 test('serve exits 0 on SIGINT and removes the control socket', async () => {
   const port = await freePort();
   const serve = await startReadyServe(port);
-  const socket = join(runtimeDir, 'pi-droid', 'control.sock');
+  const socket = join(runtimeDir, 'pi-handset', 'control.sock');
   assert.equal(existsSync(socket), true, 'the control socket exists once serving');
 
   const exited = waitExit(serve.child);
@@ -792,24 +792,24 @@ test('a SIGUSR1 mint invalidates an earlier pair code', async () => {
 
 test('serve spawns bare pi on start-session and SIGTERM kills the group', async () => {
   const port = await freePort();
-  const shimDir = mkdtempSync(join(tmpdir(), 'pi-droid-serve-shim-'));
+  const shimDir = mkdtempSync(join(tmpdir(), 'pi-handset-serve-shim-'));
   scratchShimDirs.push(shimDir);
   const marker = join(shimDir, 'args.txt');
   const pidMarker = join(shimDir, 'pid.txt');
   writeFileSync(
     join(shimDir, 'pi'),
     '#!/bin/sh\n' +
-      'echo "$$" > "$PI_DROID_SHIM_PID"\n' +
-      'echo "$@" > "$PI_DROID_SHIM_ARGS"\n' +
-      'pwd >> "$PI_DROID_SHIM_ARGS"\n' +
+      'echo "$$" > "$PI_HANDSET_SHIM_PID"\n' +
+      'echo "$@" > "$PI_HANDSET_SHIM_ARGS"\n' +
+      'pwd >> "$PI_HANDSET_SHIM_ARGS"\n' +
       'sleep 30\n',
     { mode: 0o755 },
   );
 
   const serve = startServe(['--port', String(port)], {
     PATH: `${shimDir}:${process.env.PATH ?? ''}`,
-    PI_DROID_SHIM_ARGS: marker,
-    PI_DROID_SHIM_PID: pidMarker,
+    PI_HANDSET_SHIM_ARGS: marker,
+    PI_HANDSET_SHIM_PID: pidMarker,
   });
   await waitFor(() => readPid() === serve.child.pid, 'the discovery file');
 
@@ -851,7 +851,7 @@ test('serve spawns bare pi on start-session and SIGTERM kills the group', async 
 
 test('--max-sessions caps the number of app-started sessions', async () => {
   const port = await freePort();
-  const shimDir = mkdtempSync(join(tmpdir(), 'pi-droid-serve-cap-shim-'));
+  const shimDir = mkdtempSync(join(tmpdir(), 'pi-handset-serve-cap-shim-'));
   scratchShimDirs.push(shimDir);
   writeFileSync(
     join(shimDir, 'pi'),
@@ -903,7 +903,7 @@ test('--max-sessions caps the number of app-started sessions', async () => {
 
 /** The children pidfile the supervisor writes beside its discovery record. */
 function childrenFile(): string {
-  return join(runtimeDir, 'pi-droid', 'children.json');
+  return join(runtimeDir, 'pi-handset', 'children.json');
 }
 
 /** The live `/proc/<pid>/cmdline`, NUL-split with the padding removed. */
@@ -919,7 +919,7 @@ function readCmdline(pid: number): string[] {
 
 /** Writes the title-rewriting `pi` shim and its env; returns the env to pass. */
 function rewriterShim(): { dir: string; env: Record<string, string> } {
-  const dir = mkdtempSync(join(tmpdir(), 'pi-droid-serve-rewriter-'));
+  const dir = mkdtempSync(join(tmpdir(), 'pi-handset-serve-rewriter-'));
   scratchShimDirs.push(dir);
   writeTitleRewriter(dir);
   return {

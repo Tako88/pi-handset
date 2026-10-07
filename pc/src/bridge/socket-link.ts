@@ -73,7 +73,7 @@ export function createSocketLink(deps: SocketLinkDeps, callbacks: SocketLinkCall
   function open(): void {
     const endpoint = deps.resolveEndpoint();
     if (endpoint === null) {
-      deps.debug('pi-droid bridge: no hub discovered\n');
+      deps.debug('pi-handset bridge: no hub discovered\n');
       scheduleReconnect();
       return;
     }
@@ -88,7 +88,7 @@ export function createSocketLink(deps: SocketLinkDeps, callbacks: SocketLinkCall
     );
     current.addEventListener('message', (event) => deps.guard(() => callbacks.onFrame(event)));
     current.addEventListener('error', () =>
-      deps.guard(() => deps.debug('pi-droid bridge: socket error\n')),
+      deps.guard(() => deps.debug('pi-handset bridge: socket error\n')),
     );
     current.addEventListener('close', (event) => deps.guard(() => onSocketClose(current, event)));
   }
@@ -97,7 +97,7 @@ export function createSocketLink(deps: SocketLinkDeps, callbacks: SocketLinkCall
     if (socket !== current) return;
     socket = null;
     const code = event.code;
-    deps.debug(`pi-droid bridge: socket closed (${String(code ?? 'transport')})\n`);
+    deps.debug(`pi-handset bridge: socket closed (${String(code ?? 'transport')})\n`);
     // 4003 is a capability violation: a bridge bug, not a transient failure.
     // Retrying it at capped backoff would reconnect forever.
     if (code === CLOSE_CAPABILITY) return;
@@ -107,7 +107,7 @@ export function createSocketLink(deps: SocketLinkDeps, callbacks: SocketLinkCall
     // and say why. CLOSE_INTERNAL (4500) is deliberately NOT included: that close
     // is transient and must retry.
     if (code === CLOSE_PROTOCOL) {
-      deps.debug(`pi-droid bridge: protocol close ${CLOSE_PROTOCOL}; not reconnecting\n`);
+      deps.debug(`pi-handset bridge: protocol close ${CLOSE_PROTOCOL}; not reconnecting\n`);
       return;
     }
     // 4008 is rate-limited: the hub delayed the close deliberately, so wait a

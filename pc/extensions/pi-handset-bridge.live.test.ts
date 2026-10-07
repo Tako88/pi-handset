@@ -10,7 +10,7 @@
 import assert from 'node:assert/strict';
 import { test, beforeEach } from 'node:test';
 import { HISTORY_MAX_BYTES, type ToolPayload } from '../src/protocol/protocol.ts';
-import { resetSessionLinkageForTests } from './pi-droid-bridge.ts';
+import { resetSessionLinkageForTests } from './pi-handset-bridge.ts';
 import { makeCtx, makeHarness, parsed, sendCommand } from '../test/support/bridge-harness.ts';
 
 beforeEach(() => resetSessionLinkageForTests());

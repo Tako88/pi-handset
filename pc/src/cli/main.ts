@@ -1,5 +1,5 @@
 /**
- * The `pi-droid` CLI dispatcher. Deliberately not guarded on `process.argv[1]`
+ * The `pi-handset` CLI dispatcher. Deliberately not guarded on `process.argv[1]`
  * (that guard is what breaks under a `bin` symlink in #37) — nothing imports
  * this module, so running it is the only way it executes.
  */
@@ -9,7 +9,7 @@ import { runServe } from './serve.ts';
 
 export function usage(): string {
   return (
-    'usage: pi-droid <command> [options]\n' +
+    'usage: pi-handset <command> [options]\n' +
     '\n' +
     'commands:\n' +
     '  serve [--port N] [--no-lan] [--take-over] [--max-sessions N]\n' +

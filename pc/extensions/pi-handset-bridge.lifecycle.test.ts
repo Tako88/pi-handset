@@ -28,7 +28,7 @@ import { PROTOCOL_VERSION } from '../src/protocol/protocol.ts';
 import { writeDiscovery } from '../src/hub/discovery.ts';
 import { loadOrCreateToken } from '../src/hub/auth.ts';
 import { SESSION_COMMAND_NAME } from '../src/bridge/commands.ts';
-import { readEndpoint, resetSessionLinkageForTests } from './pi-droid-bridge.ts';
+import { readEndpoint, resetSessionLinkageForTests } from './pi-handset-bridge.ts';
 import { StubCommandCtx, makeHarness, parsed, sendCommand } from '../test/support/bridge-harness.ts';
 
 beforeEach(() => resetSessionLinkageForTests());
@@ -45,14 +45,14 @@ test('an inert mode writes nothing', () => {
   assert.deepEqual(harness.writes, []);
 });
 
-test('nothing is written without PI_DROID_DEBUG=1', () => {
+test('nothing is written without PI_HANDSET_DEBUG=1', () => {
   const harness = makeHarness({ resolveEndpoint: () => null });
   harness.start();
   assert.deepEqual(harness.writes, []);
 });
 
-test('debug output goes to stderr when PI_DROID_DEBUG=1', () => {
-  const harness = makeHarness({ env: { PI_DROID_DEBUG: '1' }, resolveEndpoint: () => null });
+test('debug output goes to stderr when PI_HANDSET_DEBUG=1', () => {
+  const harness = makeHarness({ env: { PI_HANDSET_DEBUG: '1' }, resolveEndpoint: () => null });
   harness.start();
   assert.ok(harness.writes.length > 0);
   assert.ok(harness.writes.every((write) => write.stream === 'stderr'));
@@ -467,14 +467,14 @@ test('commands arriving after shutdown are ignored', async () => {
 });
 
 test('the bridge does not import the ws package', () => {
-  const source = readFileSync(new URL('./pi-droid-bridge.ts', import.meta.url), 'utf8');
+  const source = readFileSync(new URL('./pi-handset-bridge.ts', import.meta.url), 'utf8');
   assert.equal(/from\s+['"]ws['"]/.test(source), false);
   assert.equal(/require\(\s*['"]ws['"]\s*\)/.test(source), false);
 });
 
 test('readEndpoint reads the agent port from discovery and the token from config', () => {
-  const runtimeDir = mkdtempSync(join(tmpdir(), 'pi-droid-bridge-rt-'));
-  const configDir = mkdtempSync(join(tmpdir(), 'pi-droid-bridge-cfg-'));
+  const runtimeDir = mkdtempSync(join(tmpdir(), 'pi-handset-bridge-rt-'));
+  const configDir = mkdtempSync(join(tmpdir(), 'pi-handset-bridge-cfg-'));
   try {
     writeDiscovery(runtimeDir, {
       agentPort: 4321,
@@ -495,8 +495,8 @@ test('readEndpoint reads the agent port from discovery and the token from config
 });
 
 test('readEndpoint reports no hub when there is no discovery file', () => {
-  const runtimeDir = mkdtempSync(join(tmpdir(), 'pi-droid-bridge-rt-'));
-  const configDir = mkdtempSync(join(tmpdir(), 'pi-droid-bridge-cfg-'));
+  const runtimeDir = mkdtempSync(join(tmpdir(), 'pi-handset-bridge-rt-'));
+  const configDir = mkdtempSync(join(tmpdir(), 'pi-handset-bridge-cfg-'));
   try {
     assert.equal(readEndpoint({ runtimeDir, configDir }), null);
   } finally {

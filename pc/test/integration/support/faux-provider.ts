@@ -7,7 +7,7 @@
  * install tree — so this import needs no dependency in `pc/` and none is added.
  * `tsc` cannot resolve that path; `./pi-ai.d.ts` declares the ambient slice.
  *
- * The scripted reply is `PI_DROID_FAUX_TEXT` so the test asserts on a value it
+ * The scripted reply is `PI_HANDSET_FAUX_TEXT` so the test asserts on a value it
  * chose. No network, no spend.
  */
 
@@ -22,9 +22,9 @@ import {
 export default function fauxHarness(pi: {
   registerProvider(provider: unknown): void;
 }): void {
-  const mode = process.env.PI_DROID_FAUX_MODE ?? 'text';
-  const text = process.env.PI_DROID_FAUX_TEXT ?? 'FAUX_OK';
-  const thinking = process.env.PI_DROID_FAUX_THINKING ?? 'FAUX_THOUGHT';
+  const mode = process.env.PI_HANDSET_FAUX_MODE ?? 'text';
+  const text = process.env.PI_HANDSET_FAUX_TEXT ?? 'FAUX_OK';
+  const thinking = process.env.PI_HANDSET_FAUX_THINKING ?? 'FAUX_THOUGHT';
   // The plain recipe keeps the default non-reasoning faux model untouched. The
   // `thinking` recipe advertises `reasoning`, without which pi never surfaces
   // `thinking_start`/`thinking_delta` for the scripted thinking block.
@@ -51,7 +51,7 @@ export default function fauxHarness(pi: {
           fauxAssistantMessage(
             fauxToolCall(
               'read',
-              { path: process.env.PI_DROID_FAUX_TOOL_PATH ?? 'faux-tool.txt' },
+              { path: process.env.PI_HANDSET_FAUX_TOOL_PATH ?? 'faux-tool.txt' },
               { id: 'call-1' },
             ),
             { stopReason: 'toolUse' },

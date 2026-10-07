@@ -18,7 +18,7 @@ const manifest = JSON.parse(
 test('the pi manifest names the bridge, and the bridge exists', () => {
   const entries = manifest.pi?.extensions ?? [];
   assert.ok(
-    entries.includes('./extensions/pi-droid-bridge.ts'),
+    entries.includes('./extensions/pi-handset-bridge.ts'),
     `the manifest does not name the bridge: ${JSON.stringify(entries)}`,
   );
   for (const entry of entries) {
@@ -41,7 +41,7 @@ test('the extensions .ignore hides the bridge test from pi', () => {
     `no *.test.ts pattern in extensions/.ignore: ${JSON.stringify(patterns)}`,
   );
   assert.ok(
-    existsSync(join(packageDir, 'extensions/pi-droid-bridge.test.ts')),
+    existsSync(join(packageDir, 'extensions/pi-handset-bridge.test.ts')),
     'the ignore pattern guards nothing: no bridge test file exists',
   );
 });

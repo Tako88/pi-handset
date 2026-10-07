@@ -23,7 +23,7 @@ export const scratchDirs: string[] = [];
 
 /** A temp directory to stand in for the user's home; removed in `afterEach`. */
 export function scratchHome(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'pi-droid-hub-test-'));
+  const dir = mkdtempSync(join(tmpdir(), 'pi-handset-hub-test-'));
   scratchDirs.push(dir);
   return dir;
 }

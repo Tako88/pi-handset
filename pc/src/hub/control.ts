@@ -1,8 +1,8 @@
 /**
  * The same-machine control socket.
  *
- * A Unix domain socket at `<runtimeDir>/pi-droid/control.sock` (`0600`, inside
- * the `0700` discovery dir). `pi-droid pair` connects, sends one newline-
+ * A Unix domain socket at `<runtimeDir>/pi-handset/control.sock` (`0600`, inside
+ * the `0700` discovery dir). `pi-handset pair` connects, sends one newline-
  * delimited JSON request, reads one newline-delimited response, and the server
  * closes. No TCP, no auth beyond filesystem permission: any same-UID process
  * can already read the token file, so this adds no exposure.

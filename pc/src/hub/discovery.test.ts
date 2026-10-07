@@ -34,7 +34,7 @@ import { PROTOCOL_VERSION } from '../protocol/protocol.ts';
 let runtimeDir: string;
 
 beforeEach(() => {
-  runtimeDir = mkdtempSync(join(tmpdir(), 'pi-droid-runtime-'));
+  runtimeDir = mkdtempSync(join(tmpdir(), 'pi-handset-runtime-'));
 });
 
 afterEach(() => {
@@ -54,20 +54,20 @@ function record(overrides: Partial<Parameters<typeof writeDiscovery>[1]> = {}) {
 
 /** Seeds a raw supervisor.json, bypassing writeDiscovery's validation. */
 function seedRaw(contents: string): void {
-  mkdirSync(join(runtimeDir, 'pi-droid'), { recursive: true, mode: 0o700 });
+  mkdirSync(join(runtimeDir, 'pi-handset'), { recursive: true, mode: 0o700 });
   writeFileSync(supervisorPath(runtimeDir), contents, { mode: 0o600 });
 }
 
-test('supervisorPath points at <runtimeDir>/pi-droid/supervisor.json', () => {
+test('supervisorPath points at <runtimeDir>/pi-handset/supervisor.json', () => {
   assert.equal(
     supervisorPath(runtimeDir),
-    join(runtimeDir, 'pi-droid', 'supervisor.json'),
+    join(runtimeDir, 'pi-handset', 'supervisor.json'),
   );
 });
 
-test('resolveRuntimeDir prefers an absolute PI_DROID_RUNTIME_DIR', () => {
+test('resolveRuntimeDir prefers an absolute PI_HANDSET_RUNTIME_DIR', () => {
   assert.equal(
-    resolveRuntimeDir({ PI_DROID_RUNTIME_DIR: '/custom/runtime' }, 1000, '/custom/tmp'),
+    resolveRuntimeDir({ PI_HANDSET_RUNTIME_DIR: '/custom/runtime' }, 1000, '/custom/tmp'),
     '/custom/runtime',
   );
 });
@@ -82,7 +82,7 @@ test('resolveRuntimeDir uses XDG_RUNTIME_DIR when the override is absent', () =>
 test('resolveRuntimeDir lets the override beat XDG_RUNTIME_DIR', () => {
   assert.equal(
     resolveRuntimeDir(
-      { PI_DROID_RUNTIME_DIR: '/override', XDG_RUNTIME_DIR: '/run/user/1000' },
+      { PI_HANDSET_RUNTIME_DIR: '/override', XDG_RUNTIME_DIR: '/run/user/1000' },
       1000,
       '/custom/tmp',
     ),
@@ -90,21 +90,21 @@ test('resolveRuntimeDir lets the override beat XDG_RUNTIME_DIR', () => {
   );
 });
 
-test('resolveRuntimeDir falls back to <tmp>/pi-droid-<uid>', () => {
-  assert.equal(resolveRuntimeDir({}, 1000, '/custom/tmp'), '/custom/tmp/pi-droid-1000');
+test('resolveRuntimeDir falls back to <tmp>/pi-handset-<uid>', () => {
+  assert.equal(resolveRuntimeDir({}, 1000, '/custom/tmp'), '/custom/tmp/pi-handset-1000');
 });
 
 test('resolveRuntimeDir ignores a relative override and falls back', () => {
   assert.equal(
-    resolveRuntimeDir({ PI_DROID_RUNTIME_DIR: 'relative/path' }, 1000, '/custom/tmp'),
-    '/custom/tmp/pi-droid-1000',
+    resolveRuntimeDir({ PI_HANDSET_RUNTIME_DIR: 'relative/path' }, 1000, '/custom/tmp'),
+    '/custom/tmp/pi-handset-1000',
   );
 });
 
-test('writeDiscovery creates the pi-droid directory 0700 and the file 0600', () => {
+test('writeDiscovery creates the pi-handset directory 0700 and the file 0600', () => {
   writeDiscovery(runtimeDir, record());
 
-  assert.equal(statSync(join(runtimeDir, 'pi-droid')).mode & 0o777, 0o700);
+  assert.equal(statSync(join(runtimeDir, 'pi-handset')).mode & 0o777, 0o700);
   assert.equal(statSync(supervisorPath(runtimeDir)).mode & 0o777, 0o600);
 });
 
@@ -136,7 +136,7 @@ test('writeDiscovery leaves no temp files behind', () => {
   writeDiscovery(runtimeDir, record());
   writeDiscovery(runtimeDir, record({ viewerPort: 9123 }));
 
-  assert.deepEqual(readdirSync(join(runtimeDir, 'pi-droid')), ['supervisor.json']);
+  assert.deepEqual(readdirSync(join(runtimeDir, 'pi-handset')), ['supervisor.json']);
 });
 
 test('readDiscovery returns the record for a live, matching file', () => {
@@ -214,10 +214,10 @@ test('readDiscovery rejects a startedAt that is not a parseable time', () => {
   assert.equal(readDiscovery(runtimeDir), null);
 });
 
-test('writeDiscovery refuses a symlinked pi-droid runtime directory', () => {
-  const target = mkdtempSync(join(tmpdir(), 'pi-droid-outside-'));
+test('writeDiscovery refuses a symlinked pi-handset runtime directory', () => {
+  const target = mkdtempSync(join(tmpdir(), 'pi-handset-outside-'));
   try {
-    symlinkSync(target, join(runtimeDir, 'pi-droid'));
+    symlinkSync(target, join(runtimeDir, 'pi-handset'));
     assert.throws(() => writeDiscovery(runtimeDir, record()), /symlink/i);
   } finally {
     rmSync(target, { recursive: true, force: true });
@@ -225,15 +225,15 @@ test('writeDiscovery refuses a symlinked pi-droid runtime directory', () => {
 });
 
 test('writeDiscovery refuses when the runtime path is not a directory', () => {
-  writeFileSync(join(runtimeDir, 'pi-droid'), 'not a directory', { mode: 0o600 });
+  writeFileSync(join(runtimeDir, 'pi-handset'), 'not a directory', { mode: 0o600 });
 
   assert.throws(() => writeDiscovery(runtimeDir, record()), /not a directory/i);
 });
 
-test('acquireLock refuses a symlinked pi-droid runtime directory', () => {
-  const target = mkdtempSync(join(tmpdir(), 'pi-droid-outside-'));
+test('acquireLock refuses a symlinked pi-handset runtime directory', () => {
+  const target = mkdtempSync(join(tmpdir(), 'pi-handset-outside-'));
   try {
-    symlinkSync(target, join(runtimeDir, 'pi-droid'));
+    symlinkSync(target, join(runtimeDir, 'pi-handset'));
     assert.throws(() => acquireLock(runtimeDir, process.pid), /symlink/i);
   } finally {
     rmSync(target, { recursive: true, force: true });
@@ -307,8 +307,8 @@ async function deadPid(): Promise<number> {
   return pid;
 }
 
-test('lockPath points at <runtimeDir>/pi-droid/supervisor.lock', () => {
-  assert.equal(lockPath(runtimeDir), join(runtimeDir, 'pi-droid', 'supervisor.lock'));
+test('lockPath points at <runtimeDir>/pi-handset/supervisor.lock', () => {
+  assert.equal(lockPath(runtimeDir), join(runtimeDir, 'pi-handset', 'supervisor.lock'));
 });
 
 test('acquireLock creates a 0600 lock naming the pid', () => {
@@ -331,7 +331,7 @@ test('acquireLock refuses while a live holder owns the lock', () => {
 
 test('acquireLock reclaims a stale lock whose holder is dead', async () => {
   const stale = await deadPid();
-  mkdirSync(join(runtimeDir, 'pi-droid'), { recursive: true, mode: 0o700 });
+  mkdirSync(join(runtimeDir, 'pi-handset'), { recursive: true, mode: 0o700 });
   writeFileSync(lockPath(runtimeDir), String(stale), { mode: 0o600 });
 
   const result = acquireLock(runtimeDir, process.pid);

@@ -119,7 +119,7 @@ export async function dispatchCommand(
         const name = asString((entry as { name?: unknown })?.name);
         if (name === null) continue;
         // Hide the bridge's own command: the bare name and pi's `:N` duplicate
-        // form. A `pi-droid-session-foo` tail is a different, real command.
+        // form. A `pi-handset-session-foo` tail is a different, real command.
         if (name === SESSION_COMMAND_NAME || name.startsWith(`${SESSION_COMMAND_NAME}:`)) {
           continue;
         }

@@ -9,7 +9,7 @@
 
 import type { SlashCommand } from '../protocol/protocol.ts';
 // BridgeDeps names the entry's BridgeEndpoint, so the only cycle is type-only.
-import type { BridgeEndpoint } from '../../extensions/pi-droid-bridge.ts';
+import type { BridgeEndpoint } from '../../extensions/pi-handset-bridge.ts';
 
 // ---------------------------------------------------------------------------
 // The slice of the pi extension API the bridge uses

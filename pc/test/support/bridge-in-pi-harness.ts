@@ -24,7 +24,7 @@ import { createTicketStore } from '../../src/hub/pairing.ts';
 
 import { PROTOCOL_VERSION } from '../../src/protocol/protocol.ts';
 
-export const bridgePath = fileURLToPath(new URL('../../extensions/pi-droid-bridge.ts', import.meta.url));
+export const bridgePath = fileURLToPath(new URL('../../extensions/pi-handset-bridge.ts', import.meta.url));
 export const harnessPath = fileURLToPath(new URL('../integration/support/faux-provider.ts', import.meta.url));
 
 export const FAUX_TEXT = 'FAUX_OK';
@@ -75,7 +75,7 @@ export const hubs: Hub[] = [];
 export const viewers: Viewer[] = [];
 
 export function setupBridgeInPi(): void {
-  tmpRoot = mkdtempSync(join(tmpdir(), 'pi-droid-in-pi-'));
+  tmpRoot = mkdtempSync(join(tmpdir(), 'pi-handset-in-pi-'));
   runtimeDir = join(tmpRoot, 'runtime');
   configDir = join(tmpRoot, 'config');
   childCwd = join(tmpRoot, 'cwd');
@@ -186,9 +186,9 @@ export function spawnPi(args: string[], extraEnv: Record<string, string> = {}): 
     cwd: childCwd,
     env: {
       ...process.env,
-      PI_DROID_RUNTIME_DIR: runtimeDir,
+      PI_HANDSET_RUNTIME_DIR: runtimeDir,
       XDG_CONFIG_HOME: configDir,
-      PI_DROID_DEBUG: '1',
+      PI_HANDSET_DEBUG: '1',
       ...extraEnv,
     },
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -266,7 +266,7 @@ export function assertStdoutIsPureJsonl(run: PiRun): void {
   });
   assert.deepEqual(bad, [], `stdout carried non-JSON lines: ${bad.join(' | ')}`);
   assert.ok(
-    !run.stdout().includes('pi-droid bridge'),
+    !run.stdout().includes('pi-handset bridge'),
     'the bridge must never write to stdout',
   );
 }
@@ -328,7 +328,7 @@ export function publishDiscovery(hub: Hub): void {
 }
 
 export function writeTokenAt(dir: string, token: string): void {
-  const tokenDir = join(dir, 'pi-droid');
+  const tokenDir = join(dir, 'pi-handset');
   mkdirSync(tokenDir, { recursive: true, mode: 0o700 });
   writeFileSync(join(tokenDir, 'token'), token, { mode: 0o600 });
 }
@@ -720,7 +720,7 @@ export async function bootPi(
       '-nc',
       ...extraArgs,
     ],
-    { PI_DROID_FAUX_TEXT: FAUX_TEXT, ...extraEnv },
+    { PI_HANDSET_FAUX_TEXT: FAUX_TEXT, ...extraEnv },
   );
 
   const viewer = await connectViewer(hub.viewerPort, token);

@@ -1,5 +1,5 @@
 /**
- * `pi-droid serve` — the supervisor process.
+ * `pi-handset serve` — the supervisor process.
  *
  * Parse the flags, take the exclusion lock (see `acquireLock`), refuse to start
  * while another live supervisor holds it (unless `--take-over`), load the
@@ -121,30 +121,30 @@ export function parseArgs(argv: readonly string[]): ServeArgs {
 
 /** Writes the refusal and returns the exit code; the caller returns it. */
 function refuse(message: string, code: number): number {
-  process.stderr.write(`pi-droid serve: ${message}\n`);
+  process.stderr.write(`pi-handset serve: ${message}\n`);
   return code;
 }
 
 function warn(message: string): void {
-  process.stderr.write(`pi-droid serve: ${message}\n`);
+  process.stderr.write(`pi-handset serve: ${message}\n`);
 }
 
 /**
  * The startup hint: how to ask for a pairing code. It names the absolute
  * `main.ts` path so it is runnable from any cwd before #37 installs the
- * `pi-droid` bin. The phone cannot read the token file, so this line is the
+ * `pi-handset` bin. The phone cannot read the token file, so this line is the
  * only path from a fresh device to a code.
  */
 export function pairingHint(mainPath: string): string {
   return (
-    `pi-droid serve: ready. Pair a phone: run \`node ${mainPath} pair\` to print a ` +
+    `pi-handset serve: ready. Pair a phone: run \`node ${mainPath} pair\` to print a ` +
     `code and QR (valid for ${TICKET_TTL_MS / 60_000} minutes).\n`
   );
 }
 
 /** Printed in response to SIGUSR1. The code is grouped for reading; TTL stated. */
 export function pairingCodeNotice(code: string): string {
-  return `pi-droid pairing code: ${code} (valid for ${TICKET_TTL_MS / 60_000} minutes)\n`;
+  return `pi-handset pairing code: ${code} (valid for ${TICKET_TTL_MS / 60_000} minutes)\n`;
 }
 
 /**
@@ -175,7 +175,7 @@ export async function finishShutdown(
     await hub.close();
   } catch (error) {
     process.stderr.write(
-      `pi-droid serve: shutdown failed: ${(error as Error).message}\n`,
+      `pi-handset serve: shutdown failed: ${(error as Error).message}\n`,
     );
     return 1;
   }

@@ -416,8 +416,8 @@ test('a fresh app session is labelled New session', async () => {
     type: 'register',
     sessionId: 's1',
     pid: 4242,
-    cwd: '/tmp/pi-droid-session-x',
-    sessionFile: '/tmp/pi-droid-session-x/s.jsonl',
+    cwd: '/tmp/pi-handset-session-x',
+    sessionFile: '/tmp/pi-handset-session-x/s.jsonl',
   });
   assert.equal(sessionEntry(await viewer.nextSessions(2000), 's1').label, 'New session');
 
@@ -426,8 +426,8 @@ test('a fresh app session is labelled New session', async () => {
     type: 'register',
     sessionId: 's2',
     pid: 777,
-    cwd: '/tmp/pi-droid-session-x',
-    sessionFile: '/tmp/pi-droid-session-x/s.jsonl',
+    cwd: '/tmp/pi-handset-session-x',
+    sessionFile: '/tmp/pi-handset-session-x/s.jsonl',
   });
   assert.equal(sessionEntry(await viewer.nextSessions(2000), 's2').label, 's.jsonl');
 
@@ -438,8 +438,8 @@ test('a fresh app session is labelled New session', async () => {
     sessionId: 's1',
     pid: 4242,
     name: 'renamed',
-    cwd: '/tmp/pi-droid-session-x',
-    sessionFile: '/tmp/pi-droid-session-x/s.jsonl',
+    cwd: '/tmp/pi-handset-session-x',
+    sessionFile: '/tmp/pi-handset-session-x/s.jsonl',
   });
   assert.equal(sessionEntry(await viewer.nextSessions(2000), 's1').label, 'renamed');
 });

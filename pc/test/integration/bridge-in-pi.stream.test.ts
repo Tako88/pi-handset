@@ -95,8 +95,8 @@ test('a real pi with the bridge registers and a hub prompt streams from the faux
 
 test('a thinking recipe streams the reasoning before the assistant message', async () => {
   const collected = await drivePrompt({
-    PI_DROID_FAUX_MODE: 'thinking',
-    PI_DROID_FAUX_THINKING: 'FAUX_REASONING',
+    PI_HANDSET_FAUX_MODE: 'thinking',
+    PI_HANDSET_FAUX_THINKING: 'FAUX_REASONING',
   });
 
   assert.ok(collected.result, 'no command-result arrived for the prompt');
@@ -159,8 +159,8 @@ test('a tools recipe relays a toolResult whose toolCallId matches the call', asy
   writeFileSync(toolPath, 'FAUX_TOOL_CONTENT\nline two\n', { flag: 'w' });
 
   const collected = await drivePrompt({
-    PI_DROID_FAUX_MODE: 'tools',
-    PI_DROID_FAUX_TOOL_PATH: toolPath,
+    PI_HANDSET_FAUX_MODE: 'tools',
+    PI_HANDSET_FAUX_TOOL_PATH: toolPath,
   });
 
   assert.ok(collected.result, 'no command-result arrived for the prompt');

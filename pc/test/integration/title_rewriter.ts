@@ -14,9 +14,9 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 /** Env var carrying the path the subject writes its own pid to. */
-export const TITLE_REWRITER_PID_ENV = 'PI_DROID_REWRITER_PID';
+export const TITLE_REWRITER_PID_ENV = 'PI_HANDSET_REWRITER_PID';
 /** Env var carrying the path the subject writes its original argv JSON to. */
-export const TITLE_REWRITER_ARGV_ENV = 'PI_DROID_REWRITER_ARGV';
+export const TITLE_REWRITER_ARGV_ENV = 'PI_HANDSET_REWRITER_ARGV';
 
 const SCRIPT = `#!/usr/bin/env node
 const fs = require('node:fs');

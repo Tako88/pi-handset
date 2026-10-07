@@ -17,7 +17,7 @@
 //
 //   ~/develop/flutter/bin/flutter test test_live/attach_live_test.dart
 //
-// Override the model with PI_DROID_LIVE_MODEL=provider/model.
+// Override the model with PI_HANDSET_LIVE_MODEL=provider/model.
 
 import 'dart:convert';
 import 'dart:io';
@@ -54,17 +54,17 @@ const Set<String> expectedKinds = {'stream', 'message', 'agent'};
 void main() {
   test('the production client drives a live thinking model end to end', () async {
     final modelSpec =
-        Platform.environment['PI_DROID_LIVE_MODEL'] ?? defaultLiveModel;
+        Platform.environment['PI_HANDSET_LIVE_MODEL'] ?? defaultLiveModel;
     final slash = modelSpec.indexOf('/');
     expect(
       slash,
       greaterThan(0),
-      reason: 'PI_DROID_LIVE_MODEL must be provider/model, got "$modelSpec"',
+      reason: 'PI_HANDSET_LIVE_MODEL must be provider/model, got "$modelSpec"',
     );
     final provider = modelSpec.substring(0, slash);
     final model = modelSpec.substring(slash + 1);
 
-    final tmp = Directory.systemTemp.createTempSync('pi-droid-live-');
+    final tmp = Directory.systemTemp.createTempSync('pi-handset-live-');
     final runtimeDir = Directory('${tmp.path}/runtime')..createSync();
     final configDir = Directory('${tmp.path}/config')..createSync();
     final piCwd = Directory('${tmp.path}/cwd')..createSync();
@@ -83,7 +83,7 @@ void main() {
       );
       final repoRoot = appDir.parent;
       final servePath = '${repoRoot.path}/pc/src/cli/serve.ts';
-      final bridgePath = '${repoRoot.path}/pc/extensions/pi-droid-bridge.ts';
+      final bridgePath = '${repoRoot.path}/pc/extensions/pi-handset-bridge.ts';
       for (final path in [servePath, bridgePath]) {
         expect(File(path).existsSync(), isTrue, reason: 'missing $path');
       }
@@ -91,7 +91,7 @@ void main() {
       final environment = <String, String>{
         'XDG_RUNTIME_DIR': runtimeDir.path,
         'XDG_CONFIG_HOME': configDir.path,
-        'PI_DROID_DEBUG': '1',
+        'PI_HANDSET_DEBUG': '1',
       };
 
       final viewerPort = await freePort();

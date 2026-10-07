@@ -8,7 +8,7 @@
  * real pi.
  */
 
-import { installBridge } from '../../extensions/pi-droid-bridge.ts';
+import { installBridge } from '../../extensions/pi-handset-bridge.ts';
 import type {
   AssistantMessageEvent,
   BridgeCloseEvent,

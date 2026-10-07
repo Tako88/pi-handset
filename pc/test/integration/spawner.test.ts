@@ -41,7 +41,7 @@ const spawners: Spawner[] = [];
 const scratchDirs: string[] = [];
 
 function scratch(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'pi-droid-spawner-test-'));
+  const dir = mkdtempSync(join(tmpdir(), 'pi-handset-spawner-test-'));
   scratchDirs.push(dir);
   return dir;
 }
@@ -429,7 +429,7 @@ test('close immediately after a project spawn leaves the project dir alone', asy
 
 test('a failed command leaves a project dir alone', async () => {
   const dir = projectDir();
-  const spawner = createSpawner({ command: 'pi-droid-no-such-binary' });
+  const spawner = createSpawner({ command: 'pi-handset-no-such-binary' });
   spawners.push(spawner);
 
   await assert.rejects(() => spawner.spawn({ cwd: dir }));
@@ -655,7 +655,7 @@ test('the spawner records a spawned child in the pidfile and removes it on exit'
   );
   assert.equal(record.pid, pid);
   assert.ok(record.dir !== null && record.dir.startsWith(tempRoot), 'the dir is under tempRoot');
-  assert.ok(basename(record.dir).startsWith('pi-droid-session-'));
+  assert.ok(basename(record.dir).startsWith('pi-handset-session-'));
   assert.ok(
     Number.isSafeInteger(record.startTime) && record.startTime! > 0,
     `startTime must be a finite positive integer, got ${String(record.startTime)}`,
@@ -804,7 +804,7 @@ test('a record with a null start time is declined', async () => {
   assert.equal(existsSync(record.dir!), true, 'its dir must be spared');
 });
 
-test('a recorded dir whose basename is not pi-droid-session- is not removed', async () => {
+test('a recorded dir whose basename is not pi-handset-session- is not removed', async () => {
   const tempRoot = scratch();
   const pidFile = pidFilePath();
   const spawner = createSpawner({ command: 'sh', args: ['-c', 'sleep 30'], tempRoot, pidFile });
@@ -827,7 +827,7 @@ test('a recorded dir whose parent is not the recorded tempRoot is not removed', 
 
   const { pid, record } = await spawnWithRecord(spawner, pidFile);
   const otherParent = scratch();
-  const wrongDir = join(otherParent, 'pi-droid-session-xyz');
+  const wrongDir = join(otherParent, 'pi-handset-session-xyz');
   mkdirSync(wrongDir);
   const tampered: ChildRecord = { ...record, dir: wrongDir };
   assert.equal(reapOrphans(tamperChildren(tempRoot, readBootId(), [tampered])), 1);
@@ -864,7 +864,7 @@ test('a recorded tempRoot that differs from the current os.tmpdir() still reaps 
   const { pid, record } = await spawnWithRecord(spawner, pidFile);
   // A dir the spawner does not own, so only the reaper can remove it — otherwise
   // the spawner's own exit cleanup would mask the reaper's tempRoot check.
-  const ownedDir = mkdtempSync(join(tempRoot, 'pi-droid-session-'));
+  const ownedDir = mkdtempSync(join(tempRoot, 'pi-handset-session-'));
   const tampered: ChildRecord = { ...record, dir: ownedDir };
   assert.equal(reapOrphans(tamperChildren(tempRoot, readBootId(), [tampered])), 1);
   await waitFor(() => !alive(pid), 'the verified process to die');

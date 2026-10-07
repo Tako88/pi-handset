@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { test, beforeEach } from 'node:test';
 import { MAX_RELAY_BYTES } from '../src/protocol/protocol.ts';
 import type { AssistantMessageEvent } from '../src/bridge/pi-types.ts';
-import { resetSessionLinkageForTests } from './pi-droid-bridge.ts';
+import { resetSessionLinkageForTests } from './pi-handset-bridge.ts';
 import { imagePart, makeHarness, parsed, sampleAssistantEvent } from '../test/support/bridge-harness.ts';
 
 beforeEach(() => resetSessionLinkageForTests());

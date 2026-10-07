@@ -1,9 +1,9 @@
 /**
  * The supervisor discovery file.
  *
- * A supervisor writes `<runtimeDir>/pi-droid/supervisor.json` where
- * `<runtimeDir>` is an absolute `$PI_DROID_RUNTIME_DIR` (a test-only override),
- * else an absolute `$XDG_RUNTIME_DIR`, else `<tmpdir>/pi-droid-<uid>`. The
+ * A supervisor writes `<runtimeDir>/pi-handset/supervisor.json` where
+ * `<runtimeDir>` is an absolute `$PI_HANDSET_RUNTIME_DIR` (a test-only override),
+ * else an absolute `$XDG_RUNTIME_DIR`, else `<tmpdir>/pi-handset-<uid>`. The
  * override exists because `$XDG_RUNTIME_DIR` is unset for many users and tests
  * must never touch the real one.
  *
@@ -12,7 +12,7 @@
  * record is what an *agent* reads to find the hub, and the agent listener is
  * the ephemeral one; the viewer port is included for tooling and diagnostics.
  * The token has exactly one home
- * (`<configDir>/pi-droid/token`, via `auth.ts`); duplicating it here would
+ * (`<configDir>/pi-handset/token`, via `auth.ts`); duplicating it here would
  * create a second copy to leak and a second copy to desynchronize on rotation.
  *
  * A reader treats a corrupt/unparseable file, a dead pid, and a protocol
@@ -20,7 +20,7 @@
  * write is temp-file + `rename`, so a reader never observes a partial file.
  *
  * This module also owns the exclusion lock at
- * `<runtimeDir>/pi-droid/supervisor.lock` (`0600`). Its exclusive create
+ * `<runtimeDir>/pi-handset/supervisor.lock` (`0600`). Its exclusive create
  * (`open(..., 'wx')`) is what makes two simultaneous supervisor starts
  * exclusive; the lock is held for the process lifetime and the discovery file
  * is only the published record. See `acquireLock`.
@@ -72,7 +72,7 @@ export function resolveRuntimeDir(
   uid: number = currentUid(),
   tmp: string = tmpdir(),
 ): string {
-  const override = env.PI_DROID_RUNTIME_DIR;
+  const override = env.PI_HANDSET_RUNTIME_DIR;
   if (typeof override === 'string' && override.length > 0 && isAbsolute(override)) {
     return override;
   }
@@ -80,12 +80,12 @@ export function resolveRuntimeDir(
   if (typeof xdg === 'string' && xdg.length > 0 && isAbsolute(xdg)) {
     return xdg;
   }
-  return join(tmp, `pi-droid-${uid}`);
+  return join(tmp, `pi-handset-${uid}`);
 }
 
 /** The discovery file path under a runtime dir; one shared construction. */
 export function supervisorPath(runtimeDir: string): string {
-  return join(runtimeDir, 'pi-droid', 'supervisor.json');
+  return join(runtimeDir, 'pi-handset', 'supervisor.json');
 }
 
 /**
@@ -94,7 +94,7 @@ export function supervisorPath(runtimeDir: string): string {
  * reader together).
  */
 export function childrenPath(runtimeDir: string): string {
-  return join(runtimeDir, 'pi-droid', 'children.json');
+  return join(runtimeDir, 'pi-handset', 'children.json');
 }
 
 /**
@@ -114,7 +114,7 @@ export function isProcessAlive(
 }
 
 export function ensureDiscoveryDir(runtimeDir: string): string {
-  const dir = join(runtimeDir, 'pi-droid');
+  const dir = join(runtimeDir, 'pi-handset');
   const existing = lstatOrNull(dir);
 
   if (existing === null) {
@@ -235,12 +235,12 @@ export function removeDiscovery(runtimeDir: string, pid: number): void {
 
 /** The control-socket path under a runtime dir; one shared construction. */
 export function controlSocketPath(runtimeDir: string): string {
-  return join(runtimeDir, 'pi-droid', 'control.sock');
+  return join(runtimeDir, 'pi-handset', 'control.sock');
 }
 
 /** The exclusion lock path; one shared construction. */
 export function lockPath(runtimeDir: string): string {
-  return join(runtimeDir, 'pi-droid', 'supervisor.lock');
+  return join(runtimeDir, 'pi-handset', 'supervisor.lock');
 }
 
 /** The result of trying to become the hub: we own it, or someone else does. */

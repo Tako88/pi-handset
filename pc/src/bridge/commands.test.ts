@@ -170,7 +170,7 @@ test("listCommands omits the bridge's own session command", async () => {
   // pi exposes registered extension commands through `getCommands()`; the
   // bridge's own command must never appear in the app's `/` overlay. The filter
   // hides the bare name and pi's `:N` duplicate form only — a hypothetical
-  // `pi-droid-session-foo` is still a real, distinct command.
+  // `pi-handset-session-foo` is still a real, distinct command.
   harness.pi.commands = [
     { name: SESSION_COMMAND_NAME },
     { name: `${SESSION_COMMAND_NAME}:2` },

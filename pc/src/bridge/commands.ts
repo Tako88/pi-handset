@@ -34,7 +34,7 @@ export const COMMAND_ALLOWLIST = new Set([
  * a real `ExtensionCommandContext`, the only surface exposing
  * `newSession`/`fork`/`navigateTree`.
  */
-export const SESSION_COMMAND_NAME = 'pi-droid-session';
+export const SESSION_COMMAND_NAME = 'pi-handset-session';
 
 /**
  * The refusal for a command name the bridge will not dispatch — either because

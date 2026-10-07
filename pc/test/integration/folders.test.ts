@@ -41,7 +41,7 @@ import {
 const scratchDirs: string[] = [];
 
 function scratch(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'pi-droid-folders-test-'));
+  const dir = mkdtempSync(join(tmpdir(), 'pi-handset-folders-test-'));
   scratchDirs.push(dir);
   return dir;
 }

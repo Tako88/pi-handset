@@ -7,7 +7,7 @@
 /// ## Two caps, one ordering
 ///
 /// The bridge caps the snippet at 200 code points
-/// (`SETTLED_TEXT_MAX_CODE_POINTS` in `pc/extensions/pi-droid-bridge.ts`) and
+/// (`SETTLED_TEXT_MAX_CODE_POINTS` in `pc/extensions/pi-handset-bridge.ts`) and
 /// flags `truncated`; this file caps the visible body at
 /// [notificationBodyMaxCodePoints] (140). **The wire cap must stay ≥ the visible
 /// cap**: a body shorter than the visible cap can still be marked `truncated`,

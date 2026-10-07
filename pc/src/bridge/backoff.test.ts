@@ -44,7 +44,7 @@ test('a 4002 protocol close does not schedule a reconnect', () => {
 });
 
 test('a 4002 close is surfaced as terminal', () => {
-  const harness = makeHarness({ env: { PI_DROID_DEBUG: '1' } });
+  const harness = makeHarness({ env: { PI_HANDSET_DEBUG: '1' } });
   harness.start();
   const socket = harness.sockets[0];
   socket.open();

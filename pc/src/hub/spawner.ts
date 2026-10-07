@@ -249,7 +249,7 @@ export function createSpawner(options: SpawnerOptions = {}): Spawner {
     let dir: string;
     if (owned) {
       try {
-        dir = mkdtempSync(join(tempRoot, 'pi-droid-session-'));
+        dir = mkdtempSync(join(tempRoot, 'pi-handset-session-'));
       } catch (error) {
         return Promise.reject(toError(error));
       }
@@ -519,12 +519,12 @@ export function verifyChild(
 }
 
 /**
- * True iff `dir` is a temp dir this project owns: a `pi-droid-session-*`
+ * True iff `dir` is a temp dir this project owns: a `pi-handset-session-*`
  * basename directly under the recorded `tempRoot`. The recorded root — not the
  * boot-time `os.tmpdir()` — is what closes the TMPDIR-changed case.
  */
 export function isOwnedTempDir(dir: string, tempRoot: string): boolean {
-  return basename(dir).startsWith('pi-droid-session-') && dirname(dir) === tempRoot;
+  return basename(dir).startsWith('pi-handset-session-') && dirname(dir) === tempRoot;
 }
 
 /** How long to wait for a SIGKILLed orphan to actually leave, per child. */

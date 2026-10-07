@@ -1,4 +1,4 @@
-// Real-socket tests for the `pi-droid pair` client. No mocks: the client talks
+// Real-socket tests for the `pi-handset pair` client. No mocks: the client talks
 // to a real control server, or to a real (absence of a) hub.
 
 import assert from 'node:assert/strict';
@@ -26,7 +26,7 @@ const rawServers: Server[] = [];
 const rawSockets: Socket[] = [];
 
 beforeEach(() => {
-  runtimeDir = mkdtempSync(join(tmpdir(), 'pi-droid-pair-'));
+  runtimeDir = mkdtempSync(join(tmpdir(), 'pi-handset-pair-'));
 });
 
 afterEach(async () => {
@@ -148,7 +148,7 @@ test('runPair rejects an unknown flag with exit 2', async () => {
 });
 
 test('runPair gives up when the hub accepts the connection but never answers', { timeout: 3000 }, async () => {
-  mkdirSync(join(runtimeDir, 'pi-droid'), { recursive: true, mode: 0o700 });
+  mkdirSync(join(runtimeDir, 'pi-handset'), { recursive: true, mode: 0o700 });
   rawServers.push(
     createServer((socket) => {
       rawSockets.push(socket);
@@ -163,11 +163,11 @@ test('runPair gives up when the hub accepts the connection but never answers', {
   });
   assert.equal(code, 1);
   assert.ok(Date.now() - started < 2000, 'pair must not hang on a silent hub');
-  assert.match(stream.stderr.join(''), /pi-droid pair:/);
+  assert.match(stream.stderr.join(''), /pi-handset pair:/);
 });
 
 test('runPair reports an invalid pairing payload instead of throwing', async () => {
-  mkdirSync(join(runtimeDir, 'pi-droid'), { recursive: true, mode: 0o700 });
+  mkdirSync(join(runtimeDir, 'pi-handset'), { recursive: true, mode: 0o700 });
   rawServers.push(
     createServer((socket) => {
       rawSockets.push(socket);
@@ -195,7 +195,7 @@ test('runPair reports an invalid pairing payload instead of throwing', async () 
 test('the main dispatcher exits 2 with usage for an unknown subcommand', async () => {
   const child = spawn(process.execPath, [mainEntry, 'wat'], {
     cwd: pcRoot,
-    env: { ...process.env, PI_DROID_RUNTIME_DIR: runtimeDir },
+    env: { ...process.env, PI_HANDSET_RUNTIME_DIR: runtimeDir },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let stderr = '';

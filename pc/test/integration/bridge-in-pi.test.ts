@@ -146,12 +146,12 @@ test("a real pi's command list reaches the viewer", async () => {
   // O3/R2: the bridge registers an internal command to reach a command context.
   // It must not be offered to the app — the bare name would invite a tap that
   // re-enters the same path — and pi's `:N` duplicate form must be hidden too.
-  // A hypothetical `pi-droid-session-foo` is a different command and is
+  // A hypothetical `pi-handset-session-foo` is a different command and is
   // deliberately still offered, so this pins the exact filter, not a prefix.
-  assert.ok(!offered.has('pi-droid-session'), 'the bridge must hide its own command');
+  assert.ok(!offered.has('pi-handset-session'), 'the bridge must hide its own command');
   for (const name of offered) {
     assert.ok(
-      !name.startsWith('pi-droid-session:'),
+      !name.startsWith('pi-handset-session:'),
       `the bridge's duplicate form ${name} must be hidden`,
     );
   }
@@ -418,10 +418,10 @@ test('a spawned bare pi registers, prompts and dies on kill-session', async () =
   const real = createSpawner({
     env: {
       ...process.env,
-      PI_DROID_RUNTIME_DIR: runtimeDir,
+      PI_HANDSET_RUNTIME_DIR: runtimeDir,
       XDG_CONFIG_HOME: configDir,
       PI_CODING_AGENT_DIR: agentDir,
-      PI_DROID_FAUX_TEXT: FAUX_TEXT,
+      PI_HANDSET_FAUX_TEXT: FAUX_TEXT,
     },
   });
   const pids: number[] = [];

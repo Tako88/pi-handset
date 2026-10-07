@@ -1,5 +1,5 @@
 /**
- * `pi-droid pair` — ask the running hub for a pairing code and print it.
+ * `pi-handset pair` — ask the running hub for a pairing code and print it.
  *
  * Connects to the same-machine control socket, sends one request, and prints
  * the code (grouped, TTL stated), a scannable QR of the `pidroid://pair` URI,
@@ -125,7 +125,7 @@ export async function runPair(
   try {
     parsePairArgs(argv);
   } catch (error) {
-    io.stderr(`pi-droid pair: ${(error as Error).message}\n`);
+    io.stderr(`pi-handset pair: ${(error as Error).message}\n`);
     return 2;
   }
 
@@ -144,10 +144,10 @@ export async function runPair(
     // record is published, so a live record implies a listening socket).
     const record = readDiscovery(runtimeDir);
     if (record === null) {
-      io.stderr('pi-droid pair: no hub is running\n');
+      io.stderr('pi-handset pair: no hub is running\n');
     } else {
       io.stderr(
-        `pi-droid pair: a hub is running (pid ${record.pid}) but its control ` +
+        `pi-handset pair: a hub is running (pid ${record.pid}) but its control ` +
           `socket is unavailable; restart it\n`,
       );
     }
@@ -157,7 +157,7 @@ export async function runPair(
   if (response.ok !== true || typeof response.code !== 'string') {
     const reason =
       typeof response.error === 'string' ? response.error : 'the hub refused the request';
-    io.stderr(`pi-droid pair: ${reason}\n`);
+    io.stderr(`pi-handset pair: ${reason}\n`);
     return 1;
   }
 
@@ -179,7 +179,7 @@ export async function runPair(
   } catch {
     // `ok:true` but a payload this build cannot render (an address that does
     // not classify, an unusable port). Report it, never crash out of `runPair`.
-    io.stderr('pi-droid pair: the hub sent an invalid pairing payload\n');
+    io.stderr('pi-handset pair: the hub sent an invalid pairing payload\n');
     return 1;
   }
 
@@ -190,7 +190,7 @@ export async function runPair(
 
   if (addresses.length === 0) {
     io.stdout(
-      'pi-droid pair: no addresses to advertise ' +
+      'pi-handset pair: no addresses to advertise ' +
         '(the hub was started with --no-lan, or has no LAN or Tailscale address)\n',
     );
     return 0;

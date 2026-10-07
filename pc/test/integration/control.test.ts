@@ -19,7 +19,7 @@ let runtimeDir: string;
 const servers: ControlServer[] = [];
 
 beforeEach(() => {
-  runtimeDir = mkdtempSync(join(tmpdir(), 'pi-droid-control-'));
+  runtimeDir = mkdtempSync(join(tmpdir(), 'pi-handset-control-'));
 });
 
 afterEach(async () => {
@@ -107,9 +107,9 @@ test('a pair request answers ok with a canonical code, the port and addresses', 
   ]);
 });
 
-test('the control socket is 0600 and lives under the runtime pi-droid dir', async () => {
+test('the control socket is 0600 and lives under the runtime pi-handset dir', async () => {
   await remember(start().promise);
-  assert.equal(socketPath(), join(runtimeDir, 'pi-droid', 'control.sock'));
+  assert.equal(socketPath(), join(runtimeDir, 'pi-handset', 'control.sock'));
   assert.equal(statSync(socketPath()).mode & 0o777, 0o600);
 });
 

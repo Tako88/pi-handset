@@ -27,7 +27,7 @@ const Duration bootTimeout = Duration(seconds: 30);
 const Duration reconnectTimeout = Duration(seconds: 60);
 const Duration exitTimeout = Duration(seconds: 15);
 
-/// `pi-droid pairing code: XXXX-XXXX (valid for 5 minutes)`.
+/// `pi-handset pairing code: XXXX-XXXX (valid for 5 minutes)`.
 final RegExp pairingCodePattern =
     RegExp(r'pairing code: ([0-9A-Z]{4}-[0-9A-Z]{4})');
 
@@ -131,7 +131,7 @@ Future<int> freePort() async {
 
 Map<String, Object?>? readDiscovery(String runtimeDir) {
   try {
-    final raw = File('$runtimeDir/pi-droid/supervisor.json').readAsStringSync();
+    final raw = File('$runtimeDir/pi-handset/supervisor.json').readAsStringSync();
     final parsed = jsonDecode(raw);
     if (parsed is Map) return parsed.cast<String, Object?>();
   } on FormatException {
@@ -268,7 +268,7 @@ class LiveAttach {
 /// temp dir removed before the error propagates.
 ///
 /// [fauxToolContent], when given, is written into pi's cwd and wired to
-/// `PI_DROID_FAUX_TOOL_PATH` so the `tools` recipe's faux `read` call has a
+/// `PI_HANDSET_FAUX_TOOL_PATH` so the `tools` recipe's faux `read` call has a
 /// file to read.
 Future<LiveAttach> attachLive({
   required String fauxMode,
@@ -282,14 +282,14 @@ Future<LiveAttach> attachLive({
   }
   final repoRoot = appDir.parent;
   final servePath = '${repoRoot.path}/pc/src/cli/serve.ts';
-  final bridgePath = '${repoRoot.path}/pc/extensions/pi-droid-bridge.ts';
+  final bridgePath = '${repoRoot.path}/pc/extensions/pi-handset-bridge.ts';
   final harnessPath =
       '${repoRoot.path}/pc/test/integration/support/faux-provider.ts';
   for (final path in [servePath, bridgePath, harnessPath]) {
     if (!File(path).existsSync()) fail('missing $path');
   }
 
-  final tmp = Directory.systemTemp.createTempSync('pi-droid-attach-');
+  final tmp = Directory.systemTemp.createTempSync('pi-handset-attach-');
   final runtimeDir = Directory('${tmp.path}/runtime')..createSync();
   final configDir = Directory('${tmp.path}/config')..createSync();
   final piCwd = Directory('${tmp.path}/cwd')..createSync();
@@ -299,14 +299,14 @@ Future<LiveAttach> attachLive({
     final environment = <String, String>{
       'XDG_RUNTIME_DIR': runtimeDir.path,
       'XDG_CONFIG_HOME': configDir.path,
-      'PI_DROID_FAUX_MODE': fauxMode,
-      'PI_DROID_DEBUG': '1',
+      'PI_HANDSET_FAUX_MODE': fauxMode,
+      'PI_HANDSET_DEBUG': '1',
       ...extraEnv,
     };
     if (fauxToolContent != null) {
       final toolPath = '${piCwd.path}/faux-tool.txt';
       File(toolPath).writeAsStringSync(fauxToolContent);
-      environment['PI_DROID_FAUX_TOOL_PATH'] = toolPath;
+      environment['PI_HANDSET_FAUX_TOOL_PATH'] = toolPath;
     }
 
     final viewerPort = await freePort();

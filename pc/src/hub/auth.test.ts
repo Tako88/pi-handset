@@ -27,21 +27,21 @@ import {
 let configDir: string;
 
 beforeEach(() => {
-  configDir = mkdtempSync(join(tmpdir(), 'pi-droid-auth-'));
+  configDir = mkdtempSync(join(tmpdir(), 'pi-handset-auth-'));
 });
 
 afterEach(() => {
   rmSync(configDir, { recursive: true, force: true });
 });
 
-/** Seeds `<configDir>/pi-droid/token` with the given contents and mode. */
+/** Seeds `<configDir>/pi-handset/token` with the given contents and mode. */
 function seedToken(contents: string, mode = 0o600): void {
-  mkdirSync(join(configDir, 'pi-droid'), { recursive: true, mode: 0o700 });
+  mkdirSync(join(configDir, 'pi-handset'), { recursive: true, mode: 0o700 });
   writeFileSync(tokenPath(configDir), contents, { mode });
 }
 
-test('tokenPath points at <configDir>/pi-droid/token', () => {
-  assert.equal(tokenPath(configDir), join(configDir, 'pi-droid', 'token'));
+test('tokenPath points at <configDir>/pi-handset/token', () => {
+  assert.equal(tokenPath(configDir), join(configDir, 'pi-handset', 'token'));
 });
 
 test('loadOrCreateToken writes a 256-bit token as 64 hex characters', () => {
@@ -56,9 +56,9 @@ test('the created token file is mode 0600', () => {
   assert.equal(statSync(tokenPath(configDir)).mode & 0o777, 0o600);
 });
 
-test('the pi-droid directory is created mode 0700', () => {
+test('the pi-handset directory is created mode 0700', () => {
   loadOrCreateToken(configDir);
-  assert.equal(statSync(join(configDir, 'pi-droid')).mode & 0o777, 0o700);
+  assert.equal(statSync(join(configDir, 'pi-handset')).mode & 0o777, 0o700);
 });
 
 test('a second call returns the same persisted token and reports no regeneration', () => {
@@ -155,7 +155,7 @@ test('an upper-case hex token file is regenerated', () => {
 });
 
 test('a symlinked token file is refused', () => {
-  const dir = join(configDir, 'pi-droid');
+  const dir = join(configDir, 'pi-handset');
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const target = join(configDir, 'somewhere-else');
   writeFileSync(target, 'a'.repeat(64), { mode: 0o600 });
@@ -164,16 +164,16 @@ test('a symlinked token file is refused', () => {
   assert.throws(() => loadOrCreateToken(configDir), /symlink/i);
 });
 
-test('a symlinked pi-droid directory is refused', () => {
+test('a symlinked pi-handset directory is refused', () => {
   const real = join(configDir, 'real-dir');
   mkdirSync(real, { recursive: true, mode: 0o700 });
-  symlinkSync(real, join(configDir, 'pi-droid'));
+  symlinkSync(real, join(configDir, 'pi-handset'));
 
   assert.throws(() => loadOrCreateToken(configDir), /symlink/i);
 });
 
-test('a pre-existing 0755 pi-droid directory is repaired to 0700', () => {
-  const dir = join(configDir, 'pi-droid');
+test('a pre-existing 0755 pi-handset directory is repaired to 0700', () => {
+  const dir = join(configDir, 'pi-handset');
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   chmodSync(dir, 0o755);
   assert.equal(statSync(dir).mode & 0o777, 0o755);

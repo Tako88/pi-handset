@@ -1,5 +1,5 @@
 {
-  "name": "pi-droid-pc",
+  "name": "pi-handset-pc",
   "version": "0.1.0",
   "private": true,
   "license": "MIT",
@@ -12,7 +12,7 @@
   ],
   "pi": {
     "extensions": [
-      "./extensions/pi-droid-bridge.ts"
+      "./extensions/pi-handset-bridge.ts"
     ]
   },
   "scripts": {

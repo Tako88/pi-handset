@@ -1,5 +1,5 @@
 /**
- * pi-droid bridge — a pi extension that attaches the running session to the hub.
+ * pi-handset bridge — a pi extension that attaches the running session to the hub.
  *
  * The bridge is a *client*: it discovers the hub's ephemeral loopback port in
  * the discovery file, authenticates with the persisted token, registers its
@@ -137,7 +137,7 @@ class Bridge {
   constructor(pi: BridgePi, deps: ResolvedDeps) {
     this.pi = pi;
     this.debug = (stream, text) => {
-      if (deps.env.PI_DROID_DEBUG === '1') deps.write(stream, text);
+      if (deps.env.PI_HANDSET_DEBUG === '1') deps.write(stream, text);
     };
     this.relay = createRelay({ sendEvent: (payload) => this.sendEvent(payload), relabelFromMessage: (message) => this.relabelFromMessage(message) });
     this.link = createSocketLink({ socketFactory: deps.socketFactory, resolveEndpoint: deps.resolveEndpoint, rng: deps.rng, setTimeout: deps.setTimeout, clearTimeout: deps.clearTimeout, debug: (text) => this.debug('stderr', text), guard: (run) => this.guard(run) }, { onOpen: (token) => this.onSocketOpen(token), onFrame: (event) => this.onMessage(event) });
@@ -234,7 +234,7 @@ class Bridge {
       run();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.debug('stderr', `pi-droid bridge: handler failed: ${message}\n`);
+      this.debug('stderr', `pi-handset bridge: handler failed: ${message}\n`);
     }
   }
 
@@ -242,7 +242,7 @@ class Bridge {
     if (this.sessionCommandsRegistered) return;
     this.sessionCommandsRegistered = true;
     this.pi.registerCommand?.(SESSION_COMMAND_NAME, {
-      description: 'Drive pi session actions from the pi-droid app',
+      description: 'Drive pi session actions from the pi-handset app',
       handler: (args, ctx) => this.onSessionCommand(args, ctx),
     });
   }
@@ -324,10 +324,10 @@ class Bridge {
       this.relay.seedToolArgs(ctx.sessionManager.getEntries());
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.debug('stderr', `pi-droid bridge: tool-arg seeding failed: ${message}\n`);
+      this.debug('stderr', `pi-handset bridge: tool-arg seeding failed: ${message}\n`);
     }
     if (!isActiveMode(ctx.mode)) {
-      this.debug('stderr', `pi-droid bridge: inert in ${ctx.mode} mode\n`);
+      this.debug('stderr', `pi-handset bridge: inert in ${ctx.mode} mode\n`);
       return;
     }
     this.link.open();
@@ -388,7 +388,7 @@ class Bridge {
       return sanitizeLabel(this.pi.getSessionName?.()) ?? fallback();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.debug('stderr', `pi-droid bridge: label resolution failed: ${message}\n`);
+      this.debug('stderr', `pi-handset bridge: label resolution failed: ${message}\n`);
       return null;
     }
   }
@@ -546,7 +546,7 @@ class Bridge {
       usage = readContextUsage(ctx);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.debug('stderr', `pi-droid bridge: context usage failed: ${message}\n`);
+      this.debug('stderr', `pi-handset bridge: context usage failed: ${message}\n`);
       return;
     }
     if (usage === null) return;
@@ -608,6 +608,6 @@ export function installBridge(pi: BridgePi, deps: BridgeDeps = {}): void {
 }
 
 /** The extension entry point pi loads. */
-export default function piDroidBridge(pi: BridgePi): void {
+export default function piHandsetBridge(pi: BridgePi): void {
   installBridge(pi);
 }

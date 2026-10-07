@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- pi-droid's mark: pi, set in the machine's voice.
+<!-- pi-handset's mark: pi, set in the machine's voice.
 
      The glyph is DejaVu Sans Mono Bold's U+03C0, outlined to a path so nothing
      depends on a font being installed at build time, and laid out on the 108dp

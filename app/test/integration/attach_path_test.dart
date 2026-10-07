@@ -54,7 +54,7 @@ void main() {
   test(
     'the production client pairs, drives a real pi, and survives a hub restart',
     () async {
-      final tmp = Directory.systemTemp.createTempSync('pi-droid-attach-');
+      final tmp = Directory.systemTemp.createTempSync('pi-handset-attach-');
       final runtimeDir = Directory('${tmp.path}/runtime')..createSync();
       final configDir = Directory('${tmp.path}/config')..createSync();
       final piCwd = Directory('${tmp.path}/cwd')..createSync();
@@ -73,7 +73,7 @@ void main() {
         );
         final repoRoot = appDir.parent;
         final servePath = '${repoRoot.path}/pc/src/cli/serve.ts';
-        final bridgePath = '${repoRoot.path}/pc/extensions/pi-droid-bridge.ts';
+        final bridgePath = '${repoRoot.path}/pc/extensions/pi-handset-bridge.ts';
         final harnessPath =
             '${repoRoot.path}/pc/test/integration/support/faux-provider.ts';
         for (final path in [servePath, bridgePath, harnessPath]) {
@@ -85,8 +85,8 @@ void main() {
         final environment = <String, String>{
           'XDG_RUNTIME_DIR': runtimeDir.path,
           'XDG_CONFIG_HOME': configDir.path,
-          'PI_DROID_FAUX_TEXT': fauxText,
-          'PI_DROID_DEBUG': '1',
+          'PI_HANDSET_FAUX_TEXT': fauxText,
+          'PI_HANDSET_DEBUG': '1',
         };
 
         // `serve` rejects `--port 0`; pick a free port and use a stable one
@@ -540,7 +540,7 @@ void main() {
       final attach = await attachLive(
         fauxMode: 'tools',
         fauxToolContent: 'FAUX_TOOL_CONTENT\nline two\n',
-        extraEnv: {'PI_DROID_FAUX_TEXT': fauxText},
+        extraEnv: {'PI_HANDSET_FAUX_TEXT': fauxText},
       );
       try {
         final prompt = await attach.client
@@ -626,7 +626,7 @@ void main() {
     // where it comes from.
     await expectLater(
       spawn(
-        'pi-droid-definitely-not-a-real-binary',
+        'pi-handset-definitely-not-a-real-binary',
         const [],
         workingDirectory: Directory.current.path,
         environment: const {},
@@ -638,7 +638,7 @@ void main() {
           'message',
           allOf(
             contains('node serve'),
-            contains('pi-droid-definitely-not-a-real-binary'),
+            contains('pi-handset-definitely-not-a-real-binary'),
             contains('PC-side toolchain'),
           ),
         ),

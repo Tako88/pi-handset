@@ -1,6 +1,6 @@
 # pi_handset
 
-Flutter client for pi-droid.
+Flutter client for pi-handset.
 
 Everything — setup, status, layout, and the rules — lives in the repo root:
 [`README.md`](../README.md) and [`AGENTS.md`](../AGENTS.md).

@@ -36,7 +36,7 @@ test('with no hub running, the active bridge writes only to stderr and rpc stdou
   const run = spawnPi(['--mode', 'rpc', '-ne', '-e', bridgePath, '--no-session', '-nc']);
 
   await waitFor(
-    () => /pi-droid bridge: (socket error|socket closed)/.test(run.stderr()),
+    () => /pi-handset bridge: (socket error|socket closed)/.test(run.stderr()),
     `the bridge to attempt a dial and log the failure to stderr (stderr tail: ${run
       .stderr()
       .slice(-400)})`,
@@ -47,8 +47,8 @@ test('with no hub running, the active bridge writes only to stderr and rpc stdou
   assertStdoutIsPureJsonl(run);
   assert.match(
     run.stderr(),
-    /pi-droid bridge:/,
-    'the active bridge must log to stderr under PI_DROID_DEBUG=1',
+    /pi-handset bridge:/,
+    'the active bridge must log to stderr under PI_HANDSET_DEBUG=1',
   );
 });
 
@@ -64,7 +64,7 @@ test('when the hub refuses the token, the bridge still writes only to stderr and
   const run = spawnPi(['--mode', 'rpc', '-ne', '-e', bridgePath, '--no-session', '-nc']);
 
   await waitFor(
-    () => /pi-droid bridge: socket closed/.test(run.stderr()),
+    () => /pi-handset bridge: socket closed/.test(run.stderr()),
     `the bridge to dial the hub and log its rejection (stderr tail: ${run
       .stderr()
       .slice(-400)})`,
@@ -73,7 +73,7 @@ test('when the hub refuses the token, the bridge still writes only to stderr and
 
   await probeRpcChannel(run);
   assertStdoutIsPureJsonl(run);
-  assert.match(run.stderr(), /pi-droid bridge: socket closed/);
+  assert.match(run.stderr(), /pi-handset bridge: socket closed/);
 });
 
 test('in print mode the bridge is inert (mode-guard evidence, not silence-while-active)', async () => {
@@ -102,7 +102,7 @@ test('in print mode the bridge is inert (mode-guard evidence, not silence-while-
   run.child.stdin!.end();
   await waitExit(run.child);
 
-  assert.match(run.stderr(), /pi-droid bridge: inert in print mode/);
+  assert.match(run.stderr(), /pi-handset bridge: inert in print mode/);
   assert.equal(run.child.exitCode, 0, `pi --print failed: ${run.stderr().slice(-400)}`);
 
   // Inert means no register: the registry stays empty.

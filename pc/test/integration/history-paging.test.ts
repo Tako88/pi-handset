@@ -3,7 +3,7 @@
  *
  * The PC paging path is split across three modules that only agree by hand:
  * the bridge slices history into pages (`sendHistory` in
- * `extensions/pi-droid-bridge.ts`), the hub routes each answer back to the
+ * `extensions/pi-handset-bridge.ts`), the hub routes each answer back to the
  * viewer that asked (`handleHistory` in `src/hub/hub.ts`), and the phone joins
  * the page onto its transcript. A field-name or routing-token drift between two
  * of them leaves every suite green while paging breaks on a real session.
@@ -41,7 +41,7 @@ import type { Hub } from '../../src/hub/hub.ts';
 import { createTicketStore } from '../../src/hub/pairing.ts';
 import { PROTOCOL_VERSION } from '../../src/protocol/protocol.ts';
 
-const bridgePath = fileURLToPath(new URL('../../extensions/pi-droid-bridge.ts', import.meta.url));
+const bridgePath = fileURLToPath(new URL('../../extensions/pi-handset-bridge.ts', import.meta.url));
 const harnessPath = fileURLToPath(new URL('./support/faux-provider.ts', import.meta.url));
 
 /** Generous: a real pi boots slower than any fake, and this box may be busy. */
@@ -70,7 +70,7 @@ const hubs: Hub[] = [];
 const viewers: Viewer[] = [];
 
 beforeEach(() => {
-  tmpRoot = mkdtempSync(join(tmpdir(), 'pi-droid-paging-'));
+  tmpRoot = mkdtempSync(join(tmpdir(), 'pi-handset-paging-'));
   runtimeDir = join(tmpRoot, 'runtime');
   configDir = join(tmpRoot, 'config');
   childCwd = join(tmpRoot, 'cwd');
@@ -181,9 +181,9 @@ function spawnPi(args: string[], extraEnv: Record<string, string> = {}): PiRun {
     cwd: childCwd,
     env: {
       ...process.env,
-      PI_DROID_RUNTIME_DIR: runtimeDir,
+      PI_HANDSET_RUNTIME_DIR: runtimeDir,
       XDG_CONFIG_HOME: configDir,
-      PI_DROID_DEBUG: '1',
+      PI_HANDSET_DEBUG: '1',
       ...extraEnv,
     },
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -493,7 +493,7 @@ async function bootLongSession(count: number): Promise<LongBoot> {
       sessionPath,
       '-nc',
     ],
-    { PI_DROID_FAUX_TEXT: 'FAUX_OK' },
+    { PI_HANDSET_FAUX_TEXT: 'FAUX_OK' },
   );
   assert.equal(run.spawnError(), null, `pi failed to spawn: ${String(run.spawnError())}`);
   // Boot fast-path: if the session file fails to open, pi exits and this probe
