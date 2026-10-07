@@ -15,7 +15,9 @@ not own — see [`docs/known-limits.md`](docs/known-limits.md#pairing).
 `pc/` is Node + TypeScript, `app/` is Flutter + Dart, and `protocol/` holds the golden
 fixtures both sides assert against.
 
-<!-- Screenshot / short video of the transcript goes here. -->
+<p align="center">
+  <img src="docs/screenshots/transcript.png" width="330" alt="The live transcript: a prompt, the agent's thinking, a tool call with its output, and the reply">
+</p>
 
 ## What it does
 
@@ -46,6 +48,17 @@ fixtures both sides assert against.
   setting — with measured contrast fixes where pi's terminal palette is sub-AA.
 - **Android niceties**: predictive back, and notifications for the sessions you have
   open.
+
+<p align="center">
+  <img src="docs/screenshots/tool-calls.png" width="240" alt="A thinking row, a tool call and its output, and the file it created">
+  <img src="docs/screenshots/session-list.png" width="240" alt="The session list, showing two sessions started on the PC">
+  <img src="docs/screenshots/commands.png" width="240" alt="Typing a slash to complete the session's own commands">
+</p>
+<p align="center">
+  <img src="docs/screenshots/session-menu.png" width="240" alt="The session menu: New, Fork, Tree, Mute, Compact, Rename, thinking level and model">
+  <img src="docs/screenshots/search.png" width="240" alt="Searching the loaded transcript for a word, with the match count and next/previous arrows">
+  <img src="docs/screenshots/folder-browser.png" width="240" alt="Browsing the PC's home directory to start a session in a project folder">
+</p>
 
 What is not built — and what is deliberately left out — is in the
 [issue tracker](https://github.com/Tako88/pi-handset/issues) and
