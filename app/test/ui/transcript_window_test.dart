@@ -4,9 +4,9 @@
 // over a block list.
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:pi_droid/client/hub_models.dart';
-import 'package:pi_droid/client/transcript.dart';
-import 'package:pi_droid/ui/transcript_view.dart';
+import 'package:pi_handset/client/hub_models.dart';
+import 'package:pi_handset/client/transcript.dart';
+import 'package:pi_handset/ui/transcript_view.dart';
 
 TranscriptBlock textBlock(String id) =>
     TranscriptBlock(kind: TranscriptBlockKind.text, id: id, text: id);

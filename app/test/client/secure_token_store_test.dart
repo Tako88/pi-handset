@@ -7,9 +7,9 @@
 
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:pi_droid/client/endpoint_store.dart';
-import 'package:pi_droid/client/secure_token_store.dart';
-import 'package:pi_droid/client/token_store.dart';
+import 'package:pi_handset/client/endpoint_store.dart';
+import 'package:pi_handset/client/secure_token_store.dart';
+import 'package:pi_handset/client/token_store.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -47,9 +47,9 @@ void main() {
 
   test('the store is a TokenStore with a stable key', () {
     expect(SecureTokenStore(), isA<TokenStore>());
-    expect(SecureTokenStore.defaultKey, 'pi_droid_token');
-    expect(SecureTokenStore.defaultEndpointsKey, 'pi_droid_endpoints');
-    expect(SecureTokenStore.defaultEndpointKey, 'pi_droid_endpoint');
+    expect(SecureTokenStore.defaultKey, 'pi_handset_token');
+    expect(SecureTokenStore.defaultEndpointsKey, 'pi_handset_endpoints');
+    expect(SecureTokenStore.defaultEndpointKey, 'pi_handset_endpoint');
   });
 
   test('read maps the configured key onto the channel', () async {
@@ -59,7 +59,7 @@ void main() {
 
     expect(value, 'stored-token');
     expect(calls.single.method, 'read');
-    expect((calls.single.arguments as Map)['key'], 'pi_droid_token');
+    expect((calls.single.arguments as Map)['key'], 'pi_handset_token');
   });
 
   test('read returns null for an unknown key', () async {
@@ -72,7 +72,7 @@ void main() {
     await store.write('round-tripped');
 
     expect(calls.last.method, 'write');
-    expect((calls.last.arguments as Map)['key'], 'pi_droid_token');
+    expect((calls.last.arguments as Map)['key'], 'pi_handset_token');
     expect((calls.last.arguments as Map)['value'], 'round-tripped');
     expect(await store.read(), 'round-tripped');
   });
@@ -94,7 +94,7 @@ void main() {
     await store.clear();
 
     expect(calls.last.method, 'delete');
-    expect((calls.last.arguments as Map)['key'], 'pi_droid_token');
+    expect((calls.last.arguments as Map)['key'], 'pi_handset_token');
     expect(await store.read(), isNull);
   });
 
@@ -181,7 +181,7 @@ void main() {
     await store.writeNotifyState('blob');
 
     expect(calls.last.method, 'write');
-    expect((calls.last.arguments as Map)['key'], 'pi_droid_notify_state');
+    expect((calls.last.arguments as Map)['key'], 'pi_handset_notify_state');
     expect((calls.last.arguments as Map)['value'], 'blob');
     expect(await store.readNotifyState(), 'blob');
   });

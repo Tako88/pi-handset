@@ -3,7 +3,7 @@
 // list, so offset 0 is the top and the bottom is maxScrollExtent.
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:pi_droid/client/stick_to_bottom.dart';
+import 'package:pi_handset/client/stick_to_bottom.dart';
 
 void main() {
   test('maxScrollExtent is the bottom of a natural-order list', () {

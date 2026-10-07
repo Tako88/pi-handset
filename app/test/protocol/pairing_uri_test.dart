@@ -3,7 +3,7 @@
 // and the parse semantics the PC parser has and the vectors do not spell out.
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:pi_droid/protocol/pairing_uri.dart';
+import 'package:pi_handset/protocol/pairing_uri.dart';
 
 PairingOk _ok(String uri) {
   final result = parsePairingUri(uri);

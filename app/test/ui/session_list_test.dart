@@ -4,9 +4,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:pi_droid/client/hub_client.dart';
-import 'package:pi_droid/ui/session_list.dart';
-import 'package:pi_droid/ui/theme.dart';
+import 'package:pi_handset/client/hub_client.dart';
+import 'package:pi_handset/ui/session_list.dart';
+import 'package:pi_handset/ui/theme.dart';
 
 /// The app's own theme, not Material's default: `SessionList` reads `PiRoles`,
 /// and a test that renders it outside the app's theme is not rendering what the

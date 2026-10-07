@@ -5,7 +5,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:pi_droid/client/attachment.dart';
+import 'package:pi_handset/client/attachment.dart';
 
 void main() {
   group('imageMimeType', () {

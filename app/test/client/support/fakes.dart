@@ -8,11 +8,11 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:pi_droid/client/endpoint_store.dart';
-import 'package:pi_droid/client/hub_socket.dart';
-import 'package:pi_droid/client/notification_presenter.dart';
-import 'package:pi_droid/client/scheduler.dart';
-import 'package:pi_droid/client/token_store.dart';
+import 'package:pi_handset/client/endpoint_store.dart';
+import 'package:pi_handset/client/hub_socket.dart';
+import 'package:pi_handset/client/notification_presenter.dart';
+import 'package:pi_handset/client/scheduler.dart';
+import 'package:pi_handset/client/token_store.dart';
 
 /// An in-memory [TokenStore] for tests, holding the token, the candidate
 /// endpoints and the notification policy blob. Lives here, not in `lib/`, because

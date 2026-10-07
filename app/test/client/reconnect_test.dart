@@ -2,7 +2,7 @@
 // no reconnect on a `4003` capability close, a longer fixed wait on `4008`.
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:pi_droid/client/hub_client.dart';
+import 'package:pi_handset/client/hub_client.dart';
 
 import 'support/fakes.dart';
 

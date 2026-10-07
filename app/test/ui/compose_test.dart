@@ -7,10 +7,10 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:pi_droid/client/attachment.dart';
-import 'package:pi_droid/client/hub_client.dart';
-import 'package:pi_droid/ui/compose_bar.dart';
-import 'package:pi_droid/ui/theme.dart';
+import 'package:pi_handset/client/attachment.dart';
+import 'package:pi_handset/client/hub_client.dart';
+import 'package:pi_handset/ui/compose_bar.dart';
+import 'package:pi_handset/ui/theme.dart';
 
 Widget wrap(ComposeBar bar) => MaterialApp(theme: piTheme(Brightness.dark), home: Scaffold(body: bar));
 

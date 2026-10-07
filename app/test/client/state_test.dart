@@ -1,7 +1,7 @@
 // Client state fed by the hub: the `sessions` push and `session-gone`.
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:pi_droid/client/hub_client.dart';
+import 'package:pi_handset/client/hub_client.dart';
 
 import 'support/fakes.dart';
 

@@ -6,9 +6,9 @@
 /// the plugin behind it, is what lets the client stay Flutter-free, and keeps a
 /// test double out of the shipped tree.
 ///
-/// One store, four keys: the token (`pi_droid_token`), the candidate endpoint
-/// list (`pi_droid_endpoints`), the legacy single endpoint
-/// (`pi_droid_endpoint`) and the notify policy (`pi_droid_notify_state`). The
+/// One store, four keys: the token (`pi_handset_token`), the candidate endpoint
+/// list (`pi_handset_endpoints`), the legacy single endpoint
+/// (`pi_handset_endpoint`) and the notify policy (`pi_handset_notify_state`). The
 /// latter three are not secrets, but folding them in avoids a second plugin
 /// wrapper for values that are an address list and a JSON blob.
 library;
@@ -24,8 +24,8 @@ abstract class TokenStore {
   Future<void> clear();
 
   /// The remembered candidate addresses, empty when none are stored. The list
-  /// is newline-joined under `pi_droid_endpoints`; a legacy single value under
-  /// `pi_droid_endpoint` is read back as a one-element list for migration.
+  /// is newline-joined under `pi_handset_endpoints`; a legacy single value under
+  /// `pi_handset_endpoint` is read back as a one-element list for migration.
   Future<List<HubEndpoint>> readEndpoints();
 
   /// Persists the candidate list and keeps the first candidate under the legacy

@@ -1,4 +1,4 @@
-# pi_droid
+# pi_handset
 
 Flutter client for pi-droid.
 

@@ -1,4 +1,4 @@
-name: pi_droid
+name: pi_handset
 description: "Android client for the pi coding agent — attaches to a hub and mirrors a live pi session."
 publish_to: 'none'
 version: 0.1.0+1

@@ -20,7 +20,7 @@ class AndroidNotificationPresenter implements NotificationPresenter {
   }
 
   /// The one channel name, shared with `MainActivity.kt`.
-  static const String channelName = 'pi_droid/notifications';
+  static const String channelName = 'pi_handset/notifications';
 
   final MethodChannel _channel;
   final StreamController<String> _openSessionRequests =

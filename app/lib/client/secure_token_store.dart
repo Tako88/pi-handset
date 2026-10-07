@@ -22,19 +22,21 @@ class SecureTokenStore implements TokenStore {
     this.notifyKey = defaultNotifyKey,
   }) : _storage = storage ?? const FlutterSecureStorage();
 
-  /// The token key. Stable across app versions so a stored token survives an
-  /// upgrade rather than silently re-pairing.
-  static const String defaultKey = 'pi_droid_token';
+  /// The token key. The app rename changed this literal on purpose (issue #64):
+  /// the stored token is orphaned and the one installed device re-pairs, rather
+  /// than carrying a migration shim forever for a single user.
+  static const String defaultKey = 'pi_handset_token';
 
-  /// The legacy single-endpoint key. Kept in its original single-value format so
-  /// an older build still finds one dialable address.
-  static const String defaultEndpointKey = 'pi_droid_endpoint';
+  /// The legacy single-endpoint key, in its original single-value format. It is
+  /// a fallback for a torn [writeEndpoints] (the list landed, the single value
+  /// did not) — not a migration path for the pre-rename key name.
+  static const String defaultEndpointKey = 'pi_handset_endpoint';
 
   /// The candidate-list key. Newline-joined `host:port` values.
-  static const String defaultEndpointsKey = 'pi_droid_endpoints';
+  static const String defaultEndpointsKey = 'pi_handset_endpoints';
 
   /// The notification policy key.
-  static const String defaultNotifyKey = 'pi_droid_notify_state';
+  static const String defaultNotifyKey = 'pi_handset_notify_state';
 
   final FlutterSecureStorage _storage;
   final String key;

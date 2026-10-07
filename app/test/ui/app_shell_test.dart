@@ -3,9 +3,9 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:pi_droid/client/endpoint_store.dart';
-import 'package:pi_droid/client/hub_client.dart';
-import 'package:pi_droid/ui/app_shell.dart';
+import 'package:pi_handset/client/endpoint_store.dart';
+import 'package:pi_handset/client/hub_client.dart';
+import 'package:pi_handset/ui/app_shell.dart';
 
 import '../client/support/fakes.dart';
 
@@ -467,7 +467,7 @@ void main() {
       tokenStore: store,
     );
     await tester.pumpWidget(
-      PiDroidApp(
+      PiHandsetApp(
         client: client,
         tokenStore: store,
         notifications: FakeNotificationPresenter(),
@@ -490,7 +490,7 @@ void main() {
       tokenStore: store,
     );
     await tester.pumpWidget(
-      PiDroidApp(
+      PiHandsetApp(
         client: client,
         tokenStore: store,
         notifications: FakeNotificationPresenter(),

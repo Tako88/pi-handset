@@ -2,7 +2,7 @@
 // stable per-session id. Flutter-free, so it tests without a binding.
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:pi_droid/client/settle_notification.dart';
+import 'package:pi_handset/client/settle_notification.dart';
 
 void main() {
   group('shouldNotifyOnSettle', () {

@@ -5,9 +5,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:pi_droid/client/hub_client.dart';
-import 'package:pi_droid/ui/command_suggestions.dart';
-import 'package:pi_droid/ui/theme.dart';
+import 'package:pi_handset/client/hub_client.dart';
+import 'package:pi_handset/ui/command_suggestions.dart';
+import 'package:pi_handset/ui/theme.dart';
 
 const review = SlashCommand(name: 'review', description: 'Review the working tree');
 const implement = SlashCommand(name: 'implement-vetted');

@@ -114,11 +114,11 @@ void main() {
     final xml = File('android/app/src/main/AndroidManifest.xml').readAsStringSync();
     expect(
       RegExp(
-        r'<application\s+[^>]*android:label="pi-droid"',
+        r'<application\s+[^>]*android:label="pi-handset"',
         dotAll: true,
       ).hasMatch(xml),
       isTrue,
-      reason: 'pi_droid leaks the package identifier onto the home screen',
+      reason: 'pi_handset leaks the package identifier onto the home screen',
     );
   });
 

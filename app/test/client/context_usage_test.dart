@@ -2,7 +2,7 @@
 // and a percentage. Pure Dart, no Flutter, so it tests without a binding.
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:pi_droid/client/context_usage.dart';
+import 'package:pi_handset/client/context_usage.dart';
 
 void main() {
   group('formatContextUsage', () {

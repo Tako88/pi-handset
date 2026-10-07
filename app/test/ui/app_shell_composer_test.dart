@@ -5,9 +5,9 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:pi_droid/client/attachment.dart';
-import 'package:pi_droid/client/endpoint_store.dart';
-import 'package:pi_droid/ui/transcript_view.dart';
+import 'package:pi_handset/client/attachment.dart';
+import 'package:pi_handset/client/endpoint_store.dart';
+import 'package:pi_handset/ui/transcript_view.dart';
 
 import 'support/app_shell_harness.dart';
 

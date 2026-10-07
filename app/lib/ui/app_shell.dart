@@ -36,8 +36,8 @@ import 'transcript_composer.dart';
 import 'transcript_search_controller.dart';
 import 'tree_actions.dart';
 
-class PiDroidApp extends StatefulWidget {
-  const PiDroidApp({
+class PiHandsetApp extends StatefulWidget {
+  const PiHandsetApp({
     super.key,
     required this.client,
     required this.tokenStore,
@@ -67,10 +67,10 @@ class PiDroidApp extends StatefulWidget {
   final QrScanner scanQr;
 
   @override
-  State<PiDroidApp> createState() => _PiDroidAppState();
+  State<PiHandsetApp> createState() => _PiHandsetAppState();
 }
 
-class _PiDroidAppState extends State<PiDroidApp> with WidgetsBindingObserver {
+class _PiHandsetAppState extends State<PiHandsetApp> with WidgetsBindingObserver {
   late HubClientState _state = widget.client.state;
   StreamSubscription<HubClientState>? _subscription;
   StreamSubscription<String>? _openRequests;

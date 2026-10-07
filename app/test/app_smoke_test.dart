@@ -3,9 +3,9 @@
 // the toolchain canary it used to render must be gone.
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:pi_droid/client/hub_client.dart';
-import 'package:pi_droid/ui/app_shell.dart';
-import 'package:pi_droid/ui/pairing_screen.dart';
+import 'package:pi_handset/client/hub_client.dart';
+import 'package:pi_handset/ui/app_shell.dart';
+import 'package:pi_handset/ui/pairing_screen.dart';
 
 import 'client/support/fakes.dart';
 
@@ -13,7 +13,7 @@ void main() {
   testWidgets('a fresh install renders pairing, not the canary', (tester) async {
     final store = InMemoryTokenStore();
     await tester.pumpWidget(
-      PiDroidApp(
+      PiHandsetApp(
         client: HubClient(
           socketFactory: FakeSocketFactory().call,
           scheduler: FakeScheduler(),

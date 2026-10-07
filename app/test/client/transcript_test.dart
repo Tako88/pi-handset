@@ -11,8 +11,8 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:pi_droid/client/tool_view.dart';
-import 'package:pi_droid/client/transcript.dart';
+import 'package:pi_handset/client/tool_view.dart';
+import 'package:pi_handset/client/transcript.dart';
 
 /// A genuine 1×1 PNG. The decoder in the tests below is the validator: if this
 /// literal is not a real image, `base64Decode` still succeeds and only the

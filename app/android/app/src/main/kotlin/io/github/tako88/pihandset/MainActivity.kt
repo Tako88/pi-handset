@@ -1,4 +1,4 @@
-package io.github.tako88.pidroid
+package io.github.tako88.pihandset
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -14,7 +14,7 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
 /**
- * Hosts the single `pi_droid/notifications` channel the Dart
+ * Hosts the single `pi_handset/notifications` channel the Dart
  * `AndroidNotificationPresenter` talks to: permission request, the foreground
  * service, and showing/cancelling settle notifications.
  *
@@ -152,7 +152,7 @@ class MainActivity : FlutterActivity() {
         getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
     companion object {
-        private const val CHANNEL = "pi_droid/notifications"
+        private const val CHANNEL = "pi_handset/notifications"
         private const val SETTLE_CHANNEL_ID = "pi_sessions"
         private const val CONNECTION_CHANNEL_ID = "pi_connection"
         private const val EXTRA_SESSION_ID = "sessionId"

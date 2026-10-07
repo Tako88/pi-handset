@@ -4,9 +4,9 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:pi_droid/client/endpoint_store.dart';
-import 'package:pi_droid/ui/pairing_screen.dart';
-import 'package:pi_droid/ui/theme.dart';
+import 'package:pi_handset/client/endpoint_store.dart';
+import 'package:pi_handset/ui/pairing_screen.dart';
+import 'package:pi_handset/ui/theme.dart';
 
 void main() {
   testWidgets('an empty host shows an error and does not submit', (

@@ -8,12 +8,12 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:pi_droid/client/hub_models.dart';
-import 'package:pi_droid/client/tool_view.dart';
-import 'package:pi_droid/client/transcript.dart';
-import 'package:pi_droid/ui/theme.dart';
-import 'package:pi_droid/ui/transcript_blocks.dart';
-import 'package:pi_droid/ui/transcript_view.dart';
+import 'package:pi_handset/client/hub_models.dart';
+import 'package:pi_handset/client/tool_view.dart';
+import 'package:pi_handset/client/transcript.dart';
+import 'package:pi_handset/ui/theme.dart';
+import 'package:pi_handset/ui/transcript_blocks.dart';
+import 'package:pi_handset/ui/transcript_view.dart';
 
 /// A genuine 1×1 PNG; the widget tests' own Image decode is the validator.
 final pngBytes = base64Decode(

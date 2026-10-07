@@ -4,8 +4,8 @@
 // Pure Dart: no Flutter import, so it tests without a widget binding.
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:pi_droid/client/tool_view.dart';
-import 'package:pi_droid/protocol/protocol.dart';
+import 'package:pi_handset/client/tool_view.dart';
+import 'package:pi_handset/protocol/protocol.dart';
 
 Map<String, Object?> view(String type, [Map<String, Object?> rest = const {}]) =>
     {'type': type, ...rest};

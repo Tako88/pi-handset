@@ -11,13 +11,13 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:pi_droid/client/hub_client.dart';
-import 'package:pi_droid/client/tool_view.dart';
-import 'package:pi_droid/client/transcript.dart';
-import 'package:pi_droid/ui/theme.dart';
-import 'package:pi_droid/ui/tool_views.dart';
-import 'package:pi_droid/ui/transcript_blocks.dart';
-import 'package:pi_droid/ui/transcript_view.dart';
+import 'package:pi_handset/client/hub_client.dart';
+import 'package:pi_handset/client/tool_view.dart';
+import 'package:pi_handset/client/transcript.dart';
+import 'package:pi_handset/ui/theme.dart';
+import 'package:pi_handset/ui/tool_views.dart';
+import 'package:pi_handset/ui/transcript_blocks.dart';
+import 'package:pi_handset/ui/transcript_view.dart';
 
 /// A `List` that records how many elements the view read. A non-lazy view walks
 /// every block on every build; a lazy one reads only what it is asked to show.

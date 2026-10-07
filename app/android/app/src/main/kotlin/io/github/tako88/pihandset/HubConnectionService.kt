@@ -1,4 +1,4 @@
-package io.github.tako88.pidroid
+package io.github.tako88.pihandset
 
 import android.app.Notification
 import android.app.NotificationChannel

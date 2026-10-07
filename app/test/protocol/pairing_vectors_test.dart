@@ -9,7 +9,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:pi_droid/protocol/pairing_uri.dart';
+import 'package:pi_handset/protocol/pairing_uri.dart';
 
 void main() {
   final file =

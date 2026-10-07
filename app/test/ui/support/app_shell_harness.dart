@@ -8,13 +8,13 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:pi_droid/client/attachment.dart';
-import 'package:pi_droid/client/endpoint_store.dart';
-import 'package:pi_droid/client/hub_client.dart';
-import 'package:pi_droid/client/token_store.dart';
-import 'package:pi_droid/platform/qr_scanner.dart';
-import 'package:pi_droid/ui/app_shell.dart';
-import 'package:pi_droid/ui/theme.dart';
+import 'package:pi_handset/client/attachment.dart';
+import 'package:pi_handset/client/endpoint_store.dart';
+import 'package:pi_handset/client/hub_client.dart';
+import 'package:pi_handset/client/token_store.dart';
+import 'package:pi_handset/platform/qr_scanner.dart';
+import 'package:pi_handset/ui/app_shell.dart';
+import 'package:pi_handset/ui/theme.dart';
 
 import '../../client/support/fakes.dart';
 
@@ -343,7 +343,7 @@ class Harness {
     String? initialSessionId,
     Future<PickedImage?> Function()? pickImage,
     QrScanner? scanQr,
-  }) => PiDroidApp(
+  }) => PiHandsetApp(
     client: client,
     tokenStore: store,
     notifications: notifications,

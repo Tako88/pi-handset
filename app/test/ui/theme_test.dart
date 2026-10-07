@@ -10,8 +10,8 @@ library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:pi_droid/ui/theme.dart';
-import 'package:pi_droid/ui/transcript_view.dart';
+import 'package:pi_handset/ui/theme.dart';
+import 'package:pi_handset/ui/transcript_view.dart';
 
 void main() {
   test('every thinking level has its own colour on the ramp', () {

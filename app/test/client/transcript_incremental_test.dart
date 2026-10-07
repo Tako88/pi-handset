@@ -13,9 +13,9 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:pi_droid/client/hub_client.dart';
-import 'package:pi_droid/client/tool_view.dart';
-import 'package:pi_droid/client/transcript.dart';
+import 'package:pi_handset/client/hub_client.dart';
+import 'package:pi_handset/client/tool_view.dart';
+import 'package:pi_handset/client/transcript.dart';
 
 import 'support/fakes.dart';
 

@@ -7,7 +7,7 @@
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:pi_droid/protocol/protocol.dart';
+import 'package:pi_handset/protocol/protocol.dart';
 
 Map<String, Object?> dirListing({
   Object? id = 'dirs-1',

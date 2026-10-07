@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
-import 'package:pi_droid/client/hub_client.dart';
-import 'package:pi_droid/client/hub_socket.dart';
-import 'package:pi_droid/client/scheduler.dart';
-import 'package:pi_droid/client/secure_token_store.dart';
-import 'package:pi_droid/platform/android_notifications.dart';
-import 'package:pi_droid/ui/app_shell.dart';
+import 'package:pi_handset/client/hub_client.dart';
+import 'package:pi_handset/client/hub_socket.dart';
+import 'package:pi_handset/client/scheduler.dart';
+import 'package:pi_handset/client/secure_token_store.dart';
+import 'package:pi_handset/platform/android_notifications.dart';
+import 'package:pi_handset/ui/app_shell.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -18,7 +18,7 @@ Future<void> main() async {
   // 4002.
   final initialSessionId = await notifications.getLaunchSession();
   runApp(
-    PiDroidApp(
+    PiHandsetApp(
       client: HubClient(
         socketFactory: dialHubSocket,
         scheduler: TimerHubScheduler(),

@@ -3,7 +3,7 @@
 // this file is the pure value type only.
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:pi_droid/client/endpoint_store.dart';
+import 'package:pi_handset/client/endpoint_store.dart';
 
 void main() {
   group('HubEndpoint', () {

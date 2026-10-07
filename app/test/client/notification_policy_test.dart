@@ -5,8 +5,8 @@
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:pi_droid/client/notification_policy.dart';
-import 'package:pi_droid/client/settle_notification.dart';
+import 'package:pi_handset/client/notification_policy.dart';
+import 'package:pi_handset/client/settle_notification.dart';
 
 void main() {
   group('shouldNotify', () {
