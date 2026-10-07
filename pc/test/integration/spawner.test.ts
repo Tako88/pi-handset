@@ -703,7 +703,12 @@ test("readProcStat reads a real child's start time and it is stable", async () =
     Number.isSafeInteger(first.startTime) && first.startTime > 0,
     `a real start time is a finite positive integer, got ${String(first.startTime)}`,
   );
-  assert.deepEqual(readProcStat(pid), first, 'two reads of a live process must agree');
+  const second = readProcStat(pid);
+  assert.ok(second !== null, 'a live child must still have a readable stat');
+  // `state` is deliberately left out: a live process flips between R and S
+  // between two reads, and nothing reads the field. The test below pins its
+  // shape; `startTime` is what the pid-reuse guard compares.
+  assert.equal(second.startTime, first.startTime, 'two reads of a live process must agree');
   assert.equal(first.startTime, record.startTime, 'the spawner recorded the same start time');
 });
 
