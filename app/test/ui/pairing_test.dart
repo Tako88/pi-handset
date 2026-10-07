@@ -294,7 +294,7 @@ void main() {
           onSubmit: (host, port, code) {},
           scanQr: (_) async {
             scans++;
-            return 'pidroid://pair?v=1&code=abcd-2345&port=4321'
+            return 'pihandset://pair?v=1&code=abcd-2345&port=4321'
                 '&ts=100.64.1.2&lan=192.168.1.10';
           },
           onScanned: (candidates, code) {
@@ -342,7 +342,7 @@ void main() {
       theme: piTheme(Brightness.dark),
         home: PairingScreen(
           onSubmit: (host, port, code) {},
-          scanQr: (_) async => 'pidroid://pair?v=1&code=abcd-2345',
+          scanQr: (_) async => 'pihandset://pair?v=1&code=abcd-2345',
           onScanned: (candidates, code) => scanned = candidates,
         ),
       ),
@@ -368,7 +368,7 @@ void main() {
           scanQr: (_) async {
             scans++;
             return scans == 1
-                ? 'pidroid://pair?v=1&code=abcd-2345'
+                ? 'pihandset://pair?v=1&code=abcd-2345'
                 : 'https://example.com/not-a-pair';
           },
         ),
@@ -413,7 +413,7 @@ void main() {
       theme: piTheme(Brightness.dark),
         home: PairingScreen(
           onSubmit: (host, port, code) {},
-          scanQr: (_) async => 'pidroid://pair?v=2&code=abcd-2345',
+          scanQr: (_) async => 'pihandset://pair?v=2&code=abcd-2345',
         ),
       ),
     );
@@ -533,7 +533,7 @@ void main() {
           onSubmit: (host, port, code) {},
           scanQr: (_) async {
             scans++;
-            return 'pidroid://pair?v=1&code=abcd-2345&port=8787'
+            return 'pihandset://pair?v=1&code=abcd-2345&port=8787'
                 '&lan=192.168.1.10';
           },
           lastError: lastError,

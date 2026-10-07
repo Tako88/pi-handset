@@ -1,10 +1,10 @@
 /**
- * The `pidroid://pair` payload — a cross-platform contract shared with the
+ * The `pihandset://pair` payload — a cross-platform contract shared with the
  * Android scanner (#36). Pure: no I/O, no clock, no randomness.
  *
  * Grammar (pinned in `protocol/fixtures/pairing/vectors.json`):
  *
- *   pidroid://pair?v=1&code=ABCD2345[&port=8787][&lan=…][&ts=…]
+ *   pihandset://pair?v=1&code=ABCD2345[&port=8787][&lan=…][&ts=…]
  *
  * `v` is required and must be `"1"`; a missing or future `v` is reported as
  * `unsupported-version` so the scanner can say "update the app" rather than
@@ -87,7 +87,7 @@ export function formatPairingUri(payload: PairingPayload): string {
     if (payload.viewerPort !== null) {
       throw new Error('pairing port requires at least one address');
     }
-    return `pidroid://pair?${params.join('&')}`;
+    return `pihandset://pair?${params.join('&')}`;
   }
 
   if (invalidPort(payload.viewerPort)) {
@@ -104,7 +104,7 @@ export function formatPairingUri(payload: PairingPayload): string {
     }
     params.push(`${address.kind}=${address.host}`);
   }
-  return `pidroid://pair?${params.join('&')}`;
+  return `pihandset://pair?${params.join('&')}`;
 }
 
 /** Order-independent canonical ordering: LAN before TS, then by host. */
@@ -127,7 +127,7 @@ export function parsePairingUri(raw: string): PairingParseResult {
   } catch {
     return { ok: false, error: 'not-a-pairing-uri' };
   }
-  if (url.protocol !== 'pidroid:' || url.hostname !== 'pair') {
+  if (url.protocol !== 'pihandset:' || url.hostname !== 'pair') {
     return { ok: false, error: 'not-a-pairing-uri' };
   }
 

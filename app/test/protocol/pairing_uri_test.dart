@@ -1,4 +1,4 @@
-// Dart-only edges for the `pidroid://pair` codec. The shared vectors are
+// Dart-only edges for the `pihandset://pair` codec. The shared vectors are
 // covered by `pairing_vectors_test.dart`; this file pins the classifier ranges
 // and the parse semantics the PC parser has and the vectors do not spell out.
 
@@ -71,7 +71,7 @@ void main() {
   group('parsePairingUri', () {
     test('parses a canonical mixed URI and sorts LAN before TS', () {
       final pairing = _ok(
-        'pidroid://pair?v=1&code=ABCD2345&port=8787'
+        'pihandset://pair?v=1&code=ABCD2345&port=8787'
         '&ts=100.64.1.2&lan=192.168.1.10',
       ).pairing;
       expect(pairing.code, 'ABCD2345');
@@ -84,7 +84,7 @@ void main() {
 
     test('sorts same-kind addresses lexicographically, LAN then TS', () {
       final pairing = _ok(
-        'pidroid://pair?v=1&code=ABCD2345&port=8787'
+        'pihandset://pair?v=1&code=ABCD2345&port=8787'
         '&lan=192.168.1.10&lan=10.0.0.5&ts=100.100.1.2&ts=100.64.1.2',
       ).pairing;
       expect(
@@ -95,11 +95,11 @@ void main() {
 
     test('never throws on malformed percent-encoding', () {
       for (final uri in const [
-        'pidroid://pair?v=1&code=%ZZ',
-        'pidroid://pair?v=1&code=%',
-        'pidroid://pair?v=1&code=%A',
-        'pidroid://pair?v=1&code=ABCD2345&port=%ZZ&lan=10.0.0.5',
-        'pidroid://pair?v=1&code=ABCD2345&port=8787&lan=%ZZ',
+        'pihandset://pair?v=1&code=%ZZ',
+        'pihandset://pair?v=1&code=%',
+        'pihandset://pair?v=1&code=%A',
+        'pihandset://pair?v=1&code=ABCD2345&port=%ZZ&lan=10.0.0.5',
+        'pihandset://pair?v=1&code=ABCD2345&port=8787&lan=%ZZ',
       ]) {
         expect(
           parsePairingUri(uri),
@@ -110,32 +110,32 @@ void main() {
     });
 
     test('reports unsupported-version when v is missing, future, or repeated', () {
-      expect(_error('pidroid://pair?code=ABCD2345'), pairingErrorUnsupportedVersion);
-      expect(_error('pidroid://pair?v=2&code=ABCD2345'), pairingErrorUnsupportedVersion);
+      expect(_error('pihandset://pair?code=ABCD2345'), pairingErrorUnsupportedVersion);
+      expect(_error('pihandset://pair?v=2&code=ABCD2345'), pairingErrorUnsupportedVersion);
       expect(
-        _error('pidroid://pair?v=1&v=1&code=ABCD2345'),
+        _error('pihandset://pair?v=1&v=1&code=ABCD2345'),
         pairingErrorUnsupportedVersion,
       );
-      expect(_error('pidroid://pair?v=&code=ABCD2345'), pairingErrorUnsupportedVersion);
+      expect(_error('pihandset://pair?v=&code=ABCD2345'), pairingErrorUnsupportedVersion);
     });
 
     test('duplicate port takes the first value, matching the PC', () {
       final pairing = _ok(
-        'pidroid://pair?v=1&code=ABCD2345&port=8787&port=9999&lan=192.168.1.10',
+        'pihandset://pair?v=1&code=ABCD2345&port=8787&port=9999&lan=192.168.1.10',
       ).pairing;
       expect(pairing.viewerPort, 8787);
     });
 
     test('duplicate code takes the first value, matching the PC', () {
       final pairing = _ok(
-        'pidroid://pair?v=1&code=ABCD2345&code=ZZZZ9999&port=8787&lan=192.168.1.10',
+        'pihandset://pair?v=1&code=ABCD2345&code=ZZZZ9999&port=8787&lan=192.168.1.10',
       ).pairing;
       expect(pairing.code, 'ABCD2345');
     });
 
     test('an uppercase scheme and host still parse', () {
       final pairing = _ok(
-        'PIDROID://PAIR?v=1&code=ABCD2345&port=8787&lan=192.168.1.10',
+        'PIHANDSET://PAIR?v=1&code=ABCD2345&port=8787&lan=192.168.1.10',
       ).pairing;
       expect(pairing.code, 'ABCD2345');
       expect(pairing.viewerPort, 8787);
@@ -145,7 +145,7 @@ void main() {
     test('leading-zero octets are rejected by parse, not just the classifier', () {
       for (final host in const ['010.0.0.1', '01.2.3.4', '192.168.001.1']) {
         expect(
-          _error('pidroid://pair?v=1&code=ABCD2345&port=8787&lan=$host'),
+          _error('pihandset://pair?v=1&code=ABCD2345&port=8787&lan=$host'),
           pairingErrorInvalid,
           reason: 'lan=$host must be rejected',
         );
@@ -153,16 +153,16 @@ void main() {
     });
 
     test('port is present iff at least one address is present', () {
-      final noAddresses = _ok('pidroid://pair?v=1&code=ABCD2345').pairing;
+      final noAddresses = _ok('pihandset://pair?v=1&code=ABCD2345').pairing;
       expect(noAddresses.viewerPort, isNull);
       expect(noAddresses.addresses, isEmpty);
 
       expect(
-        _error('pidroid://pair?v=1&code=ABCD2345&port=8787'),
+        _error('pihandset://pair?v=1&code=ABCD2345&port=8787'),
         pairingErrorInvalid,
       );
       expect(
-        _error('pidroid://pair?v=1&code=ABCD2345&lan=192.168.1.10'),
+        _error('pihandset://pair?v=1&code=ABCD2345&lan=192.168.1.10'),
         pairingErrorInvalid,
       );
     });
@@ -170,7 +170,7 @@ void main() {
     test('rejects a non-canonical or out-of-range port', () {
       for (final port in const ['0', '70000', '08787', '99999', 'abc']) {
         expect(
-          _error('pidroid://pair?v=1&code=ABCD2345&port=$port&lan=192.168.1.10'),
+          _error('pihandset://pair?v=1&code=ABCD2345&port=$port&lan=192.168.1.10'),
           pairingErrorInvalid,
           reason: 'port=$port must be rejected',
         );
@@ -179,35 +179,35 @@ void main() {
 
     test('rejects an address whose kind does not match its param', () {
       expect(
-        _error('pidroid://pair?v=1&code=ABCD2345&port=8787&lan=8.8.8.8'),
+        _error('pihandset://pair?v=1&code=ABCD2345&port=8787&lan=8.8.8.8'),
         pairingErrorInvalid,
       );
       expect(
-        _error('pidroid://pair?v=1&code=ABCD2345&port=8787&lan=100.64.1.2'),
+        _error('pihandset://pair?v=1&code=ABCD2345&port=8787&lan=100.64.1.2'),
         pairingErrorInvalid,
       );
       expect(
-        _error('pidroid://pair?v=1&code=ABCD2345&port=8787&ts=192.168.1.10'),
+        _error('pihandset://pair?v=1&code=ABCD2345&port=8787&ts=192.168.1.10'),
         pairingErrorInvalid,
       );
     });
 
     test('rejects an invalid code', () {
-      expect(_error('pidroid://pair?v=1&code=ABCD'), pairingErrorInvalid);
-      expect(_error('pidroid://pair?v=1&code=ABCD234I'), pairingErrorInvalid);
-      expect(_error('pidroid://pair?v=1'), pairingErrorInvalid);
+      expect(_error('pihandset://pair?v=1&code=ABCD'), pairingErrorInvalid);
+      expect(_error('pihandset://pair?v=1&code=ABCD234I'), pairingErrorInvalid);
+      expect(_error('pihandset://pair?v=1'), pairingErrorInvalid);
     });
 
-    test('rejects anything that is not a pidroid://pair URI', () {
+    test('rejects anything that is not a pihandset://pair URI', () {
       expect(_error('https://example.com/?v=1&code=ABCD2345'), pairingErrorNotAUri);
-      expect(_error('pidroid://other?v=1&code=ABCD2345'), pairingErrorNotAUri);
+      expect(_error('pihandset://other?v=1&code=ABCD2345'), pairingErrorNotAUri);
       expect(_error('not a uri at all'), pairingErrorNotAUri);
       expect(_error(''), pairingErrorNotAUri);
     });
 
     test('ignores unknown params and is case-sensitive about known ones', () {
       final pairing = _ok(
-        'pidroid://pair?v=1&code=ABCD2345&port=8787&lan=10.0.0.5'
+        'pihandset://pair?v=1&code=ABCD2345&port=8787&lan=10.0.0.5'
         '&lan2=1.2.3.4&foo=bar&LAN=5.5.5.5',
       ).pairing;
       expect(pairing.addresses.single.host, '10.0.0.5');
@@ -215,7 +215,7 @@ void main() {
 
     test('normalizes a dashed lowercase code to the canonical form', () {
       final pairing = _ok(
-        'pidroid://pair?v=1&code=abcd-2345&port=8787&lan=192.168.1.10',
+        'pihandset://pair?v=1&code=abcd-2345&port=8787&lan=192.168.1.10',
       ).pairing;
       expect(pairing.code, 'ABCD2345');
     });

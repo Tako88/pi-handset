@@ -180,7 +180,7 @@ void main() {
   testWidgets('scanning a two-address QR dials both, LAN first', (tester) async {
     final h = Harness(token: null);
     final scanner = FakeQrScanner(
-      'pidroid://pair?v=1&code=abcd-2345&port=8787'
+      'pihandset://pair?v=1&code=abcd-2345&port=8787'
       '&ts=100.64.1.2&lan=192.168.1.10',
     );
     await tester.pumpWidget(h.app(scanQr: scanner.call));
@@ -201,7 +201,7 @@ void main() {
   ) async {
     final h = Harness(token: null);
     final scanner = FakeQrScanner(
-      'pidroid://pair?v=1&code=abcd-2345&port=8787'
+      'pihandset://pair?v=1&code=abcd-2345&port=8787'
       '&ts=100.64.1.2&lan=192.168.1.10',
     );
     await tester.pumpWidget(h.app(scanQr: scanner.call));
@@ -232,7 +232,7 @@ void main() {
     final h = Harness(token: null);
     h.factory.onDial = () => StateError('refused');
     final scanner = FakeQrScanner(
-      'pidroid://pair?v=1&code=abcd-2345&port=8787'
+      'pihandset://pair?v=1&code=abcd-2345&port=8787'
       '&ts=100.64.1.2&lan=192.168.1.10',
     );
     await tester.pumpWidget(h.app(scanQr: scanner.call));
@@ -279,7 +279,7 @@ void main() {
       return completer.future;
     };
     final scanner = FakeQrScanner(
-      'pidroid://pair?v=1&code=abcd-2345&port=8787'
+      'pihandset://pair?v=1&code=abcd-2345&port=8787'
       '&ts=100.64.1.2&lan=192.168.1.10',
     );
     await tester.pumpWidget(h.app(scanQr: scanner.call));
@@ -291,7 +291,7 @@ void main() {
 
     // A second scan replaces the list and supersedes the first race.
     scanner.uri =
-        'pidroid://pair?v=1&code=efgh-6789&port=8787'
+        'pihandset://pair?v=1&code=efgh-6789&port=8787'
         '&ts=100.64.9.9&lan=10.0.0.5';
     await tester.tap(find.byKey(const Key('pairing-scan')));
     await tester.pump();
@@ -322,7 +322,7 @@ void main() {
     final h = Harness(token: null);
     h.factory.onDial = () => StateError('refused');
     final scanner = FakeQrScanner(
-      'pidroid://pair?v=1&code=abcd-2345&port=8787'
+      'pihandset://pair?v=1&code=abcd-2345&port=8787'
       '&ts=100.64.1.2&lan=192.168.1.10',
     );
     await tester.pumpWidget(h.app(scanQr: scanner.call));

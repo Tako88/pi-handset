@@ -1,4 +1,4 @@
-// The shared `pidroid://pair` vectors, asserted against the REAL format/parse
+// The shared `pihandset://pair` vectors, asserted against the REAL format/parse
 // code (never a re-implementation), so the fixture and `pairing-uri.ts` cannot
 // drift apart. #36 drives the same file from the Dart port.
 

@@ -1,4 +1,4 @@
-// Pure tests for the `pidroid://pair` payload grammar. No I/O, no sockets.
+// Pure tests for the `pihandset://pair` payload grammar. No I/O, no sockets.
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -67,14 +67,14 @@ test('formatPairingUri emits the canonical mixed LAN+TS string', () => {
   });
   assert.equal(
     uri,
-    'pidroid://pair?v=1&code=ABCD2345&port=8787&lan=10.0.0.5&lan=192.168.1.10&ts=100.64.1.2',
+    'pihandset://pair?v=1&code=ABCD2345&port=8787&lan=10.0.0.5&lan=192.168.1.10&ts=100.64.1.2',
   );
 });
 
 test('formatPairingUri emits no port and no address params for an empty list', () => {
   assert.equal(
     formatPairingUri({ code: 'ABCD2345', viewerPort: null, addresses: [] }),
-    'pidroid://pair?v=1&code=ABCD2345',
+    'pihandset://pair?v=1&code=ABCD2345',
   );
 });
 
@@ -100,10 +100,10 @@ test('formatPairingUri refuses an address whose value does not classify to its k
   );
 });
 
-test('parsePairingUri rejects a URI that is not pidroid://pair', () => {
+test('parsePairingUri rejects a URI that is not pihandset://pair', () => {
   for (const raw of [
     'https://example.com/?v=1&code=ABCD2345',
-    'pidroid://other?v=1&code=ABCD2345',
+    'pihandset://other?v=1&code=ABCD2345',
     'not a uri at all',
   ]) {
     assert.deepEqual(parsePairingUri(raw), {
@@ -115,8 +115,8 @@ test('parsePairingUri rejects a URI that is not pidroid://pair', () => {
 
 test('parsePairingUri reports a missing or future v as unsupported-version', () => {
   for (const raw of [
-    'pidroid://pair?code=ABCD2345',
-    'pidroid://pair?v=2&code=ABCD2345',
+    'pihandset://pair?code=ABCD2345',
+    'pihandset://pair?v=2&code=ABCD2345',
   ]) {
     assert.deepEqual(parsePairingUri(raw), {
       ok: false,
@@ -128,7 +128,7 @@ test('parsePairingUri reports a missing or future v as unsupported-version', () 
 test('parsePairingUri normalizes a dashed code and ignores unknown params', () => {
   assert.deepEqual(
     parsePairingUri(
-      'pidroid://pair?v=1&code=abcd-2345&port=8787&lan=10.0.0.5&LAN=5.5.5.5&lan2=1.2.3.4',
+      'pihandset://pair?v=1&code=abcd-2345&port=8787&lan=10.0.0.5&LAN=5.5.5.5&lan2=1.2.3.4',
     ),
     {
       ok: true,

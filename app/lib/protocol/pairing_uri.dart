@@ -1,12 +1,12 @@
 /// A hand-port of `pc/src/protocol/pairing-uri.ts`'s parse half.
 ///
 /// Pure `dart:core` only: no Flutter imports, no packages. The app only ever
-/// consumes a hub-minted `pidroid://pair` URI, so this port has no formatter —
+/// consumes a hub-minted `pihandset://pair` URI, so this port has no formatter —
 /// the shared vectors pin parse semantics only.
 ///
 /// Grammar (pinned in `protocol/fixtures/pairing/vectors.json`):
 ///
-///   pidroid://pair?v=1&code=ABCD2345[&port=8787][&lan=…][&ts=…]
+///   pihandset://pair?v=1&code=ABCD2345[&port=8787][&lan=…][&ts=…]
 ///
 /// `v` must appear exactly once and be `"1"`; anything else is
 /// [pairingErrorUnsupportedVersion]. `code` is normalized through
@@ -15,7 +15,7 @@
 /// **first** value (`queryParametersAll[...].first`), matching the PC's
 /// `searchParams.get`; unknown params are ignored, and params are
 /// case-sensitive, so `LAN=` is not `lan=`. `Uri.tryParse` lowercases scheme and
-/// host, so `PIDROID://PAIR` parses identically on both sides.
+/// host, so `PIHANDSET://PAIR` parses identically on both sides.
 library;
 
 import 'ticket.dart';
@@ -125,11 +125,11 @@ int _compareAddresses(PairingAddress a, PairingAddress b) {
   return a.host.compareTo(b.host);
 }
 
-/// Parses a `pidroid://pair` URI, never throwing.
+/// Parses a `pihandset://pair` URI, never throwing.
 PairingParseResult parsePairingUri(String raw) {
   final url = Uri.tryParse(raw);
   if (url == null) return const PairingFailure(pairingErrorNotAUri);
-  if (url.scheme != 'pidroid' || url.host != 'pair') {
+  if (url.scheme != 'pihandset' || url.host != 'pair') {
     return const PairingFailure(pairingErrorNotAUri);
   }
 

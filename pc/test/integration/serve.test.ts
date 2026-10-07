@@ -743,7 +743,7 @@ test('end to end: main.ts serve then main.ts pair prints a code the hub redeems'
   assert.equal(pair.code, 0, pair.stderr);
   const codes = printedCodes(pair.stdout);
   assert.equal(codes.length, 1, `expected one printed code in: ${pair.stdout}`);
-  assert.match(pair.stdout, /pidroid:\/\/pair\?v=1&code=/);
+  assert.match(pair.stdout, /pihandset:\/\/pair\?v=1&code=/);
 
   const paired = await redeem(port, codes[0]);
   assert.equal(paired.token, persistedToken(), 'the printed code must redeem');

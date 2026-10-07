@@ -2,7 +2,7 @@
  * `pi-handset pair` — ask the running hub for a pairing code and print it.
  *
  * Connects to the same-machine control socket, sends one request, and prints
- * the code (grouped, TTL stated), a scannable QR of the `pidroid://pair` URI,
+ * the code (grouped, TTL stated), a scannable QR of the `pihandset://pair` URI,
  * and the phone-reachable addresses. Non-zero with a clear message when no hub
  * is running, or when a live hub's socket is unavailable.
  */

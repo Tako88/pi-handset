@@ -1,4 +1,4 @@
-// The shared `pidroid://pair` vectors, asserted against the Dart port.
+// The shared `pihandset://pair` vectors, asserted against the Dart port.
 //
 // The same file drives `pc/src/protocol/pairing-vectors.test.ts` against the
 // TypeScript original, so the two parsers cannot drift silently. The Dart codec

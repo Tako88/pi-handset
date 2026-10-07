@@ -114,7 +114,7 @@ test('runPair renders a QR whose input is exactly the pairing URI', async () => 
   assert.equal(code, 0);
   assert.equal(
     rendered,
-    'pidroid://pair?v=1&code=ABCD2345&port=8787&lan=192.168.1.10',
+    'pihandset://pair?v=1&code=ABCD2345&port=8787&lan=192.168.1.10',
   );
   assert.match(stream.stdout.join(''), /QR/);
 });
