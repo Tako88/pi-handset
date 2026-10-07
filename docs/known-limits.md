@@ -739,7 +739,7 @@ rather than guess at it.
   network whose PSK the attacker holds, a proxy, a wired segment — has the hub's only
   credential and everything it grants: prompting any registered session, whose shell
   commands run as the user who started the hub. A tailnet or any WireGuard-backed link
-  removes that exposure; a network you do not own does not.
+  removes that exposure; a network you do not own does not. Tracked as issue #82.
 
 ## QR scanning
 

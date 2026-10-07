@@ -19,7 +19,8 @@ that matter most:
 
 - **The hub serves plain `ws://`.** Anything that can read the connection's frames holds
   the pairing token and everything it grants. A tailnet, rather than a network you share,
-  is the intended deployment.
+  is the intended deployment; TLS on this listener is tracked as issue
+  [#82](https://github.com/Tako88/pi-handset/issues/82).
 - **One pairing token is shared by every device, and there is no way to rotate it**
   (issue [#66](https://github.com/Tako88/pi-handset/issues/66)).
 

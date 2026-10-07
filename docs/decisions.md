@@ -73,7 +73,8 @@ chosen over, so it does not have to be re-litigated.
   app connects fine at targetSdk 36 with no `usesCleartextTraffic` and no network
   security config. Verified on-device, not assumed — which matters, because the
   obvious "fix" would have been to weaken the manifest for a restriction that does
-  not apply. The deliberate no-TLS decision holds.
+  not apply. The manifest finding stands; the no-TLS stance beside it has since
+  been reversed — serving the viewer listener over TLS is tracked as issue #82.
 - **A connection error must not outlive the connection; a session notice must not
   be cleared by one.** The app shows one error banner, and a failed dial used to
   leave it up forever — reporting a refused connection during a healthy session. It
