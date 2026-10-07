@@ -198,6 +198,53 @@ XDG_RUNTIME_DIR=/tmp/empty PI_HANDSET_DEBUG=1 pi --mode rpc --no-session -nc
 ```
 
 
+## Release signing
+
+Anything handed to someone else is signed with a real release key, never the
+per-machine debug key. Two files, both outside version control:
+
+- **`~/.android/keystores/pi-handset-release.jks`** — PKCS#12, RSA 4096,
+  `CN=pi-handset`, valid until 2056, with its password file beside it. **Back both up.**
+  Losing the key is permanent: Android only updates an installed app from a build
+  signed with the same key, so losing it means every user uninstalls and re-pairs.
+- **`app/android/key.properties`** — points at that keystore. Nothing to add to
+  `.gitignore`: Flutter's generated `app/android/.gitignore` already covers
+  `key.properties`, `**/*.jks` and `**/*.keystore`.
+
+The certificate's SHA-256 fingerprint, for checking an artifact by hand — re-derive it
+with `keytool -list -v -keystore ~/.android/keystores/pi-handset-release.jks`:
+
+```
+1B:2C:25:E1:A2:0C:0B:50:7D:5F:C3:37:05:BA:43:AC:E6:64:40:3D:2E:5B:75:B4:3A:0C:0E:6E:3F:99:9E:6A
+```
+
+A release build **refuses to run** while `key.properties` is missing. The alternative
+— quietly falling back to the debug key — yields an APK that cannot update anything
+built on another machine, and nothing about it looks wrong until a phone rejects the
+update. `ALLOW_DEBUG_SIGNED_RELEASE=1 flutter build apk --release` builds one anyway,
+deliberately.
+
+Build the artifact a release carries, then prove which key signed it:
+
+```sh
+cd app
+flutter build apk --release --split-per-abi --target-platform android-arm64
+PATH=/opt/android-studio/jbr/bin:$PATH "$ANDROID_HOME/build-tools/36.0.0/apksigner" \
+  verify --print-certs build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+```
+
+`apksigner` is a shell wrapper that needs a `java` on `PATH`; the bundled JBR is
+enough, as above. `--split-per-abi` writes one APK per ABI and the arm64 one — about
+26 MB — covers every phone from roughly 2017 on. Watch the version code: Flutter adds
+an ABI offset to `versionCode` (arm64 gets `+2000`), so ship the same ABI each time or
+the ordering between builds stops meaning anything.
+
+```sh
+gh release create v0.2.0 --verify-tag --title "pi-handset v0.2.0" --notes-file NOTES \
+  app/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+```
+
+
 ## The design record
 
 `.pi/plans/` holds the plan, the adversarial review and the execution log — with the
