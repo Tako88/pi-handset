@@ -260,6 +260,21 @@ rather than guess at it.
   entirely, because the previous hub may still be alive and its children are then not
   orphans.
 
+- **The children file is read with a check-then-open, so a swap inside that window is
+  possible in principle; it is accepted.** `readChildrenFile` `lstat`s the path, refuses
+  anything that is not a regular file, and then reads it *by name* — the same idiom
+  `auth.ts`, `discovery.ts` and `control.ts` use for the token, the runtime directory and
+  the control socket. CodeQL flags the shape (`js/file-system-race`) and the alert is
+  dismissed on purpose: the file lives in `$XDG_RUNTIME_DIR/pi-handset`, which is 0700 and
+  owner-only, so the only actor who could win the window is the user who already owns it,
+  and `reapOrphans` is the sole caller — whose reach is bounded anyway by its own gates
+  (basename `pi-handset-session-*` **and** parent equal to the recorded `tempRoot`).
+  Closing the window atomically (open with `O_NOFOLLOW`, `fstat` the descriptor, read from
+  the descriptor) changes no observable behaviour for any input, so no failing test could
+  require it; the refusals are pinned by "a pidfile path that is a symlink is not followed
+  or unlinked" and its directory twin in `pc/test/integration/spawner.test.ts`. Revisit if
+  the runtime directory ever becomes shared.
+
 ## Images
 
 - **A large image is not rendered; its part is replaced in place and the text
