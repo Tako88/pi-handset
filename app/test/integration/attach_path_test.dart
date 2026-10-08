@@ -483,10 +483,17 @@ void main() {
           isTrue,
           reason: 'the second prompt must be accepted: ${second.error}',
         );
+        // Wait on the assistant message itself, not merely any `message`: pi
+        // also relays the user's own prompt as a `message`, which satisfies a
+        // bare kind check and let the `firstWhere` below run before the reply
+        // arrived (the race that reddened CI run 37776830733).
+        bool isAssistantMessage(Map<String, Object?> payload) =>
+            payload['kind'] == 'message' &&
+            (payload['message']! as Map)['role'] == 'assistant';
         await waitUntil(
           () => reconnectedTaps()
               .expand((tap) => tap.eventPayloads())
-              .any((payload) => payload['kind'] == 'message'),
+              .any(isAssistantMessage),
           'the second reply to stream after the restart',
           timeout: promptTimeout,
           diagnostics: () =>
@@ -494,11 +501,7 @@ void main() {
         );
         final secondMessage = reconnectedTaps()
             .expand((tap) => tap.eventPayloads())
-            .firstWhere(
-              (payload) =>
-                  payload['kind'] == 'message' &&
-                  (payload['message']! as Map)['role'] == 'assistant',
-            );
+            .firstWhere(isAssistantMessage);
         expect(
           jsonEncode(secondMessage),
           contains(fauxText),
