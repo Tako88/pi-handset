@@ -26,7 +26,7 @@ const Duration _candidateConnectTimeout = Duration(seconds: 2);
 /// _heldCandidate, _heldSeq, _raceDecision, _changesController,
 /// _settlesController, _leafEventsController; writes _c._store, _socket,
 /// _attempt, _credential, _candidates, _prefer; calls _setStatus, _setError,
-/// _clearConnectionError, _flushNotify, _subscribe, _requests.*, _history.*,
+/// _clearConnectionError, _flushNotify, _subscribe, _pending.*, _history.*,
 /// _router.*.
 class _HubConnection {
   _HubConnection(this._c);
@@ -47,11 +47,11 @@ class _HubConnection {
     _releaseSupersededHold();
     // A follow armed on a previous hub names a foreign session id; left set, it
     // would suppress every restore on the new hub until its timer fired.
-    _c._requests._clearReplacementFollow();
+    _c._pending.clearReplacementFollow();
     // The follow was just cleared, so a `followsReplacement` pending can never be
     // settled by the abandoned hub: deliberately no `skipReplacement: true`
     // (unlike `_onSocketDone`, whose successor still arrives after a reconnect).
-    _c._requests._failPending('connection replaced');
+    _c._pending.failPending('connection replaced');
     _c._history._clearPendingHistoryPages();
     await _dropConnection();
 
@@ -81,13 +81,13 @@ class _HubConnection {
     _releaseSupersededHold();
     _c._candidates = <HubEndpoint>[];
     _c._prefer = null;
-    _c._requests._clearReplacementFollow();
+    _c._pending.clearReplacementFollow();
     // `stop()` closes `changes` for good and never resets the state, so nothing
     // else would ever drop the derivations; they die here.
     _c._store.clearDerivations();
     _c._history._clearPendingHistoryPages();
     // Every in-flight command fails rather than hanging the caller forever.
-    _c._requests._failPending('client stopped');
+    _c._pending.failPending('client stopped');
     await _dropConnection(reason: 'client stopped');
     _c._setStatus(HubConnectionStatus.disconnected);
     // Emit the terminal state now: cancelling the pending notify would close
@@ -107,13 +107,13 @@ class _HubConnection {
     _releaseSupersededHold();
     _c._candidates = <HubEndpoint>[];
     _c._prefer = null;
-    _c._requests._failPending('disconnected');
+    _c._pending.failPending('disconnected');
     // Not awaited: closing the socket below ends delivery, and awaiting a
     // subscription cancel leaves a UI-initiated disconnect pending under a
     // widget-test clock.
     await _dropConnection(awaitSubscription: false, reason: 'disconnected');
     _c._credential = null;
-    _c._requests._clearReplacementFollow();
+    _c._pending.clearReplacementFollow();
     _c._attempt = 0;
     // Clears `historyLoading` off the transcripts, so it must run before the
     // store reset below wipes them.
@@ -357,7 +357,7 @@ class _HubConnection {
     _c._attempt = 0;
     _c._store.resubscribed = false;
     _c._setStatus(HubConnectionStatus.authenticating);
-    _c._requests._send(_c._requests._hello());
+    _c._send(_c._hello());
     _armAuthWatchdog();
     _c._subscription = socket.messages.listen(
       _c._router._onFrame,
@@ -444,7 +444,7 @@ class _HubConnection {
     // server regardless of this viewer's reconnect, so failing it here would
     // report an error while the successor still arrives minutes later. It is
     // bounded by the 15 s replacement timer instead.
-    _c._requests._failPending('connection lost', skipReplacement: true);
+    _c._pending.failPending('connection lost', skipReplacement: true);
     if (close.code == closeCapability) {
       _c._setStatus(HubConnectionStatus.disconnected);
       return;

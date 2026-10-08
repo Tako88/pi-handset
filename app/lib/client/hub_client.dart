@@ -24,13 +24,13 @@
 /// - Correlate `command` → `command-result` back to the issuing caller.
 /// - Re-request history on `resync-required`, and drop `session-gone` sessions.
 ///
-/// The behaviour is split across four `part` files of this library, each a
-/// private collaborator holding a back-reference to [HubClient]:
+/// The behaviour is split across private collaborators: the part files
 /// `hub_client_connection.dart` (dial, race, auth, timers),
-/// `hub_client_routing.dart` (inbound frames), `hub_client_requests.dart`
-/// (commands and results), and `hub_client_history.dart` (history paging).
-/// The state they share is owned by `SessionStateStore`; the parts read and
-/// write it through the client's store.
+/// `hub_client_routing.dart` (inbound frames) and `hub_client_history.dart`
+/// (history paging) each hold a back-reference to [HubClient]; the separate
+/// libraries `pending_registry.dart` (pending-command/listing bookkeeping) and
+/// `hub_commands.dart` (the request builders) are handed their dependencies.
+/// The state they share is owned by `SessionStateStore`.
 ///
 /// # How a widget consumes this
 ///
@@ -46,7 +46,9 @@ import 'dart:math';
 import '../protocol/protocol.dart';
 import 'backoff.dart';
 import 'endpoint_store.dart';
+import 'hub_commands.dart';
 import 'hub_socket.dart';
+import 'pending_registry.dart';
 import 'scheduler.dart';
 import 'token_store.dart';
 import 'context_usage.dart';
@@ -57,7 +59,6 @@ import 'hub_client_view.dart';
 export 'hub_models.dart';
 
 part 'hub_client_history.dart';
-part 'hub_client_requests.dart';
 part 'hub_client_routing.dart';
 part 'hub_client_connection.dart';
 
@@ -104,13 +105,29 @@ class HubClient implements HubClientView {
     },
   );
 
-  // Collaborators. Each holds a back-reference to this client and touches its
-  // (library-private) fields directly. See the part files for the view each one
-  // uses.
+  // Collaborators. `_history`/`_router`/`_connection` are private
+  // collaborators in part files that hold a back-reference to this client and
+  // touch its (library-private) fields directly; `_pending`/`_commands` are
+  // separate libraries handed their dependencies. See the part files for the
+  // view each one uses.
   late final _HubHistory _history = _HubHistory(this);
-  late final _HubRequests _requests = _HubRequests(this);
   late final _HubRouter _router = _HubRouter(this);
   late final _HubConnection _connection = _HubConnection(this);
+
+  /// In-flight command/listing bookkeeping and the replacement follow.
+  late final PendingRegistry _pending = PendingRegistry(
+    scheduler: _scheduler,
+    store: _store,
+    isConnected: _isConnected,
+    trySend: _trySend,
+  );
+
+  /// The request builders the public API delegates to.
+  late final CommandSender _commands = CommandSender(
+    store: _store,
+    pending: _pending,
+    notify: _notify,
+  );
 
   final StreamController<HubClientState> _changesController =
       StreamController<HubClientState>.broadcast(sync: true);
@@ -121,8 +138,6 @@ class HubClient implements HubClientView {
   final StreamController<LeafEvent> _leafEventsController =
       StreamController<LeafEvent>.broadcast(sync: true);
 
-  final Map<String, _PendingCommand> _pendingCommands = {};
-
   /// The cursor of the one in-flight older page per session, keyed by session.
   /// Set by [loadOlder] and cleared by an applied snapshot, the page timeout,
   /// a send failure, `session-gone`, `stop` and `disconnect`.
@@ -131,11 +146,6 @@ class HubClient implements HubClientView {
   /// The page-timeout handle per session, in lockstep with
   /// [_pendingHistoryCursor].
   final Map<String, HubTimer> _historyPageTimers = {};
-
-  /// In-flight `list-dirs`, keyed by their `dirs-N` id. Kept separate from
-  /// [_pendingCommands] because the two share the wire `id` field: a
-  /// `command-result` for a listing id must not complete a command.
-  final Map<String, _PendingListing> _pendingListings = {};
 
   Map<String, Object?>? _credential;
   HubSocket? _socket;
@@ -178,15 +188,6 @@ class HubClient implements HubClientView {
   /// in-flight dial ([start], [stop], [disconnect]). A dial that resumes after
   /// its generation moved must close its socket, never adopt it.
   int _dialSeq = 0;
-  int _commandCounter = 0;
-  int _listingCounter = 0;
-
-  /// The old session id a `/new` or `/fork` is waiting to be replaced, or null
-  /// when no replacement is in flight. While set, `_onSessions` adopts a
-  /// summary whose `replacesSessionId` matches it and never re-subscribes the
-  /// dead id.
-  String? _awaitingReplacementFrom;
-  HubTimer? _replacementTimer;
 
   /// The current snapshot.
   @override
@@ -277,10 +278,10 @@ class HubClient implements HubClientView {
     // Picking a session is an explicit navigation: a replacement follow for a
     // different session must not later yank the user onto its successor. Clear
     // it and fail the caller, whose witness can no longer arrive.
-    final awaited = _awaitingReplacementFrom;
+    final awaited = _pending.awaitingReplacementFrom;
     if (awaited != null && awaited != sessionId) {
-      _requests._clearReplacementFollow();
-      _requests._abandonReplacementPendings(
+      _pending.clearReplacementFollow();
+      _pending.abandonReplacement(
         (pending) => pending.sessionId == awaited,
         'superseded',
       );
@@ -301,7 +302,7 @@ class HubClient implements HubClientView {
       // sessionId, so leaving the old subscription in place would attribute its
       // events to the newly active session. Enforce the one-session model here
       // rather than tagging events with a sessionId.
-      _requests._trySend({
+      _trySend({
         'protocolVersion': protocolVersion,
         'type': 'unsubscribe',
         'sessionId': previous,
@@ -312,7 +313,7 @@ class HubClient implements HubClientView {
     _store.setRestored(sessionId, restoring);
     _store.ensureTranscript(sessionId);
     _store.update((state) => state.copyWith(activeSessionId: sessionId));
-    _requests._trySend({
+    _trySend({
       'protocolVersion': protocolVersion,
       'type': 'subscribe',
       'sessionId': sessionId,
@@ -330,14 +331,14 @@ class HubClient implements HubClientView {
   @override
   void unsubscribe(String sessionId) {
     // Unsubscribing the awaited id abandons the replacement it was waiting on.
-    if (_awaitingReplacementFrom == sessionId) {
-      _requests._clearReplacementFollow();
-      _requests._abandonReplacementPendings(
+    if (_pending.awaitingReplacementFrom == sessionId) {
+      _pending.clearReplacementFollow();
+      _pending.abandonReplacement(
         (pending) => pending.sessionId == sessionId,
         'superseded',
       );
     }
-    _requests._trySend({
+    _trySend({
       'protocolVersion': protocolVersion,
       'type': 'unsubscribe',
       'sessionId': sessionId,
@@ -380,14 +381,15 @@ class HubClient implements HubClientView {
     String name, {
     Map<String, Object?>? args,
     String? id,
-  }) => _requests.sendCommand(sessionId, name, args: args, id: id);
+  }) => _commands.sendCommand(sessionId, name, args: args, id: id);
 
   /// Asks the hub for [sessionId]'s real pi commands and completes with them.
   ///
-  /// Routed through [_request] so the result correlates like any other command
-  /// and `session-gone` can fail it; the cache write is [loadCommands]'s.
+  /// Routed through [PendingRegistry.command] so the result correlates like any
+  /// other command and `session-gone` can fail it; the cache write is
+  /// [loadCommands]'s.
   Future<CommandResult> listCommands(String sessionId, {String? id}) =>
-      _requests.listCommands(sessionId, id: id);
+      _commands.listCommands(sessionId, id: id);
 
   /// Asks the hub for pi's auth-configured models and completes with them.
   ///
@@ -395,7 +397,7 @@ class HubClient implements HubClientView {
   /// here — unlike [listCommands].
   @override
   Future<CommandResult> listModels(String sessionId, {String? id}) =>
-      _requests.listModels(sessionId, id: id);
+      _commands.listModels(sessionId, id: id);
 
   /// Asks the hub for [sessionId]'s session tree as a flat, bounded node list.
   ///
@@ -404,17 +406,17 @@ class HubClient implements HubClientView {
   /// ancestor.
   @override
   Future<CommandResult> listTree(String sessionId, {String? id}) =>
-      _requests.listTree(sessionId, id: id);
+      _commands.listTree(sessionId, id: id);
 
   /// Asks pi to replace [sessionId] with a fresh session, in place.
   ///
   /// The ack only means the bridge accepted the command; success is the
   /// replacement itself, so the returned future is settled by the successor's
   /// registration (or by the old session's `session-gone` while the follow is
-  /// armed), never by the ack. The follow fails after [_replacementTimeout].
+  /// armed), never by the ack. The follow fails after `_replacementTimeout`.
   @override
   Future<CommandResult> sessionNew(String sessionId, {String? id}) =>
-      _requests.sessionNew(sessionId, id: id);
+      _commands.sessionNew(sessionId, id: id);
 
   /// Asks pi to fork [sessionId] at [entryId], replacing it in place. Same
   /// replacement-follow contract as [sessionNew].
@@ -423,7 +425,7 @@ class HubClient implements HubClientView {
     String sessionId,
     String entryId, {
     String? id,
-  }) => _requests.sessionFork(sessionId, entryId, id: id);
+  }) => _commands.sessionFork(sessionId, entryId, id: id);
 
   /// Asks pi to move [sessionId]'s leaf to [entryId], in place.
   ///
@@ -435,7 +437,7 @@ class HubClient implements HubClientView {
     String sessionId,
     String entryId, {
     String? id,
-  }) => _requests.sessionTree(sessionId, entryId, id: id);
+  }) => _commands.sessionTree(sessionId, entryId, id: id);
 
   /// Fetches [sessionId]'s commands and caches them under the id that asked —
   /// never the currently active one.
@@ -454,13 +456,13 @@ class HubClient implements HubClientView {
   /// ordering is a cross-function invariant, not a local one.
   @override
   Future<void> loadCommands(String sessionId) =>
-      _requests.loadCommands(sessionId);
+      _commands.loadCommands(sessionId);
 
   /// Asks the hub to spawn a headless app-started session.
   ///
   /// The hub answers directly to this connection; there is no session to key
   /// the pending result into, so it is registered under the empty-session
-  /// convention (`_request`'s `pendingSessionId`) and a `session-gone` for any
+  /// convention ([PendingRegistry.command]'s `sessionId`) and a `session-gone` for any
   /// session cannot fail it.
   ///
   /// With a [cwd] or [trust] this needs the hub's `project-session` capability:
@@ -470,7 +472,7 @@ class HubClient implements HubClientView {
   /// it is only ever sent together with `cwd`.
   @override
   Future<CommandResult> startSession({String? id, String? cwd, bool? trust}) =>
-      _requests.startSession(id: id, cwd: cwd, trust: trust);
+      _commands.startSession(id: id, cwd: cwd, trust: trust);
 
   /// Lists the directories under the hub's browse root, or under [path] when
   /// given. A null or empty [path] means the root.
@@ -478,20 +480,50 @@ class HubClient implements HubClientView {
   /// Refuses locally without the hub's `list-dirs` capability: an old hub takes
   /// an unknown viewer type as a capability violation and closes `4003`, which
   /// this client treats as terminal (no reconnect). The id is namespaced
-  /// `dirs-N`, distinct from `_request`'s `cmd-N`.
+  /// `dirs-N`, distinct from [PendingRegistry.command]'s `cmd-N`.
   @override
   Future<DirListingResult> listDirs({String? path, String? id}) =>
-      _requests.listDirs(path: path, id: id);
+      _commands.listDirs(path: path, id: id);
 
   /// Asks the hub to kill an app-started session. Same empty-session pending
   /// convention as [startSession].
   @override
   Future<CommandResult> killSession(String sessionId, {String? id}) =>
-      _requests.killSession(sessionId, id: id);
+      _commands.killSession(sessionId, id: id);
 
   // ---------------------------------------------------------------------------
   // Outbound + state plumbing
   // ---------------------------------------------------------------------------
+
+  /// Whether a live socket is adopted. Kept a method (not a closure over
+  /// `_socket`) so its body can move to `HubConnection` without the
+  /// collaborator's tear-off changing.
+  bool _isConnected() => _socket != null;
+
+  Map<String, Object?> _hello() => <String, Object?>{
+    'protocolVersion': protocolVersion,
+    'type': 'hello',
+    ...?_credential,
+  };
+
+  void _send(Map<String, Object?> message) {
+    final socket = _socket;
+    if (socket == null) return;
+    socket.send(encode(message));
+  }
+
+  /// Sends [message], converting the synchronous throw of a closing socket into
+  /// a recorded error rather than letting it escape into the UI. Returns the
+  /// thrown error, or null when the frame went out.
+  Object? _trySend(Map<String, Object?> message) {
+    try {
+      _send(message);
+      return null;
+    } catch (error) {
+      _setError('$error', connection: true);
+      return error;
+    }
+  }
 
   void _setStatus(HubConnectionStatus status) {
     if (_store.state.status == status) return;

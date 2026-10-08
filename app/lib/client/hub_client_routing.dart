@@ -14,13 +14,12 @@ const int _maxConsecutiveSessionGone = 3;
 /// Inbound frame routing: decode one frame, dispatch by type, and turn each
 /// into state, transcripts, streams and notices.
 ///
-/// View it uses on [HubClient]: reads _c._store, _pendingCommands,
-/// _pendingListings, _pendingHistoryCursor, _awaitingReplacementFrom,
-/// _settlesController, _leafEventsController, _tokenStore, _credential;
-/// writes _c._store, _awaitingReplacementFrom, _pendingHistoryCursor; calls
+/// View it uses on [HubClient]: reads _c._store, _c._pending,
+/// _pendingHistoryCursor, _settlesController, _leafEventsController,
+/// _tokenStore, _credential; writes _c._store, _pendingHistoryCursor; calls
 /// _markConnected, _setError, _scheduleNotify,
 /// _c._connection._cancelAuthWatchdog, _c._connection._restoreSubscription,
-/// _subscribe, requestHistory, _requests.*, _history.*.
+/// _subscribe, requestHistory, _pending.*, _history.*.
 class _HubRouter {
   _HubRouter(this._c);
 
@@ -156,7 +155,7 @@ class _HubRouter {
     // The hub pushes `sessions` on authentication; its arrival is how a
     // token-authenticated connection is confirmed (there is no `paired`).
     _c._markConnected();
-    final awaited = _c._awaitingReplacementFrom;
+    final awaited = _c._pending.awaitingReplacementFrom;
     if (awaited != null) {
       // A replacement is in flight: adopt its successor and *never* fall back
       // to `_c._connection._restoreSubscription`, which would re-subscribe the
@@ -170,8 +169,8 @@ class _HubRouter {
         }
       }
       if (successor != null) {
-        _c._requests._settleReplacementPendings(awaited);
-        _c._requests._clearReplacementFollow();
+        _c._pending.settleReplacement(awaited);
+        _c._pending.clearReplacementFollow();
         _c._store.resubscribed = true;
         // Adoption puts/removes no predecessor transcript, so it must not touch
         // the predecessor derivation: the predecessor's own `session-gone`
@@ -444,7 +443,7 @@ class _HubRouter {
   /// is the guarantee. A listing failure never carries `ok:true`.
   void _onCommandResult(Map<String, Object?> message) {
     final id = message['id']! as String;
-    final listing = _c._pendingListings.remove(id);
+    final listing = _c._pending.takeListing(id);
     if (listing != null) {
       if (listing.completer.isCompleted) return;
       listing.timer?.cancel();
@@ -453,7 +452,7 @@ class _HubRouter {
       );
       return;
     }
-    final pending = _c._pendingCommands[id];
+    final pending = _c._pending.peekCommand(id);
     if (pending == null || pending.completer.isCompleted) return;
     if (pending.followsReplacement) {
       // A successful ack is not the witness — the successor's registration is.
@@ -463,24 +462,20 @@ class _HubRouter {
       // and disarm the follow. Left armed with no pending to settle, it would
       // suppress every legitimate restore for 15 s, and a `session-gone` for
       // the id would skip the re-arm.
-      _c._pendingCommands.remove(id);
+      _c._pending.takeCommand(id);
       pending.timer?.cancel();
       if (!pending.completer.isCompleted) {
         pending.completer.complete(
           CommandResult(ok: false, error: message['error'] as String?),
         );
       }
-      if (_c._awaitingReplacementFrom == pending.sessionId &&
-          !_c._pendingCommands.values.any(
-            (other) =>
-                other.followsReplacement &&
-                other.sessionId == pending.sessionId,
-          )) {
-        _c._requests._clearReplacementFollow();
+      if (_c._pending.awaitingReplacementFrom == pending.sessionId &&
+          !_c._pending.hasFollowForSession(pending.sessionId)) {
+        _c._pending.clearReplacementFollow();
       }
       return;
     }
-    _c._pendingCommands.remove(id);
+    _c._pending.takeCommand(id);
     pending.timer?.cancel();
     final rawCommands = message['commands'];
     final rawModels = message['models'];
@@ -527,7 +522,7 @@ class _HubRouter {
 
   void _onDirListing(Map<String, Object?> message) {
     final id = message['id']! as String;
-    final pending = _c._pendingListings.remove(id);
+    final pending = _c._pending.takeListing(id);
     if (pending == null || pending.completer.isCompleted) return;
     pending.timer?.cancel();
     pending.completer.complete(
@@ -569,8 +564,8 @@ class _HubRouter {
     // failed, and the follow stays armed until the successor names it (or the
     // follow times out). `_c._store.resubscribed` is deliberately left alone — the
     // successor's push must not lose to a restore of the dead id.
-    final awaiting = _c._awaitingReplacementFrom == sessionId;
-    if (awaiting) _c._requests._settleReplacementPendings(sessionId);
+    final awaiting = _c._pending.awaitingReplacementFrom == sessionId;
+    if (awaiting) _c._pending.settleReplacement(sessionId);
     // A `session-gone` answering an automatic restore is the re-subscribe
     // racing the agent's re-registration; only once the cap is past — or when
     // the user subscribed directly and the session is simply gone — is the
@@ -588,7 +583,7 @@ class _HubRouter {
       // `sessions` push re-attaches to the session the user was viewing.
       _c._store.resubscribed = false;
     }
-    _c._requests._failPending('session gone', sessionId: sessionId);
+    _c._pending.failPending('session gone', sessionId: sessionId);
     final sessions = _c._store.state.sessions
         .where((summary) => summary.sessionId != sessionId)
         .toList();

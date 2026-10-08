@@ -12,7 +12,7 @@ const Duration _historyPageTimeout = Duration(seconds: 30);
 ///
 /// View it uses on [HubClient]: reads `_c._store`, `_socket`; writes
 /// `_c._store`, `_pendingHistoryCursor`, `_historyPageTimers`; calls
-/// `_scheduleNotify`, `_requests._trySend`; uses `_scheduler`.
+/// `_scheduleNotify`, `_trySend`; uses `_scheduler`.
 class _HubHistory {
   _HubHistory(this._c);
 
@@ -33,7 +33,7 @@ class _HubHistory {
     // guaranteed hub `4002` self-kick, so clamp to the valid floor.
     if (sinceSeq != null) message['sinceSeq'] = sinceSeq < 1 ? 1 : sinceSeq;
     if (cursor != null) message['cursor'] = cursor;
-    return _c._requests._trySend(message);
+    return _c._trySend(message);
   }
 
   /// Requests one older page for [sessionId] and prepends it when it arrives.
