@@ -15,11 +15,11 @@ const int _maxConsecutiveSessionGone = 3;
 /// into state, transcripts, streams and notices.
 ///
 /// View it uses on [HubClient]: reads _c._store, _c._pending,
-/// _pendingHistoryCursor, _settlesController, _leafEventsController,
-/// _tokenStore, _credential; writes _c._store, _pendingHistoryCursor; calls
+/// _c._historyPages, _settlesController, _leafEventsController,
+/// _tokenStore, _credential; writes _c._store; calls
 /// _markConnected, _setError, _scheduleNotify,
 /// _c._connection._cancelAuthWatchdog, _c._connection._restoreSubscription,
-/// _subscribe, requestHistory, _pending.*, _history.*.
+/// _subscribe, requestHistory, _pending.*, _historyPages.*.
 class _HubRouter {
   _HubRouter(this._c);
 
@@ -372,13 +372,11 @@ class _HubRouter {
       // absent token, a stale one, or no transcript — is discarded touching
       // nothing, so a stale page cannot reset the resync livelock streak (R5)
       // nor fabricate a baseline.
-      if (token == null ||
-          _c._pendingHistoryCursor[sessionId] != token ||
+      if (!_c._historyPages.matchesPending(sessionId, token) ||
           existing == null) {
         return;
       }
-      _c._pendingHistoryCursor.remove(sessionId);
-      _c._history._cancelHistoryPageTimeout(sessionId);
+      _c._historyPages.dropPending(sessionId);
       _c._store.removeResyncCount(sessionId);
       _c._store.removeGoneCount(sessionId);
       final entries = (message['entries']! as List).cast<Object?>();
@@ -405,8 +403,7 @@ class _HubRouter {
 
     // No `older` flag is the newest-page baseline: a REPLACE that also
     // invalidates any page in flight for this session.
-    _c._pendingHistoryCursor.remove(sessionId);
-    _c._history._cancelHistoryPageTimeout(sessionId);
+    _c._historyPages.dropPending(sessionId);
     // A delivered baseline breaks any resync or gone streak.
     _c._store.removeResyncCount(sessionId);
     _c._store.removeGoneCount(sessionId);
@@ -591,8 +588,7 @@ class _HubRouter {
     if (!keepTranscript) {
       transcripts.remove(sessionId);
       _c._store.removeDerivation(sessionId);
-      _c._pendingHistoryCursor.remove(sessionId);
-      _c._history._cancelHistoryPageTimeout(sessionId);
+      _c._historyPages.dropPending(sessionId);
     }
     // Only the genuinely-gone branch drops the cache: under the cap the session
     // may come back (the re-subscribe race), and a kept key avoids a flicker.

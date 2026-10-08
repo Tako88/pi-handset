@@ -26,8 +26,8 @@ const Duration _candidateConnectTimeout = Duration(seconds: 2);
 /// _heldCandidate, _heldSeq, _raceDecision, _changesController,
 /// _settlesController, _leafEventsController; writes _c._store, _socket,
 /// _attempt, _credential, _candidates, _prefer; calls _setStatus, _setError,
-/// _clearConnectionError, _flushNotify, _subscribe, _pending.*, _history.*,
-/// _router.*.
+/// _clearConnectionError, _flushNotify, _subscribe, _pending.*,
+/// _historyPages.*, _router.*.
 class _HubConnection {
   _HubConnection(this._c);
 
@@ -52,7 +52,7 @@ class _HubConnection {
     // settled by the abandoned hub: deliberately no `skipReplacement: true`
     // (unlike `_onSocketDone`, whose successor still arrives after a reconnect).
     _c._pending.failPending('connection replaced');
-    _c._history._clearPendingHistoryPages();
+    _c._historyPages.clearAllPending();
     await _dropConnection();
 
     _c._candidates = List<HubEndpoint>.of(candidates);
@@ -85,7 +85,7 @@ class _HubConnection {
     // `stop()` closes `changes` for good and never resets the state, so nothing
     // else would ever drop the derivations; they die here.
     _c._store.clearDerivations();
-    _c._history._clearPendingHistoryPages();
+    _c._historyPages.clearAllPending();
     // Every in-flight command fails rather than hanging the caller forever.
     _c._pending.failPending('client stopped');
     await _dropConnection(reason: 'client stopped');
@@ -117,7 +117,7 @@ class _HubConnection {
     _c._attempt = 0;
     // Clears `historyLoading` off the transcripts, so it must run before the
     // store reset below wipes them.
-    _c._history._clearPendingHistoryPages();
+    _c._historyPages.clearAllPending();
     _c._store.resetForDisconnect();
     _c._flushNotify();
   }

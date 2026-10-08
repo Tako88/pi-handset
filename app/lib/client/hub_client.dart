@@ -24,13 +24,13 @@
 /// - Correlate `command` → `command-result` back to the issuing caller.
 /// - Re-request history on `resync-required`, and drop `session-gone` sessions.
 ///
-/// The behaviour is split across private collaborators: the part files
-/// `hub_client_connection.dart` (dial, race, auth, timers),
-/// `hub_client_routing.dart` (inbound frames) and `hub_client_history.dart`
-/// (history paging) each hold a back-reference to [HubClient]; the separate
-/// libraries `pending_registry.dart` (pending-command/listing bookkeeping) and
-/// `hub_commands.dart` (the request builders) are handed their dependencies.
-/// The state they share is owned by `SessionStateStore`.
+/// The behaviour is split across collaborators: the part files
+/// `hub_client_connection.dart` (dial, race, auth, timers) and
+/// `hub_client_routing.dart` (inbound frames) each hold a back-reference to
+/// [HubClient]; the separate libraries `pending_registry.dart`
+/// (pending-command/listing bookkeeping), `hub_commands.dart` (the request
+/// builders) and `history_pages.dart` (history paging) are handed their
+/// dependencies. The state they share is owned by `SessionStateStore`.
 ///
 /// # How a widget consumes this
 ///
@@ -47,6 +47,7 @@ import '../protocol/protocol.dart';
 import 'backoff.dart';
 import 'endpoint_store.dart';
 import 'hub_commands.dart';
+import 'history_pages.dart';
 import 'hub_socket.dart';
 import 'pending_registry.dart';
 import 'scheduler.dart';
@@ -58,7 +59,6 @@ import 'transcript.dart';
 import 'hub_client_view.dart';
 export 'hub_models.dart';
 
-part 'hub_client_history.dart';
 part 'hub_client_routing.dart';
 part 'hub_client_connection.dart';
 
@@ -105,12 +105,11 @@ class HubClient implements HubClientView {
     },
   );
 
-  // Collaborators. `_history`/`_router`/`_connection` are private
-  // collaborators in part files that hold a back-reference to this client and
-  // touch its (library-private) fields directly; `_pending`/`_commands` are
-  // separate libraries handed their dependencies. See the part files for the
-  // view each one uses.
-  late final _HubHistory _history = _HubHistory(this);
+  // Collaborators. `_router`/`_connection` are private collaborators in part
+  // files that hold a back-reference to this client and touch its
+  // (library-private) fields directly; `_pending`/`_commands`/`_historyPages`
+  // are separate libraries handed their dependencies. See the part files for
+  // the view each one uses.
   late final _HubRouter _router = _HubRouter(this);
   late final _HubConnection _connection = _HubConnection(this);
 
@@ -129,6 +128,15 @@ class HubClient implements HubClientView {
     notify: _notify,
   );
 
+  /// History paging: the single-flight older-page request and its bounded wait.
+  late final HistoryPages _historyPages = HistoryPages(
+    scheduler: _scheduler,
+    store: _store,
+    notify: _notify,
+    isConnected: _isConnected,
+    trySend: _trySend,
+  );
+
   final StreamController<HubClientState> _changesController =
       StreamController<HubClientState>.broadcast(sync: true);
 
@@ -137,15 +145,6 @@ class HubClient implements HubClientView {
 
   final StreamController<LeafEvent> _leafEventsController =
       StreamController<LeafEvent>.broadcast(sync: true);
-
-  /// The cursor of the one in-flight older page per session, keyed by session.
-  /// Set by [loadOlder] and cleared by an applied snapshot, the page timeout,
-  /// a send failure, `session-gone`, `stop` and `disconnect`.
-  final Map<String, String> _pendingHistoryCursor = {};
-
-  /// The page-timeout handle per session, in lockstep with
-  /// [_pendingHistoryCursor].
-  final Map<String, HubTimer> _historyPageTimers = {};
 
   Map<String, Object?>? _credential;
   HubSocket? _socket;
@@ -356,7 +355,7 @@ class HubClient implements HubClientView {
   /// can clear its in-flight state when the write failed. [cursor] is the older
   /// page's opaque token and is placed on the frame only when non-null.
   Object? requestHistory(String sessionId, {int? sinceSeq, String? cursor}) =>
-      _history.requestHistory(sessionId, sinceSeq: sinceSeq, cursor: cursor);
+      _historyPages.requestHistory(sessionId, sinceSeq: sinceSeq, cursor: cursor);
 
   /// Requests one older page for [sessionId] and prepends it when it arrives.
   ///
@@ -371,7 +370,7 @@ class HubClient implements HubClientView {
   /// bounded by a page timeout that re-enables the control instead of hanging
   /// it forever.
   @override
-  void loadOlder(String sessionId) => _history.loadOlder(sessionId);
+  void loadOlder(String sessionId) => _historyPages.loadOlder(sessionId);
 
   /// Sends one allowlisted command and completes when its `command-result`
   /// arrives. The correlation id is generated here unless [id] is supplied.
