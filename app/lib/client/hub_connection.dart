@@ -1,4 +1,31 @@
-part of 'hub_client.dart';
+// ignore_for_file: prefer_initializing_formals
+// The dependency fields are private, and a private *named* parameter is illegal
+// in Dart, so the initializer list is the only way to bind them (the lint's
+// suggested fix does not compile).
+
+/// Connection: dial (single and raced), adopt, authenticate, and the timers
+/// that bound and recover an attempt.
+///
+/// Extracted from the hub client into a separate library: it owns the live
+/// socket, its message subscription, the credential, the candidate list, the
+/// dial-race hold, the attempt/generation counters and the reconnect, connect
+/// and auth timers. It reaches the client only through the callbacks and
+/// collaborators handed to its constructor, never a `HubClient`.
+library;
+
+import 'dart:async';
+
+import '../protocol/protocol.dart';
+import 'backoff.dart';
+import 'close_codes.dart';
+import 'endpoint_store.dart';
+import 'history_pages.dart';
+import 'hub_models.dart';
+import 'hub_socket.dart';
+import 'pending_registry.dart';
+import 'scheduler.dart';
+import 'session_state.dart';
+import 'token_store.dart';
 
 /// Bounded wait for `paired` or `sessions` after dialing. A wrong or stale
 /// token gets silence on an open socket — the hub charges one attempt per
@@ -17,21 +44,133 @@ const Duration _connectTimeout = Duration(seconds: 10);
 /// a single slow candidate must not stall the attempt for ten seconds.
 const Duration _candidateConnectTimeout = Duration(seconds: 2);
 
-/// Connection: dial (single and raced), adopt, authenticate, and the timers
-/// that bound and recover an attempt.
-///
-/// View it uses on [HubClient]: reads _c._store, _socket, _subscription,
-/// _candidates, _prefer, _credential, _scheduler, _tokenStore, _socketFactory,
-/// _rng, _dialSeq, _stopped, _connectTimers, _reconnectTimer, _authTimer,
-/// _heldCandidate, _heldSeq, _raceDecision, _changesController,
-/// _settlesController, _leafEventsController; writes _c._store, _socket,
-/// _attempt, _credential, _candidates, _prefer; calls _setStatus, _setError,
-/// _clearConnectionError, _flushNotify, _subscribe, _pending.*,
-/// _historyPages.*, _onFrame.
-class _HubConnection {
-  _HubConnection(this._c);
+/// Owns the socket/credential/dial-race/timer cluster of the hub client.
+class HubConnection {
+  HubConnection({
+    required HubSocketFactory socketFactory,
+    required HubScheduler scheduler,
+    required TokenStore tokenStore,
+    required double Function() rng,
+    required SessionStateStore store,
+    required PendingRegistry pending,
+    required HistoryPages historyPages,
+    required void Function(Object?) onFrame,
+    required void Function(HubConnectionStatus) setStatus,
+    required void Function(String, {required bool connection}) setError,
+    required void Function() clearConnectionError,
+    required void Function() flushNotify,
+    required Future<void> Function() closeControllers,
+    required void Function(String sessionId, {bool restoring}) subscribe,
+  }) : _socketFactory = socketFactory,
+       _scheduler = scheduler,
+       _tokenStore = tokenStore,
+       _rng = rng,
+       _store = store,
+       _pending = pending,
+       _historyPages = historyPages,
+       _onFrame = onFrame,
+       _setStatus = setStatus,
+       _setError = setError,
+       _clearConnectionError = clearConnectionError,
+       _flushNotify = flushNotify,
+       _closeControllers = closeControllers,
+       _subscribe = subscribe;
 
-  final HubClient _c;
+  final HubSocketFactory _socketFactory;
+  final HubScheduler _scheduler;
+  final TokenStore _tokenStore;
+  final double Function() _rng;
+  final SessionStateStore _store;
+  final PendingRegistry _pending;
+  final HistoryPages _historyPages;
+  final void Function(Object?) _onFrame;
+  final void Function(HubConnectionStatus) _setStatus;
+  final void Function(String, {required bool connection}) _setError;
+  final void Function() _clearConnectionError;
+  final void Function() _flushNotify;
+  final Future<void> Function() _closeControllers;
+  final void Function(String sessionId, {bool restoring}) _subscribe;
+
+  Map<String, Object?>? _credential;
+  HubSocket? _socket;
+  StreamSubscription<Object?>? _subscription;
+  HubTimer? _reconnectTimer;
+  HubTimer? _authTimer;
+
+  /// One dial deadline per in-flight dial. A dial removes its own entry when it
+  /// fires, is cancelled, or its socket arrives; the only blanket cancel is
+  /// [_cancelConnectDeadline], run solely at attempt start, stop and
+  /// disconnect, before a successor's timers exist.
+  final List<HubTimer> _connectTimers = <HubTimer>[];
+
+  /// The candidate addresses of the current attempt, in preference order. Set
+  /// by [startCandidates], retained across reconnects so [_scheduleReconnect]
+  /// re-races the whole list, and cleared by [stop] and [disconnect].
+  List<HubEndpoint> _candidates = <HubEndpoint>[];
+
+  /// The candidate a race prefers, or null for first-answer. Only honoured
+  /// when it is in [_candidates]; otherwise it is treated as absent.
+  HubEndpoint? _prefer;
+
+  /// The non-preferred socket the in-flight race is holding while the preferred
+  /// candidate settles, and the generation that holds it. Kept in a field so a
+  /// superseding [startCandidates], [stop] or [disconnect] can close it: a
+  /// stalled preferred dial never runs the race's own `evaluate`, so otherwise
+  /// the hold would leak forever.
+  HubSocket? _heldCandidate;
+  int _heldSeq = 0;
+
+  /// Settles the in-flight race when its generation is superseded, so a caller
+  /// awaiting a race whose preferred dial is stalled does not hang. Null when no
+  /// race is in flight.
+  Completer<void>? _raceDecision;
+
+  int _attempt = 0;
+  bool _stopped = true;
+
+  /// Bumped per dial attempt, and again on every path that invalidates an
+  /// in-flight dial ([start], [stop], [disconnect]). A dial that resumes after
+  /// its generation moved must close its socket, never adopt it.
+  int _dialSeq = 0;
+
+  /// Whether a live socket is adopted.
+  bool get isConnected => _socket != null;
+
+  /// The credential the next `hello` authenticates with, or null before a
+  /// start and after a [disconnect]. The accessor pair is deliberate — the
+  /// private field stays the connection's own — so the wrapper is not
+  /// redundant here.
+  // ignore: unnecessary_getters_setters
+  Map<String, Object?>? get credential => _credential;
+  set credential(Map<String, Object?>? value) => _credential = value;
+
+  /// Sends [message] over the live socket, silently dropping when there is
+  /// none.
+  void send(Map<String, Object?> message) {
+    final socket = _socket;
+    if (socket == null) return;
+    socket.send(encode(message));
+  }
+
+  /// Sends [message], converting the synchronous throw of a closing socket into
+  /// a recorded error rather than letting it escape into the UI. Returns the
+  /// thrown error, or null when the frame went out.
+  Object? trySend(Map<String, Object?> message) {
+    try {
+      send(message);
+      return null;
+    } catch (error) {
+      _setError('$error', connection: true);
+      return error;
+    }
+  }
+
+  Map<String, Object?> _hello() => <String, Object?>{
+    'protocolVersion': protocolVersion,
+    'type': 'hello',
+    ...?_credential,
+  };
+
   Future<void> startCandidates(
     List<HubEndpoint> candidates, {
     String? ticket,
@@ -41,100 +180,98 @@ class _HubConnection {
       throw StateError('at least one candidate address is required to connect');
     }
     _cancelReconnect();
-    _cancelAuthWatchdog();
+    cancelAuthWatchdog();
     _cancelConnectDeadline();
-    _c._dialSeq++;
+    _dialSeq++;
     _releaseSupersededHold();
     // A follow armed on a previous hub names a foreign session id; left set, it
     // would suppress every restore on the new hub until its timer fired.
-    _c._pending.clearReplacementFollow();
+    _pending.clearReplacementFollow();
     // The follow was just cleared, so a `followsReplacement` pending can never be
     // settled by the abandoned hub: deliberately no `skipReplacement: true`
     // (unlike `_onSocketDone`, whose successor still arrives after a reconnect).
-    _c._pending.failPending('connection replaced');
-    _c._historyPages.clearAllPending();
+    _pending.failPending('connection replaced');
+    _historyPages.clearAllPending();
     await _dropConnection();
 
-    _c._candidates = List<HubEndpoint>.of(candidates);
-    _c._prefer = prefer != null && _c._candidates.contains(prefer) ? prefer : null;
+    _candidates = List<HubEndpoint>.of(candidates);
+    _prefer = prefer != null && _candidates.contains(prefer) ? prefer : null;
     if (ticket != null) {
-      _c._credential = {'ticket': ticket};
+      _credential = {'ticket': ticket};
     } else {
-      final stored = await _c._tokenStore.read();
+      final stored = await _tokenStore.read();
       if (stored == null || stored.isEmpty) {
         throw StateError('a ticket or a stored token is required to connect');
       }
-      _c._credential = {'token': stored};
+      _credential = {'token': stored};
     }
-    _c._clearConnectionError();
-    _c._stopped = false;
-    _c._attempt = 0;
+    _clearConnectionError();
+    _stopped = false;
+    _attempt = 0;
     await _dial();
   }
 
   Future<void> stop() async {
-    _c._stopped = true;
+    _stopped = true;
     _cancelReconnect();
-    _cancelAuthWatchdog();
+    cancelAuthWatchdog();
     _cancelConnectDeadline();
-    _c._dialSeq++;
+    _dialSeq++;
     _releaseSupersededHold();
-    _c._candidates = <HubEndpoint>[];
-    _c._prefer = null;
-    _c._pending.clearReplacementFollow();
+    _candidates = <HubEndpoint>[];
+    _prefer = null;
+    _pending.clearReplacementFollow();
     // `stop()` closes `changes` for good and never resets the state, so nothing
     // else would ever drop the derivations; they die here.
-    _c._store.clearDerivations();
-    _c._historyPages.clearAllPending();
+    _store.clearDerivations();
+    _historyPages.clearAllPending();
     // Every in-flight command fails rather than hanging the caller forever.
-    _c._pending.failPending('client stopped');
+    _pending.failPending('client stopped');
     await _dropConnection(reason: 'client stopped');
-    _c._setStatus(HubConnectionStatus.disconnected);
+    _setStatus(HubConnectionStatus.disconnected);
     // Emit the terminal state now: cancelling the pending notify would close
     // `changes` without anyone ever observing `disconnected`.
-    _c._flushNotify();
-    if (!_c._changesController.isClosed) await _c._changesController.close();
-    if (!_c._settlesController.isClosed) await _c._settlesController.close();
-    if (!_c._leafEventsController.isClosed) await _c._leafEventsController.close();
+    _flushNotify();
+    await _closeControllers();
   }
 
   Future<void> disconnect() async {
-    _c._stopped = true;
+    _stopped = true;
     _cancelReconnect();
-    _cancelAuthWatchdog();
+    cancelAuthWatchdog();
     _cancelConnectDeadline();
-    _c._dialSeq++;
+    _dialSeq++;
     _releaseSupersededHold();
-    _c._candidates = <HubEndpoint>[];
-    _c._prefer = null;
-    _c._pending.failPending('disconnected');
+    _candidates = <HubEndpoint>[];
+    _prefer = null;
+    _pending.failPending('disconnected');
     // Not awaited: closing the socket below ends delivery, and awaiting a
     // subscription cancel leaves a UI-initiated disconnect pending under a
     // widget-test clock.
     await _dropConnection(awaitSubscription: false, reason: 'disconnected');
-    _c._credential = null;
-    _c._pending.clearReplacementFollow();
-    _c._attempt = 0;
+    _credential = null;
+    _pending.clearReplacementFollow();
+    _attempt = 0;
     // Clears `historyLoading` off the transcripts, so it must run before the
     // store reset below wipes them.
-    _c._historyPages.clearAllPending();
-    _c._store.resetForDisconnect();
-    _c._flushNotify();
+    _historyPages.clearAllPending();
+    _store.resetForDisconnect();
+    _flushNotify();
   }
 
   /// Closes the current socket and cancels its subscription. Socket teardown
-  /// **only** — deliberately no credential, state, pending or `_c._stopped`
-  /// resets, so [start] can reuse it to displace an in-flight attempt without
-  /// wiping the credential it is about to send or stopping the dial it is about
-  /// to make.
+  /// **only** — deliberately no credential, state, pending or `_stopped`
+  /// resets, so [startCandidates] can reuse it to displace an in-flight attempt
+  /// without wiping the credential it is about to send or stopping the dial it
+  /// is about to make.
   Future<void> _dropConnection({
     bool awaitSubscription = true,
     String reason = 'disconnected',
   }) async {
-    final socket = _c._socket;
-    _c._socket = null;
-    final subscription = _c._subscription;
-    _c._subscription = null;
+    final socket = _socket;
+    _socket = null;
+    final subscription = _subscription;
+    _subscription = null;
     if (awaitSubscription) {
       await subscription?.cancel();
     } else {
@@ -161,36 +298,35 @@ class _HubConnection {
   /// Runs once per dial, and again only after a `session-gone` clears the guard
   /// (past the give-up cap it never runs again). It leaves the gone streak
   /// intact, so an automatic retry cannot reset its own cap.
-  void _restoreSubscription() {
-    if (_c._store.resubscribed) return;
-    _c._store.resubscribed = true;
-    final sessionId =
-        _c._store.desiredSessionId ?? _c._store.state.activeSessionId;
+  void restoreSubscription() {
+    if (_store.resubscribed) return;
+    _store.resubscribed = true;
+    final sessionId = _store.desiredSessionId ?? _store.state.activeSessionId;
     if (sessionId == null) return;
-    // `_c._subscribe` re-subscribes and re-requests history. Requesting it again
+    // `_subscribe` re-subscribes and re-requests history. Requesting it again
     // here would send a duplicate frame.
-    _c._subscribe(sessionId, restoring: true);
+    _subscribe(sessionId, restoring: true);
   }
 
   Future<void> _dial() async {
-    if (_c._stopped || _c._candidates.isEmpty) return;
-    final seq = ++_c._dialSeq;
-    _c._setStatus(HubConnectionStatus.connecting);
-    if (_c._candidates.length > 1) {
+    if (_stopped || _candidates.isEmpty) return;
+    final seq = ++_dialSeq;
+    _setStatus(HubConnectionStatus.connecting);
+    if (_candidates.length > 1) {
       await _dialRace(seq);
       return;
     }
     HubSocket socket;
     try {
-      socket = await _dialSocket(_wsUri(_c._candidates.first));
+      socket = await _dialSocket(_wsUri(_candidates.first));
     } catch (error) {
       // A superseded dial reports nothing: its failure is not this attempt's.
-      if (_c._stopped || seq != _c._dialSeq) return;
-      _c._setError('$error', connection: true);
+      if (_stopped || seq != _dialSeq) return;
+      _setError('$error', connection: true);
       _scheduleReconnect();
       return;
     }
-    if (_c._stopped || seq != _c._dialSeq) {
+    if (_stopped || seq != _dialSeq) {
       // Superseded while the factory was pending: close the late socket rather
       // than adopting it. Swallow the close's own error — an unhandled
       // rejection inside a scheduler task is a zone error.
@@ -205,7 +341,7 @@ class _HubConnection {
   ///
   /// [seq] is the attempt's generation, captured by [_dial]. It is re-checked
   /// before every adoption, so a race the user superseded closes every socket
-  /// it owns and adopts nothing. With [_c._prefer] set, the first non-preferred
+  /// it owns and adopts nothing. With [_prefer] set, the first non-preferred
   /// success is held (no `hello`, so the single-use ticket is untouched) while
   /// the preferred candidate settles; the preferred's own 2 s deadline bounds
   /// that hold, and on its failure the held socket is adopted.
@@ -215,14 +351,14 @@ class _HubConnection {
   /// preferred dial whose factory never resolves cannot leak the hold or hang
   /// the caller.
   Future<void> _dialRace(int seq) async {
-    final candidates = List<HubEndpoint>.of(_c._candidates);
-    final prefer = _c._prefer;
+    final candidates = List<HubEndpoint>.of(_candidates);
+    final prefer = _prefer;
     final decision = Completer<void>();
     var remaining = candidates.length;
     var preferFailed = false;
     HubSocket? held;
 
-    bool superseded() => _c._stopped || seq != _c._dialSeq;
+    bool superseded() => _stopped || seq != _dialSeq;
 
     Future<void> closeSocket(HubSocket? socket) async {
       if (socket == null) return;
@@ -233,23 +369,23 @@ class _HubConnection {
       }
     }
 
-    // The held socket is mirrored in `_c._heldCandidate` so a lifecycle method
+    // The held socket is mirrored in `_heldCandidate` so a lifecycle method
     // that supersedes this race can close it: a stalled preferred dial never
     // calls `evaluate`, so the local would otherwise be unreachable.
     void hold(HubSocket socket) {
       held = socket;
-      _c._heldCandidate = socket;
-      _c._heldSeq = seq;
+      _heldCandidate = socket;
+      _heldSeq = seq;
     }
 
     void dropHeld() {
       held = null;
-      _c._heldCandidate = null;
-      _c._heldSeq = 0;
+      _heldCandidate = null;
+      _heldSeq = 0;
     }
 
     void finish() {
-      if (identical(_c._raceDecision, decision)) _c._raceDecision = null;
+      if (identical(_raceDecision, decision)) _raceDecision = null;
       if (!decision.isCompleted) decision.complete();
     }
 
@@ -257,7 +393,7 @@ class _HubConnection {
       final addresses = candidates
           .map((candidate) => '${candidate.host}:${candidate.port}')
           .join(', ');
-      _c._setError(
+      _setError(
         'could not reach $addresses within '
         '${_candidateConnectTimeout.inSeconds} seconds',
         connection: true,
@@ -345,7 +481,7 @@ class _HubConnection {
       );
     }
 
-    _c._raceDecision = decision;
+    _raceDecision = decision;
     await decision.future;
   }
 
@@ -353,14 +489,14 @@ class _HubConnection {
   /// extracted tail of the old single-candidate `_dial`, unchanged so the
   /// single path stays behaviourally identical.
   void _adoptSocket(HubSocket socket) {
-    _c._socket = socket;
-    _c._attempt = 0;
-    _c._store.resubscribed = false;
-    _c._setStatus(HubConnectionStatus.authenticating);
-    _c._send(_c._hello());
+    _socket = socket;
+    _attempt = 0;
+    _store.resubscribed = false;
+    _setStatus(HubConnectionStatus.authenticating);
+    send(_hello());
     _armAuthWatchdog();
-    _c._subscription = socket.messages.listen(
-      _c._onFrame,
+    _subscription = socket.messages.listen(
+      _onFrame,
       onError: (Object _) {},
       onDone: () => _onSocketDone(socket),
     );
@@ -369,7 +505,7 @@ class _HubConnection {
   Uri _wsUri(HubEndpoint endpoint) =>
       Uri(scheme: 'ws', host: endpoint.host, port: endpoint.port);
 
-  /// Dials through [_c._socketFactory] but bounds the wait with [timeout] (the
+  /// Dials through [_socketFactory] but bounds the wait with [timeout] (the
   /// 10 s default, or the shorter candidate bound inside a race).
   ///
   /// The deadline is scheduled through the injected scheduler so a test can
@@ -377,16 +513,17 @@ class _HubConnection {
   /// arrives afterwards is closed and dropped — never adopted, and never sent a
   /// `hello`.
   ///
-  /// Its timer is added to [_c._connectTimers] and removes its own entry when it
+  /// Its timer is added to [_connectTimers] and removes its own entry when it
   /// fires, is cancelled, or its socket arrives — never a blanket cancel, so a
   /// race can never kill a successor attempt's deadlines.
   ///
-  /// A generation bump (a stop, or a new [start]) cancels the timer but does
-  /// not settle the completer, so a `_dial` still awaiting a stalled factory
-  /// stays pending until the factory itself resolves. That is deliberate: the
-  /// caller is superseded and its result is discarded by the generation guard
-  /// in `_dial`, and the factory is bounded in production by the OS connect
-  /// timeout. Failing it here would be extra machinery for no observable gain.
+  /// A generation bump (a stop, or a new [startCandidates]) cancels the timer
+  /// but does not settle the completer, so a `_dial` still awaiting a stalled
+  /// factory stays pending until the factory itself resolves. That is
+  /// deliberate: the caller is superseded and its result is discarded by the
+  /// generation guard in `_dial`, and the factory is bounded in production by
+  /// the OS connect timeout. Failing it here would be extra machinery for no
+  /// observable gain.
   Future<HubSocket> _dialSocket(Uri url, {Duration? timeout}) {
     final effective = timeout ?? _connectTimeout;
     final completer = Completer<HubSocket>();
@@ -395,8 +532,8 @@ class _HubConnection {
     // the wrong host.
     final endpoint = '${url.host}:${url.port}';
     late final HubTimer timer;
-    timer = _c._scheduler.schedule(effective, () {
-      _c._connectTimers.remove(timer);
+    timer = _scheduler.schedule(effective, () {
+      _connectTimers.remove(timer);
       if (completer.isCompleted) return;
       completer.completeError(
         TimeoutException(
@@ -404,12 +541,12 @@ class _HubConnection {
         ),
       );
     }, kind: HubTimerKind.connect);
-    _c._connectTimers.add(timer);
+    _connectTimers.add(timer);
     unawaited(() async {
       try {
-        final socket = await _c._socketFactory(url);
+        final socket = await _socketFactory(url);
         timer.cancel();
-        _c._connectTimers.remove(timer);
+        _connectTimers.remove(timer);
         if (completer.isCompleted) {
           // The deadline already failed this dial; the socket is too late.
           unawaited(socket.close().catchError((Object _) {}));
@@ -418,7 +555,7 @@ class _HubConnection {
         completer.complete(socket);
       } catch (error, stackTrace) {
         timer.cancel();
-        _c._connectTimers.remove(timer);
+        _connectTimers.remove(timer);
         if (completer.isCompleted) return;
         completer.completeError(error, stackTrace);
       }
@@ -428,70 +565,71 @@ class _HubConnection {
 
   Future<void> _onSocketDone(HubSocket socket) async {
     final close = await socket.closed;
-    if (_c._socket != socket) return;
-    _c._socket = null;
+    if (_socket != socket) return;
+    _socket = null;
     final wasAuthenticating =
-        _c._store.state.status == HubConnectionStatus.authenticating;
-    _cancelAuthWatchdog();
+        _store.state.status == HubConnectionStatus.authenticating;
+    cancelAuthWatchdog();
     // Not awaited: the socket is already done, and awaiting a subscription
     // cancel leaves the close path (and the error it records) pending.
-    final subscription = _c._subscription;
-    _c._subscription = null;
+    final subscription = _subscription;
+    _subscription = null;
     unawaited(subscription?.cancel() ?? Future<void>.value());
-    if (_c._stopped) return;
+    if (_stopped) return;
     // A lost socket can never deliver a result; fail rather than hang. A
     // `followsReplacement` pending is exempt: the replacement proceeds on the
     // server regardless of this viewer's reconnect, so failing it here would
     // report an error while the successor still arrives minutes later. It is
     // bounded by the 15 s replacement timer instead.
-    _c._pending.failPending('connection lost', skipReplacement: true);
+    _pending.failPending('connection lost', skipReplacement: true);
     if (close.code == closeCapability) {
-      _c._setStatus(HubConnectionStatus.disconnected);
+      _setStatus(HubConnectionStatus.disconnected);
       return;
     }
     if (close.code == closeRateLimited) {
       // The hub delayed this close on purpose; say so, or the longer wait looks
       // like a generic reconnect loop.
-      _c._setError(
+      _setError(
         'the hub is rate-limiting authentication; retrying in '
         '${rateLimitedReconnectDelay.inSeconds} seconds',
         connection: true,
       );
-      _c._setStatus(HubConnectionStatus.connecting);
+      _setStatus(HubConnectionStatus.connecting);
       _scheduleReconnect(fixed: rateLimitedReconnectDelay);
       return;
     }
-    if (wasAuthenticating && _c._store.state.lastError == null) {
+    if (wasAuthenticating && _store.state.lastError == null) {
       // A rejected ticket closes without a `paired` and cancels the watchdog, so
       // unless an error is recorded here the pairing form spins forever.
-      _c._setError(
+      _setError(
         'the hub closed the connection before authenticating; the pairing '
         'code may be invalid — enter a new one',
         connection: true,
       );
     }
-    _c._setStatus(HubConnectionStatus.connecting);
+    _setStatus(HubConnectionStatus.connecting);
     _scheduleReconnect();
   }
 
   void _armAuthWatchdog() {
-    _cancelAuthWatchdog();
-    _c._authTimer = _c._scheduler.schedule(_authTimeout, () {
-      _c._authTimer = null;
+    cancelAuthWatchdog();
+    _authTimer = _scheduler.schedule(_authTimeout, () {
+      _authTimer = null;
       _onAuthTimeout();
     }, kind: HubTimerKind.auth);
   }
 
-  void _cancelAuthWatchdog() {
-    _c._authTimer?.cancel();
-    _c._authTimer = null;
+  /// Cancels the authentication watchdog of the current attempt.
+  void cancelAuthWatchdog() {
+    _authTimer?.cancel();
+    _authTimer = null;
   }
 
   void _cancelConnectDeadline() {
-    for (final timer in _c._connectTimers) {
+    for (final timer in _connectTimers) {
       timer.cancel();
     }
-    _c._connectTimers.clear();
+    _connectTimers.clear();
   }
 
   /// Releases whatever a superseded race is holding. A stalled preferred dial
@@ -500,24 +638,24 @@ class _HubConnection {
   /// otherwise the socket leaks and the race's awaiting caller hangs forever.
   ///
   /// A no-op when no race is in flight. The generation check is defensive: the
-  /// callers bump [_c._dialSeq] first, so a held candidate always belongs to a
+  /// callers bump [_dialSeq] first, so a held candidate always belongs to a
   /// superseded generation.
   void _releaseSupersededHold() {
-    final socket = _c._heldCandidate;
-    if (socket != null && _c._heldSeq != _c._dialSeq) {
-      _c._heldCandidate = null;
-      _c._heldSeq = 0;
+    final socket = _heldCandidate;
+    if (socket != null && _heldSeq != _dialSeq) {
+      _heldCandidate = null;
+      _heldSeq = 0;
       unawaited(socket.close().catchError((Object _) {}));
     }
-    final decision = _c._raceDecision;
-    _c._raceDecision = null;
+    final decision = _raceDecision;
+    _raceDecision = null;
     if (decision != null && !decision.isCompleted) decision.complete();
   }
 
   void _onAuthTimeout() {
-    final socket = _c._socket;
+    final socket = _socket;
     if (socket == null) return;
-    _c._setError(
+    _setError(
       'timed out waiting for the hub to authenticate; the pairing token '
       'may be stale',
       connection: true,
@@ -527,23 +665,22 @@ class _HubConnection {
   }
 
   void _scheduleReconnect({Duration? fixed}) {
-    if (_c._stopped || _c._reconnectTimer != null) return;
+    if (_stopped || _reconnectTimer != null) return;
     final Duration delay;
     if (fixed != null) {
       delay = fixed;
     } else {
-      delay = computeBackoff(_c._attempt, rng: _c._rng);
-      _c._attempt++;
+      delay = computeBackoff(_attempt, rng: _rng);
+      _attempt++;
     }
-    _c._reconnectTimer = _c._scheduler.schedule(delay, () {
-      _c._reconnectTimer = null;
+    _reconnectTimer = _scheduler.schedule(delay, () {
+      _reconnectTimer = null;
       unawaited(_dial());
     }, kind: HubTimerKind.reconnect);
   }
 
   void _cancelReconnect() {
-    _c._reconnectTimer?.cancel();
-    _c._reconnectTimer = null;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
   }
-
 }

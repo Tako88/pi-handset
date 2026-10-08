@@ -24,13 +24,13 @@
 /// - Correlate `command` → `command-result` back to the issuing caller.
 /// - Re-request history on `resync-required`, and drop `session-gone` sessions.
 ///
-/// The behaviour is split across collaborators: the part file
-/// `hub_client_connection.dart` (dial, race, auth, timers) holds a
-/// back-reference to [HubClient]; `hub_router.dart` (inbound frames) receives
-/// a `RouterContext`; the separate libraries `pending_registry.dart`
-/// (pending-command/listing bookkeeping), `hub_commands.dart` (the request
-/// builders) and `history_pages.dart` (history paging) are handed their
-/// dependencies. The state they share is owned by `SessionStateStore`.
+/// The behaviour is split across collaborators: `hub_connection.dart`
+/// (dial, race, auth, timers) owns the socket/credential/timer cluster;
+/// `hub_router.dart` (inbound frames) receives a `RouterContext`; the
+/// separate libraries `pending_registry.dart` (pending-command/listing
+/// bookkeeping), `hub_commands.dart` (the request builders) and
+/// `history_pages.dart` (history paging) are handed their dependencies. The
+/// state they share is owned by `SessionStateStore`.
 ///
 /// # How a widget consumes this
 ///
@@ -44,10 +44,10 @@ import 'dart:async';
 import 'dart:math';
 
 import '../protocol/protocol.dart';
-import 'backoff.dart';
 import 'endpoint_store.dart';
 import 'hub_commands.dart';
 import 'history_pages.dart';
+import 'hub_connection.dart';
 import 'hub_router.dart';
 import 'hub_socket.dart';
 import 'pending_registry.dart';
@@ -56,20 +56,8 @@ import 'token_store.dart';
 import 'notify_coalescer.dart';
 import 'session_state.dart';
 import 'hub_client_view.dart';
+export 'close_codes.dart';
 export 'hub_models.dart';
-
-part 'hub_client_connection.dart';
-
-/// The close code the hub sends for a capability violation. Retrying a bridge
-/// bug at capped backoff would reconnect forever, so this one never reconnects.
-const int closeCapability = 4003;
-
-/// The close code the hub sends when the credential attempt cap is reached.
-const int closeRateLimited = 4008;
-
-/// The fixed wait after a `4008` close. The hub delayed that close on purpose;
-/// retrying sooner would only add load.
-const Duration rateLimitedReconnectDelay = Duration(milliseconds: 30000);
 
 /// Consecutive `resync-required` answers a session may provoke before the
 /// client stops re-requesting and surfaces an error. A resync whose snapshot is
@@ -114,13 +102,6 @@ class HubClient implements HubClientView {
     },
   );
 
-  // Collaborators. `_connection` is a private collaborator in a part file
-  // that holds a back-reference to this client and touches its
-  // (library-private) fields directly; `_pending`/`_commands`/`_historyPages`
-  // are separate libraries handed their dependencies, and `_routerContext`
-  // hands the routing functions theirs. See the part file for the view it uses.
-  late final _HubConnection _connection = _HubConnection(this);
-
   /// In-flight command/listing bookkeeping and the replacement follow.
   late final PendingRegistry _pending = PendingRegistry(
     scheduler: _scheduler,
@@ -143,6 +124,26 @@ class HubClient implements HubClientView {
     notify: _notify,
     isConnected: _isConnected,
     trySend: _trySend,
+  );
+
+  /// Connection: dial (single and raced), adopt, authenticate, and the timers
+  /// that bound and recover an attempt. Declared after the collaborators it is
+  /// handed, and before the router context, whose seams forward to it.
+  late final HubConnection _connection = HubConnection(
+    socketFactory: _socketFactory,
+    scheduler: _scheduler,
+    tokenStore: _tokenStore,
+    rng: _rng,
+    store: _store,
+    pending: _pending,
+    historyPages: _historyPages,
+    onFrame: _onFrame,
+    setStatus: _setStatus,
+    setError: _setError,
+    clearConnectionError: _clearConnectionError,
+    flushNotify: _flushNotify,
+    closeControllers: _closeControllers,
+    subscribe: _subscribe,
   );
 
   /// The collaborators and seams the routing functions write through. Built
@@ -172,48 +173,6 @@ class HubClient implements HubClientView {
 
   final StreamController<LeafEvent> _leafEventsController =
       StreamController<LeafEvent>.broadcast(sync: true);
-
-  Map<String, Object?>? _credential;
-  HubSocket? _socket;
-  StreamSubscription<Object?>? _subscription;
-  HubTimer? _reconnectTimer;
-  HubTimer? _authTimer;
-
-  /// One dial deadline per in-flight dial. A dial removes its own entry when it
-  /// fires, is cancelled, or its socket arrives; the only blanket cancel is
-  /// [_cancelConnectDeadline], run solely at attempt start, stop and
-  /// disconnect, before a successor's timers exist.
-  final List<HubTimer> _connectTimers = <HubTimer>[];
-
-  /// The candidate addresses of the current attempt, in preference order. Set
-  /// by [startCandidates] (and [start], which delegates with one), retained
-  /// across reconnects so [_scheduleReconnect] re-races the whole list, and
-  /// cleared by [stop] and [disconnect].
-  List<HubEndpoint> _candidates = <HubEndpoint>[];
-
-  /// The candidate a race prefers, or null for first-answer. Only honoured
-  /// when it is in [_candidates]; otherwise it is treated as absent.
-  HubEndpoint? _prefer;
-
-  /// The non-preferred socket the in-flight race is holding while the preferred
-  /// candidate settles, and the generation that holds it. Kept in a field so a
-  /// superseding [startCandidates], [stop] or [disconnect] can close it: a
-  /// stalled preferred dial never runs the race's own `evaluate`, so otherwise
-  /// the hold would leak forever.
-  HubSocket? _heldCandidate;
-  int _heldSeq = 0;
-
-  /// Settles the in-flight race when its generation is superseded, so a caller
-  /// awaiting a race whose preferred dial is stalled does not hang. Null when no
-  /// race is in flight.
-  Completer<void>? _raceDecision;
-
-  int _attempt = 0;
-  bool _stopped = true;
-  /// Bumped per dial attempt, and again on every path that invalidates an
-  /// in-flight dial ([start], [stop], [disconnect]). A dial that resumes after
-  /// its generation moved must close its socket, never adopt it.
-  int _dialSeq = 0;
 
   /// The current snapshot.
   @override
@@ -521,41 +480,22 @@ class HubClient implements HubClientView {
   // Outbound + state plumbing
   // ---------------------------------------------------------------------------
 
-  /// Whether a live socket is adopted. Kept a method (not a closure over
-  /// `_socket`) so its body can move to `HubConnection` without the
-  /// collaborator's tear-off changing.
-  bool _isConnected() => _socket != null;
+  /// Whether a live socket is adopted. Kept a method (not a closure over the
+  /// connection's socket) so its body can forward to `HubConnection` without
+  /// the collaborator's tear-off changing.
+  bool _isConnected() => _connection.isConnected;
 
-  Map<String, Object?> _hello() => <String, Object?>{
-    'protocolVersion': protocolVersion,
-    'type': 'hello',
-    ...?_credential,
-  };
-
-  void _send(Map<String, Object?> message) {
-    final socket = _socket;
-    if (socket == null) return;
-    socket.send(encode(message));
-  }
-
-  /// Sends [message], converting the synchronous throw of a closing socket into
-  /// a recorded error rather than letting it escape into the UI. Returns the
-  /// thrown error, or null when the frame went out.
-  Object? _trySend(Map<String, Object?> message) {
-    try {
-      _send(message);
-      return null;
-    } catch (error) {
-      _setError('$error', connection: true);
-      return error;
-    }
-  }
+  /// Sends [message] through the connection, converting the synchronous throw
+  /// of a closing socket into a recorded error rather than letting it escape
+  /// into the UI. Returns the thrown error, or null when the frame went out.
+  Object? _trySend(Map<String, Object?> message) =>
+      _connection.trySend(message);
 
   /// Persists a `paired` token. The credential is set synchronously, before the
   /// write is awaited: later reconnects authenticate with the token, not the
   /// spent ticket, and a frame arriving during the await already sees it.
   Future<void> _persistToken(String token) async {
-    _credential = {'token': token};
+    _connection.credential = {'token': token};
     await _tokenStore.write(token);
   }
 
@@ -604,15 +544,22 @@ class HubClient implements HubClientView {
 
   /// Cancels the authentication watchdog of the current attempt. A seam so the
   /// router's tear-off survives the body moving to `HubConnection`.
-  void _cancelAuthWatchdog() => _connection._cancelAuthWatchdog();
+  void _cancelAuthWatchdog() => _connection.cancelAuthWatchdog();
 
   /// Restores the previous connection's subscription once authenticated. A
   /// seam so the router's tear-off survives the body moving to `HubConnection`.
-  void _restoreSubscription() => _connection._restoreSubscription();
+  void _restoreSubscription() => _connection.restoreSubscription();
 
   void _scheduleNotify() => _notify.schedule();
 
   /// Emits the current state immediately, cancelling any coalescing wait. Used
   /// where a terminal state must be observed before [changes] closes.
   void _flushNotify() => _notify.flush();
+
+  /// Closes [changes], [settles] and [leafEvents] unless already closed.
+  Future<void> _closeControllers() async {
+    if (!_changesController.isClosed) await _changesController.close();
+    if (!_settlesController.isClosed) await _settlesController.close();
+    if (!_leafEventsController.isClosed) await _leafEventsController.close();
+  }
 }
