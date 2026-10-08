@@ -1,0 +1,29 @@
+[Unit]
+Description=pi-handset hub
+Documentation=https://github.com/Tako88/pi-handset
+After=network.target
+
+[Service]
+Type=simple
+# `npm link` puts the bin in ~/.local/bin; PATH is pinned so the shebang's
+# `/usr/bin/env node` resolves without relying on the session's environment.
+ExecStart=%h/.local/bin/pi-handset serve
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# The bridge resolves the hub's runtime dir from XDG_RUNTIME_DIR. Left to the
+# session, a terminal-launched pi and this service could disagree about where
+# the discovery record lives; pinned, they never can.
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+# 1 = another supervisor holds the lock, or the port is taken; 2 = bad flags or
+# a fatal startup path. Both are conflicts, not crashes — restarting cannot fix
+# them, so the unit fails with the reason in the journal instead of hot-looping.
+Restart=on-failure
+RestartSec=2
+RestartPreventExitStatus=1 2
+# SIGTERM to the hub only; it group-kills its own app-started children and
+# releases the lock and record before systemd escalates.
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+[Install]
+WantedBy=default.target

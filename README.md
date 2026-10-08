@@ -90,6 +90,22 @@ are `cd pc && npm run serve` and `npm run pair`. Use the link rather than
 `node_modules`, so an installed `.ts` bin cannot run — the link points at the
 checkout instead. Tracked as issue #50.
 
+For daily use, run the hub as a systemd user service so it starts at login and
+outlives the terminal it was started from. It runs the same `serve` on the same
+port:
+
+```sh
+systemctl --user link "$PWD/pc/systemd/pi-handset.service"
+systemctl --user enable --now pi-handset.service
+
+journalctl --user -u pi-handset -f    # the hub's output
+systemctl --user stop pi-handset      # stop it
+```
+
+Don't run both: the hub takes an exclusive lock, and the second one exits with
+`another supervisor is already running`. `pi-handset serve` in a terminal stays
+useful during development, where you want its output in front of you.
+
 Then install the app. Every release carries a signed arm64 APK — Android 7.0 or
 later, and arm64 covers every phone from roughly 2017 on. Download it on the phone
 from the [latest release](https://github.com/Tako88/pi-handset/releases/latest), or
@@ -118,8 +134,10 @@ Notes for the first run:
 - The token is stored per phone, so pairing happens once. A *changed signing key* or an
   `adb uninstall` loses it; a plain `adb install -r` or a hub restart does not.
 - The QR encodes a `pihandset://pair` URI carrying the code and every address the hub can
-  advertise; with `--no-lan` it carries the code alone. `kill -USR1 <pid>` still prints a
-  code, but `pair` is the supported path.
+  advertise; with `--no-lan` it carries the code alone. `kill -USR1 <main pid>` still
+  prints a code — under the service the pid is
+  `systemctl --user show -p MainPID --value pi-handset` — but `pair` is the supported
+  path.
 - **If pairing just spins, suspect the firewall.** With `ufw` on its default `DROP`
   input policy the phone's connection to port 8787 over the LAN is silently dropped;
   Tailscale is not. Test it **from the phone** — the PC connecting to itself proves

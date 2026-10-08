@@ -210,11 +210,43 @@ yourself is unaffected: that bridge writes to the terminal pi runs in.
 ```sh
 cd pc
 npm link          # once; `pi-handset` then resolves to this checkout
-pi-handset serve  # the hub (port 8787 by default)
 pi-handset pair   # mint a pairing code, print a QR
 ```
 
 `npm run serve` and `npm run pair` do the same from `pc/` without linking.
+
+### As a systemd user service
+
+`pc/systemd/pi-handset.service` runs the hub in the background, started at login and
+outliving the terminal that installed it. Link it rather than copy it, so the unit
+stays the checked-in file:
+
+```sh
+systemctl --user link "$PWD/systemd/pi-handset.service"
+systemctl --user enable --now pi-handset.service
+journalctl --user -u pi-handset -f
+```
+
+Editing the unit takes effect after `systemctl --user daemon-reload` and
+`systemctl --user restart pi-handset`. To change a flag — `--no-lan`, `--port`, a
+different `--max-sessions` — edit `ExecStart` in the repo file and do those two
+commands.
+
+Three settings are load-bearing and should not be dropped:
+
+- **`Environment=XDG_RUNTIME_DIR=/run/user/%U`** — the bridge finds the hub through
+  the discovery record under that variable's directory. If the service inherited a
+  different one, the hub would publish where no terminal-launched `pi` looks.
+- **`RestartPreventExitStatus=1 2`** — `serve` exits 1 for a held lock, an existing
+  hub or a taken port, and 2 for bad flags. Those are conflicts, not crashes:
+  restarting cannot fix them, so the unit fails with the reason in the journal
+  instead of hot-looping.
+- **`ExecStart=%h/.local/bin/pi-handset`** — that is where `npm link` puts the bin.
+  `PATH` is pinned in the unit as well because the shebang resolves `node` through
+  `/usr/bin/env`, which does not see your shell's environment.
+
+A hub started by hand is not a second hub — it exits 1 on the lock, which is why the
+unit then reads `failed` rather than `active`. Stop the manual one first.
 
 **`npm link`, not `npm install -g`.** Node refuses to strip types from any file
 under a real `node_modules` (`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`), so a
