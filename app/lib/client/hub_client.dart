@@ -50,6 +50,7 @@ import 'hub_socket.dart';
 import 'scheduler.dart';
 import 'token_store.dart';
 import 'context_usage.dart';
+import 'notify_coalescer.dart';
 import 'session_state.dart';
 import 'transcript.dart';
 import 'hub_client_view.dart';
@@ -93,6 +94,16 @@ class HubClient implements HubClientView {
   /// The single writer of the state the client and its collaborators own.
   late final SessionStateStore _store = SessionStateStore();
 
+  /// Coalesces the state notifications the client emits on [changes].
+  late final NotifyCoalescer _notify = NotifyCoalescer(
+    scheduler: _scheduler,
+    interval: _frameInterval,
+    current: () => _store.state,
+    emit: (state) {
+      if (!_changesController.isClosed) _changesController.add(state);
+    },
+  );
+
   // Collaborators. Each holds a back-reference to this client and touches its
   // (library-private) fields directly. See the part files for the view each one
   // uses.
@@ -129,7 +140,6 @@ class HubClient implements HubClientView {
   Map<String, Object?>? _credential;
   HubSocket? _socket;
   StreamSubscription<Object?>? _subscription;
-  HubTimer? _notifyTimer;
   HubTimer? _reconnectTimer;
   HubTimer? _authTimer;
 
@@ -512,19 +522,9 @@ class HubClient implements HubClientView {
     _setStatus(HubConnectionStatus.connected);
   }
 
-  void _scheduleNotify() {
-    if (_notifyTimer != null) return;
-    _notifyTimer = _scheduler.schedule(_frameInterval, () {
-      _notifyTimer = null;
-      if (!_changesController.isClosed) _changesController.add(_store.state);
-    }, kind: HubTimerKind.notify);
-  }
+  void _scheduleNotify() => _notify.schedule();
 
   /// Emits the current state immediately, cancelling any coalescing wait. Used
   /// where a terminal state must be observed before [changes] closes.
-  void _flushNotify() {
-    _notifyTimer?.cancel();
-    _notifyTimer = null;
-    if (!_changesController.isClosed) _changesController.add(_store.state);
-  }
+  void _flushNotify() => _notify.flush();
 }
