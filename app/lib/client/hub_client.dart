@@ -24,10 +24,10 @@
 /// - Correlate `command` → `command-result` back to the issuing caller.
 /// - Re-request history on `resync-required`, and drop `session-gone` sessions.
 ///
-/// The behaviour is split across collaborators: the part files
-/// `hub_client_connection.dart` (dial, race, auth, timers) and
-/// `hub_client_routing.dart` (inbound frames) each hold a back-reference to
-/// [HubClient]; the separate libraries `pending_registry.dart`
+/// The behaviour is split across collaborators: the part file
+/// `hub_client_connection.dart` (dial, race, auth, timers) holds a
+/// back-reference to [HubClient]; `hub_router.dart` (inbound frames) receives
+/// a `RouterContext`; the separate libraries `pending_registry.dart`
 /// (pending-command/listing bookkeeping), `hub_commands.dart` (the request
 /// builders) and `history_pages.dart` (history paging) are handed their
 /// dependencies. The state they share is owned by `SessionStateStore`.
@@ -48,18 +48,16 @@ import 'backoff.dart';
 import 'endpoint_store.dart';
 import 'hub_commands.dart';
 import 'history_pages.dart';
+import 'hub_router.dart';
 import 'hub_socket.dart';
 import 'pending_registry.dart';
 import 'scheduler.dart';
 import 'token_store.dart';
-import 'context_usage.dart';
 import 'notify_coalescer.dart';
 import 'session_state.dart';
-import 'transcript.dart';
 import 'hub_client_view.dart';
 export 'hub_models.dart';
 
-part 'hub_client_routing.dart';
 part 'hub_client_connection.dart';
 
 /// The close code the hub sends for a capability violation. Retrying a bridge
@@ -72,6 +70,17 @@ const int closeRateLimited = 4008;
 /// The fixed wait after a `4008` close. The hub delayed that close on purpose;
 /// retrying sooner would only add load.
 const Duration rateLimitedReconnectDelay = Duration(milliseconds: 30000);
+
+/// Consecutive `resync-required` answers a session may provoke before the
+/// client stops re-requesting and surfaces an error. A resync whose snapshot is
+/// itself dropped would otherwise loop forever.
+const int _maxConsecutiveResyncs = 3;
+
+/// Consecutive `session-gone` answers a session may provoke before the client
+/// stops re-subscribing and surfaces an error. Under the cap a rejection re-arms
+/// the re-subscribe (which recovers the race the M10b fix targeted); past it the
+/// session is genuinely gone and retrying forever only churns the registry.
+const int _maxConsecutiveSessionGone = 3;
 
 class HubClient implements HubClientView {
   HubClient({
@@ -105,12 +114,11 @@ class HubClient implements HubClientView {
     },
   );
 
-  // Collaborators. `_router`/`_connection` are private collaborators in part
-  // files that hold a back-reference to this client and touch its
+  // Collaborators. `_connection` is a private collaborator in a part file
+  // that holds a back-reference to this client and touches its
   // (library-private) fields directly; `_pending`/`_commands`/`_historyPages`
-  // are separate libraries handed their dependencies. See the part files for
-  // the view each one uses.
-  late final _HubRouter _router = _HubRouter(this);
+  // are separate libraries handed their dependencies, and `_routerContext`
+  // hands the routing functions theirs. See the part file for the view it uses.
   late final _HubConnection _connection = _HubConnection(this);
 
   /// In-flight command/listing bookkeeping and the replacement follow.
@@ -135,6 +143,25 @@ class HubClient implements HubClientView {
     notify: _notify,
     isConnected: _isConnected,
     trySend: _trySend,
+  );
+
+  /// The collaborators and seams the routing functions write through. Built
+  /// last, after every collaborator it names exists.
+  late final RouterContext _routerContext = RouterContext(
+    store: _store,
+    pending: _pending,
+    historyPages: _historyPages,
+    notify: _notify,
+    subscribe: _subscribe,
+    markConnected: _markConnected,
+    setError: _setError,
+    cancelAuthWatchdog: _cancelAuthWatchdog,
+    restoreSubscription: _restoreSubscription,
+    persistToken: _persistToken,
+    emitSettled: _emitSettled,
+    emitLeaf: _emitLeaf,
+    resyncCap: HubClient.maxConsecutiveResyncs,
+    goneCap: HubClient.maxConsecutiveSessionGone,
   );
 
   final StreamController<HubClientState> _changesController =
@@ -524,6 +551,28 @@ class HubClient implements HubClientView {
     }
   }
 
+  /// Persists a `paired` token. The credential is set synchronously, before the
+  /// write is awaited: later reconnects authenticate with the token, not the
+  /// spent ticket, and a frame arriving during the await already sees it.
+  Future<void> _persistToken(String token) async {
+    _credential = {'token': token};
+    await _tokenStore.write(token);
+  }
+
+  /// Emits a settle event for notification, unless [settles] has closed.
+  void _emitSettled(AgentSettledEvent event) {
+    if (!_settlesController.isClosed) _settlesController.add(event);
+  }
+
+  /// Emits a leaf move, unless [leafEvents] has closed.
+  void _emitLeaf(LeafEvent event) {
+    if (!_leafEventsController.isClosed) _leafEventsController.add(event);
+  }
+
+  /// Routes one inbound frame. A method (not a direct call) so the connection
+  /// collaborator's tear-off survives the router moving out of this library.
+  void _onFrame(Object? frame) => handleInboundFrame(frame, _routerContext);
+
   void _setStatus(HubConnectionStatus status) {
     if (_store.state.status == status) return;
     _store.update((state) => state.copyWith(status: status));
@@ -552,6 +601,14 @@ class HubClient implements HubClientView {
     _clearConnectionError();
     _setStatus(HubConnectionStatus.connected);
   }
+
+  /// Cancels the authentication watchdog of the current attempt. A seam so the
+  /// router's tear-off survives the body moving to `HubConnection`.
+  void _cancelAuthWatchdog() => _connection._cancelAuthWatchdog();
+
+  /// Restores the previous connection's subscription once authenticated. A
+  /// seam so the router's tear-off survives the body moving to `HubConnection`.
+  void _restoreSubscription() => _connection._restoreSubscription();
 
   void _scheduleNotify() => _notify.schedule();
 

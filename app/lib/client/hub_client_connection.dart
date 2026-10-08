@@ -27,7 +27,7 @@ const Duration _candidateConnectTimeout = Duration(seconds: 2);
 /// _settlesController, _leafEventsController; writes _c._store, _socket,
 /// _attempt, _credential, _candidates, _prefer; calls _setStatus, _setError,
 /// _clearConnectionError, _flushNotify, _subscribe, _pending.*,
-/// _historyPages.*, _router.*.
+/// _historyPages.*, _onFrame.
 class _HubConnection {
   _HubConnection(this._c);
 
@@ -360,7 +360,7 @@ class _HubConnection {
     _c._send(_c._hello());
     _armAuthWatchdog();
     _c._subscription = socket.messages.listen(
-      _c._router._onFrame,
+      _c._onFrame,
       onError: (Object _) {},
       onDone: () => _onSocketDone(socket),
     );
