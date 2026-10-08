@@ -29,8 +29,8 @@
 /// `hub_client_connection.dart` (dial, race, auth, timers),
 /// `hub_client_routing.dart` (inbound frames), `hub_client_requests.dart`
 /// (commands and results), and `hub_client_history.dart` (history paging).
-/// Every mutable field stays on [HubClient]; the parts read and write them
-/// directly.
+/// The state they share is owned by `SessionStateStore`; the parts read and
+/// write it through the client's store.
 ///
 /// # How a widget consumes this
 ///
@@ -50,6 +50,7 @@ import 'hub_socket.dart';
 import 'scheduler.dart';
 import 'token_store.dart';
 import 'context_usage.dart';
+import 'session_state.dart';
 import 'transcript.dart';
 import 'hub_client_view.dart';
 export 'hub_models.dart';
@@ -89,9 +90,12 @@ class HubClient implements HubClientView {
   final double Function() _rng;
   final Duration _frameInterval;
 
+  /// The single writer of the state the client and its collaborators own.
+  late final SessionStateStore _store = SessionStateStore();
+
   // Collaborators. Each holds a back-reference to this client and touches its
-  // (library-private) fields directly; every mutable field stays here. See the
-  // part files for the view each one uses.
+  // (library-private) fields directly. See the part files for the view each one
+  // uses.
   late final _HubHistory _history = _HubHistory(this);
   late final _HubRequests _requests = _HubRequests(this);
   late final _HubRouter _router = _HubRouter(this);
@@ -106,12 +110,7 @@ class HubClient implements HubClientView {
   final StreamController<LeafEvent> _leafEventsController =
       StreamController<LeafEvent>.broadcast(sync: true);
 
-  HubClientState _state = const HubClientState();
   final Map<String, _PendingCommand> _pendingCommands = {};
-
-  /// One incremental derivation per live session, put and removed in lockstep
-  /// with `_state.transcripts`. See `_withEntries` for the staleness contract.
-  final Map<String, TranscriptDerivation> _derivations = {};
 
   /// The cursor of the one in-flight older page per session, keyed by session.
   /// Set by [loadOlder] and cleared by an applied snapshot, the page timeout,
@@ -126,20 +125,6 @@ class HubClient implements HubClientView {
   /// [_pendingCommands] because the two share the wire `id` field: a
   /// `command-result` for a listing id must not complete a command.
   final Map<String, _PendingListing> _pendingListings = {};
-
-  /// Consecutive resync answers per session, reset by a `snapshot` or a fresh
-  /// `subscribe`.
-  final Map<String, int> _resyncCounts = {};
-
-  /// Consecutive `session-gone` answers per session, reset by a `snapshot`, a
-  /// user-initiated `subscribe`, or `disconnect`.
-  final Map<String, int> _sessionGoneCounts = {};
-
-  /// Sessions whose current subscription was restored automatically after a
-  /// reconnect, rather than chosen by the user. A `session-gone` answering one
-  /// of these is the re-subscribe racing the agent's re-registration, not a
-  /// deletion, so its transcript is kept until the give-up cap.
-  final Set<String> _restoredSessions = {};
 
   Map<String, Object?>? _credential;
   HubSocket? _socket;
@@ -185,20 +170,6 @@ class HubClient implements HubClientView {
   int _dialSeq = 0;
   int _commandCounter = 0;
   int _listingCounter = 0;
-  bool _resubscribed = false;
-
-  /// Whether [HubClientState.lastError] came from the connection path (dial,
-  /// auth, send) rather than a session/operation. A later authenticated
-  /// connection clears the former; it never clears the latter, because a
-  /// reconnect does not fix a session that is gone or a token that would not
-  /// persist.
-  bool _lastErrorFromConnection = false;
-
-  /// The session the user last asked to view. Unlike [HubClientState.activeSessionId]
-  /// it survives a `session-gone`, so a re-subscribe that raced the agent's
-  /// re-registration after a hub restart can be retried when the session
-  /// reappears instead of leaving the client silently unsubscribed.
-  String? _desiredSessionId;
 
   /// The old session id a `/new` or `/fork` is waiting to be replaced, or null
   /// when no replacement is in flight. While set, `_onSessions` adopts a
@@ -209,13 +180,13 @@ class HubClient implements HubClientView {
 
   /// The current snapshot.
   @override
-  HubClientState get state => _state;
+  HubClientState get state => _store.state;
 
   /// Whether [state]'s [HubClientState.lastError] came from the connection path
   /// (dial, auth, send) rather than a session/operation. A new deliberate dial
   /// clears a connection-scoped error and leaves a session notice alone.
   @override
-  bool get lastErrorFromConnection => _lastErrorFromConnection;
+  bool get lastErrorFromConnection => _store.lastErrorFromConnection;
 
   /// Coalesced notifications: at most one per scheduled frame, regardless of how
   /// many deltas arrived.
@@ -244,7 +215,7 @@ class HubClient implements HubClientView {
   static const int maxConsecutiveSessionGone = _maxConsecutiveSessionGone;
 
   SessionTranscript? transcript(String sessionId) =>
-      _state.transcripts[sessionId];
+      _store.transcript(sessionId);
 
   /// Dials the hub. Uses [ticket] when given, otherwise the stored token.
   ///
@@ -306,15 +277,15 @@ class HubClient implements HubClientView {
     }
     // A user picking a session is a fresh start: a gone streak from an earlier
     // automatic retry must not count against it.
-    _sessionGoneCounts.remove(sessionId);
+    _store.removeGoneCount(sessionId);
     _subscribe(sessionId);
   }
 
   /// The shared body of [subscribe]. The automatic restore after a
-  /// `session-gone` reuses it *without* clearing [_sessionGoneCounts], so
+  /// `session-gone` reuses it *without* clearing the gone counter, so
   /// consecutive rejections accumulate to the give-up cap.
   void _subscribe(String sessionId, {bool restoring = false}) {
-    final previous = _state.activeSessionId;
+    final previous = _store.state.activeSessionId;
     if (previous != null && previous != sessionId) {
       // The hub only ever adds subscribers, and relayed events carry no
       // sessionId, so leaving the old subscription in place would attribute its
@@ -326,15 +297,11 @@ class HubClient implements HubClientView {
         'sessionId': previous,
       });
     }
-    _resyncCounts.remove(sessionId);
-    _desiredSessionId = sessionId;
-    if (restoring) {
-      _restoredSessions.add(sessionId);
-    } else {
-      _restoredSessions.remove(sessionId);
-    }
-    _ensureTranscript(sessionId);
-    _state = _state.copyWith(activeSessionId: sessionId);
+    _store.removeResyncCount(sessionId);
+    _store.desiredSessionId = sessionId;
+    _store.setRestored(sessionId, restoring);
+    _store.ensureTranscript(sessionId);
+    _store.update((state) => state.copyWith(activeSessionId: sessionId));
     _requests._trySend({
       'protocolVersion': protocolVersion,
       'type': 'subscribe',
@@ -365,9 +332,9 @@ class HubClient implements HubClientView {
       'type': 'unsubscribe',
       'sessionId': sessionId,
     });
-    if (_desiredSessionId == sessionId) _desiredSessionId = null;
-    if (_state.activeSessionId == sessionId) {
-      _state = _state.copyWith(activeSessionId: null);
+    if (_store.desiredSessionId == sessionId) _store.desiredSessionId = null;
+    if (_store.state.activeSessionId == sessionId) {
+      _store.update((state) => state.copyWith(activeSessionId: null));
       _scheduleNotify();
     }
   }
@@ -516,57 +483,9 @@ class HubClient implements HubClientView {
   // Outbound + state plumbing
   // ---------------------------------------------------------------------------
 
-  void _ensureTranscript(String sessionId) {
-    if (_state.transcripts.containsKey(sessionId)) return;
-    _putTranscript(sessionId, const SessionTranscript());
-  }
-
-  /// Extends [transcript]'s session by [entry] through that session's
-  /// derivation instead of re-deriving the whole list. Returns a transcript
-  /// holding *copies* of the derivation's lists, so a retained old transcript
-  /// can never observe a later append. `transcript.entries` is consulted only
-  /// when the derivation is missing or does not match the incoming baseline.
-  SessionTranscript _withEntries(
-    String sessionId,
-    SessionTranscript transcript,
-    Object? entry,
-  ) {
-    var derivation = _derivations[sessionId];
-    if (derivation == null ||
-        !_matchesDerivation(derivation, transcript.entries)) {
-      derivation = TranscriptDerivation()..rebuild(transcript.entries);
-      _derivations[sessionId] = derivation;
-    }
-    derivation.append(entry);
-    return transcript.copyWith(
-      entries: List<Object?>.of(derivation.entries),
-      blocks: List<TranscriptBlock>.of(derivation.blocks),
-    );
-  }
-
-  /// Cheap staleness net. Under design D the transcript always holds a fresh
-  /// copy, so `identical(entries)` is useless; the copy preserves element
-  /// *objects*, so tail identity plus length detects a replaced baseline. The
-  /// primary mechanism is explicit invalidation at every replacement point
-  /// (snapshot, the `session-gone` drop branch, `disconnect`, `stop`); this
-  /// catches a path that did not. It cannot see a same-length, same-tail
-  /// interior change — no current path produces one, and any future one must
-  /// invalidate explicitly.
-  bool _matchesDerivation(TranscriptDerivation d, List<Object?> entries) {
-    if (d.entries.length != entries.length) return false;
-    if (entries.isEmpty) return true;
-    return identical(d.entries.last, entries.last);
-  }
-
-  void _putTranscript(String sessionId, SessionTranscript transcript) {
-    _state = _state.copyWith(
-      transcripts: {..._state.transcripts, sessionId: transcript},
-    );
-  }
-
   void _setStatus(HubConnectionStatus status) {
-    if (_state.status == status) return;
-    _state = _state.copyWith(status: status);
+    if (_store.state.status == status) return;
+    _store.update((state) => state.copyWith(status: status));
     _scheduleNotify();
   }
 
@@ -574,8 +493,7 @@ class HubClient implements HubClientView {
   /// supersedes it. Dial, auth and send failures are connection-scoped; session
   /// and operation notices are not.
   void _setError(String message, {required bool connection}) {
-    _lastErrorFromConnection = connection;
-    _state = _state.copyWith(lastError: message);
+    _store.setError(message, connection: connection);
     _scheduleNotify();
   }
 
@@ -584,10 +502,7 @@ class HubClient implements HubClientView {
   /// not persist. Called when a new deliberate attempt starts, so a stale
   /// failure cannot outlive the attempt that recorded it.
   void _clearConnectionError() {
-    if (!_lastErrorFromConnection) return;
-    _lastErrorFromConnection = false;
-    _state = _state.copyWith(lastError: null);
-    _scheduleNotify();
+    if (_store.clearConnectionError()) _scheduleNotify();
   }
 
   /// Called once a connection is authenticated. A stale connection error is
@@ -601,7 +516,7 @@ class HubClient implements HubClientView {
     if (_notifyTimer != null) return;
     _notifyTimer = _scheduler.schedule(_frameInterval, () {
       _notifyTimer = null;
-      if (!_changesController.isClosed) _changesController.add(_state);
+      if (!_changesController.isClosed) _changesController.add(_store.state);
     }, kind: HubTimerKind.notify);
   }
 
@@ -610,6 +525,6 @@ class HubClient implements HubClientView {
   void _flushNotify() {
     _notifyTimer?.cancel();
     _notifyTimer = null;
-    if (!_changesController.isClosed) _changesController.add(_state);
+    if (!_changesController.isClosed) _changesController.add(_store.state);
   }
 }

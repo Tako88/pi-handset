@@ -20,15 +20,14 @@ const Duration _candidateConnectTimeout = Duration(seconds: 2);
 /// Connection: dial (single and raced), adopt, authenticate, and the timers
 /// that bound and recover an attempt.
 ///
-/// View it uses on [HubClient]: reads _state, _derivations, _socket,
-/// _subscription, _candidates, _prefer, _credential, _scheduler, _tokenStore,
-/// _socketFactory, _rng, _dialSeq, _stopped, _connectTimers, _reconnectTimer,
-/// _authTimer, _heldCandidate, _heldSeq, _raceDecision, _changesController,
-/// _settlesController, _leafEventsController; writes _state, _socket,
-/// _attempt, _resubscribed, _credential, _candidates, _prefer, _desiredSessionId,
-/// _resyncCounts, _sessionGoneCounts, _restoredSessions, _derivations,
-/// _lastErrorFromConnection; calls _setStatus, _setError, _clearConnectionError,
-/// _flushNotify, _subscribe, _requests.*, _history.*, _router.*.
+/// View it uses on [HubClient]: reads _c._store, _socket, _subscription,
+/// _candidates, _prefer, _credential, _scheduler, _tokenStore, _socketFactory,
+/// _rng, _dialSeq, _stopped, _connectTimers, _reconnectTimer, _authTimer,
+/// _heldCandidate, _heldSeq, _raceDecision, _changesController,
+/// _settlesController, _leafEventsController; writes _c._store, _socket,
+/// _attempt, _credential, _candidates, _prefer; calls _setStatus, _setError,
+/// _clearConnectionError, _flushNotify, _subscribe, _requests.*, _history.*,
+/// _router.*.
 class _HubConnection {
   _HubConnection(this._c);
 
@@ -83,9 +82,9 @@ class _HubConnection {
     _c._candidates = <HubEndpoint>[];
     _c._prefer = null;
     _c._requests._clearReplacementFollow();
-    // `stop()` closes `changes` for good and never resets `_c._state`, so nothing
+    // `stop()` closes `changes` for good and never resets the state, so nothing
     // else would ever drop the derivations; they die here.
-    _c._derivations.clear();
+    _c._store.clearDerivations();
     _c._history._clearPendingHistoryPages();
     // Every in-flight command fails rather than hanging the caller forever.
     _c._requests._failPending('client stopped');
@@ -115,16 +114,11 @@ class _HubConnection {
     await _dropConnection(awaitSubscription: false, reason: 'disconnected');
     _c._credential = null;
     _c._requests._clearReplacementFollow();
-    _c._resubscribed = false;
-    _c._desiredSessionId = null;
     _c._attempt = 0;
-    _c._resyncCounts.clear();
-    _c._sessionGoneCounts.clear();
-    _c._restoredSessions.clear();
-    _c._derivations.clear();
+    // Clears `historyLoading` off the transcripts, so it must run before the
+    // store reset below wipes them.
     _c._history._clearPendingHistoryPages();
-    _c._lastErrorFromConnection = false;
-    _c._state = const HubClientState();
+    _c._store.resetForDisconnect();
     _c._flushNotify();
   }
 
@@ -168,9 +162,10 @@ class _HubConnection {
   /// (past the give-up cap it never runs again). It leaves the gone streak
   /// intact, so an automatic retry cannot reset its own cap.
   void _restoreSubscription() {
-    if (_c._resubscribed) return;
-    _c._resubscribed = true;
-    final sessionId = _c._desiredSessionId ?? _c._state.activeSessionId;
+    if (_c._store.resubscribed) return;
+    _c._store.resubscribed = true;
+    final sessionId =
+        _c._store.desiredSessionId ?? _c._store.state.activeSessionId;
     if (sessionId == null) return;
     // `_c._subscribe` re-subscribes and re-requests history. Requesting it again
     // here would send a duplicate frame.
@@ -360,7 +355,7 @@ class _HubConnection {
   void _adoptSocket(HubSocket socket) {
     _c._socket = socket;
     _c._attempt = 0;
-    _c._resubscribed = false;
+    _c._store.resubscribed = false;
     _c._setStatus(HubConnectionStatus.authenticating);
     _c._requests._send(_c._requests._hello());
     _armAuthWatchdog();
@@ -436,7 +431,7 @@ class _HubConnection {
     if (_c._socket != socket) return;
     _c._socket = null;
     final wasAuthenticating =
-        _c._state.status == HubConnectionStatus.authenticating;
+        _c._store.state.status == HubConnectionStatus.authenticating;
     _cancelAuthWatchdog();
     // Not awaited: the socket is already done, and awaiting a subscription
     // cancel leaves the close path (and the error it records) pending.
@@ -466,7 +461,7 @@ class _HubConnection {
       _scheduleReconnect(fixed: rateLimitedReconnectDelay);
       return;
     }
-    if (wasAuthenticating && _c._state.lastError == null) {
+    if (wasAuthenticating && _c._store.state.lastError == null) {
       // A rejected ticket closes without a `paired` and cancels the watchdog, so
       // unless an error is recorded here the pairing form spins forever.
       _c._setError(

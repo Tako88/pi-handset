@@ -40,11 +40,11 @@ class _PendingListing {
 /// pending/result correlation, the replacement follow, and the outbound
 /// plumbing (hello/send/trySend).
 ///
-/// View it uses on [HubClient]: reads _c._state.capabilities,
-/// _c._state.transcripts, _c._socket, _c._credential, _c._scheduler; writes
-/// _c._state, _c._pendingCommands, _c._pendingListings, _c._commandCounter,
-/// _c._listingCounter, _c._replacementTimer, _c._awaitingReplacementFrom,
-/// _c._resubscribed; calls _c._setError, _c._scheduleNotify.
+/// View it uses on [HubClient]: reads _c._store.state, _c._socket,
+/// _c._credential, _c._scheduler; writes _c._store, _c._pendingCommands,
+/// _c._pendingListings, _c._commandCounter, _c._listingCounter,
+/// _c._replacementTimer, _c._awaitingReplacementFrom; calls _c._setError,
+/// _c._scheduleNotify.
 class _HubRequests {
   _HubRequests(this._c);
 
@@ -148,16 +148,18 @@ class _HubRequests {
   Future<void> loadCommands(String sessionId) async {
     final result = await listCommands(sessionId);
     if (!result.ok || result.commands == null) return;
-    if (!_c._state.transcripts.containsKey(sessionId)) return;
-    _c._state = _c._state.copyWith(
-      commands: {..._c._state.commands, sessionId: result.commands!},
+    if (!_c._store.state.transcripts.containsKey(sessionId)) return;
+    _c._store.update(
+      (state) => state.copyWith(
+        commands: {...state.commands, sessionId: result.commands!},
+      ),
     );
     _c._scheduleNotify();
   }
 
   Future<CommandResult> startSession({String? id, String? cwd, bool? trust}) {
     if ((cwd != null || trust != null) &&
-        !_c._state.capabilities.contains(capabilityProjectSession)) {
+        !_c._store.state.capabilities.contains(capabilityProjectSession)) {
       return Future.value(
         const CommandResult(
           ok: false,
@@ -178,7 +180,7 @@ class _HubRequests {
   }
 
   Future<DirListingResult> listDirs({String? path, String? id}) {
-    if (!_c._state.capabilities.contains(capabilityListDirs)) {
+    if (!_c._store.state.capabilities.contains(capabilityListDirs)) {
       return Future.value(
         const DirListingResult(ok: false, error: 'this hub cannot browse folders'),
       );
@@ -287,10 +289,11 @@ class _HubRequests {
       final old = _c._awaitingReplacementFrom;
       if (old == null) return;
       _clearReplacementFollow();
-      // Re-enable the normal restore path *without* moving `_desiredSessionId`:
-      // the next `sessions` push re-subscribes the old id, the hub answers
-      // `session-gone`, and the existing cap machinery takes it from there.
-      _c._resubscribed = false;
+      // Re-enable the normal restore path *without* moving the desired
+      // session: the next `sessions` push re-subscribes the old id, the hub
+      // answers `session-gone`, and the existing cap machinery takes it from
+      // there.
+      _c._store.resubscribed = false;
       _failPending('the session did not come back', sessionId: old);
     }, kind: HubTimerKind.replacement);
   }

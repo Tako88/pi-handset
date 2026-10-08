@@ -10,10 +10,9 @@ const Duration _historyPageTimeout = Duration(seconds: 30);
 /// request, and the bounded wait that re-enables the control when the hub never
 /// answers.
 ///
-/// View it uses on [HubClient]: reads `_state.transcripts`, `_socket`; writes
-/// `_state`, `_pendingHistoryCursor`, `_historyPageTimers`; calls
-/// `_putTranscript`, `_scheduleNotify`, `_requests._trySend`; uses
-/// `_scheduler`.
+/// View it uses on [HubClient]: reads `_c._store`, `_socket`; writes
+/// `_c._store`, `_pendingHistoryCursor`, `_historyPageTimers`; calls
+/// `_scheduleNotify`, `_requests._trySend`; uses `_scheduler`.
 class _HubHistory {
   _HubHistory(this._c);
 
@@ -50,7 +49,7 @@ class _HubHistory {
   /// bounded by a page timeout that re-enables the control instead of hanging
   /// it forever.
   void loadOlder(String sessionId) {
-    final transcript = _c._state.transcripts[sessionId];
+    final transcript = _c._store.transcript(sessionId);
     if (transcript == null) return;
     final cursor = transcript.olderCursor;
     if (cursor == null) return;
@@ -58,12 +57,12 @@ class _HubHistory {
     if (_c._socket == null) return;
 
     _c._pendingHistoryCursor[sessionId] = cursor;
-    _c._putTranscript(sessionId, transcript.copyWith(historyLoading: true));
+    _c._store.putTranscript(sessionId, transcript.copyWith(historyLoading: true));
     _c._scheduleNotify();
     final error = requestHistory(sessionId, cursor: cursor);
     if (error != null) {
       _c._pendingHistoryCursor.remove(sessionId);
-      _c._putTranscript(sessionId, transcript.copyWith(historyLoading: false));
+      _c._store.putTranscript(sessionId, transcript.copyWith(historyLoading: false));
       _c._scheduleNotify();
       return;
     }
@@ -73,9 +72,9 @@ class _HubHistory {
       () {
         _c._historyPageTimers.remove(sessionId);
         if (_c._pendingHistoryCursor.remove(sessionId) == null) return;
-        final current = _c._state.transcripts[sessionId];
+        final current = _c._store.transcript(sessionId);
         if (current == null) return;
-        _c._putTranscript(sessionId, current.copyWith(historyLoading: false));
+        _c._store.putTranscript(sessionId, current.copyWith(historyLoading: false));
         _c._scheduleNotify();
       },
       kind: HubTimerKind.historyPage,
@@ -99,9 +98,9 @@ class _HubHistory {
   /// asked, so a replaced connection must never leave one of these behind.
   void _clearPendingHistoryPages() {
     for (final sessionId in _c._pendingHistoryCursor.keys) {
-      final transcript = _c._state.transcripts[sessionId];
+      final transcript = _c._store.transcript(sessionId);
       if (transcript != null && transcript.historyLoading) {
-        _c._putTranscript(sessionId, transcript.copyWith(historyLoading: false));
+        _c._store.putTranscript(sessionId, transcript.copyWith(historyLoading: false));
       }
     }
     _c._pendingHistoryCursor.clear();

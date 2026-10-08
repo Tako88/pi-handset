@@ -14,16 +14,13 @@ const int _maxConsecutiveSessionGone = 3;
 /// Inbound frame routing: decode one frame, dispatch by type, and turn each
 /// into state, transcripts, streams and notices.
 ///
-/// View it uses on [HubClient]: reads _state, _derivations, _pendingCommands,
-/// _pendingListings, _pendingHistoryCursor, _resyncCounts, _sessionGoneCounts,
-/// _restoredSessions, _desiredSessionId, _awaitingReplacementFrom,
-/// _resubscribed, _settlesController, _leafEventsController, _tokenStore,
-/// _credential; writes _state, _derivations, _resyncCounts, _sessionGoneCounts,
-/// _restoredSessions, _desiredSessionId, _resubscribed, _awaitingReplacementFrom,
-/// _pendingHistoryCursor; calls _putTranscript, _withEntries, _markConnected,
-/// _setError, _scheduleNotify, _c._connection._cancelAuthWatchdog,
-/// _c._connection._restoreSubscription, _subscribe, requestHistory,
-/// _requests.*, _history.*.
+/// View it uses on [HubClient]: reads _c._store, _pendingCommands,
+/// _pendingListings, _pendingHistoryCursor, _awaitingReplacementFrom,
+/// _settlesController, _leafEventsController, _tokenStore, _credential;
+/// writes _c._store, _awaitingReplacementFrom, _pendingHistoryCursor; calls
+/// _markConnected, _setError, _scheduleNotify,
+/// _c._connection._cancelAuthWatchdog, _c._connection._restoreSubscription,
+/// _subscribe, requestHistory, _requests.*, _history.*.
 class _HubRouter {
   _HubRouter(this._c);
 
@@ -78,11 +75,15 @@ class _HubRouter {
   /// connection error — a hub failure does not mean this connection is broken.
   void _onSpawnFailed(Map<String, Object?> message) {
     final id = message['id']! as String;
-    if (!_c._state.pendingSessions.any((pending) => pending.id == id)) return;
-    _c._state = _c._state.copyWith(
-      pendingSessions: _c._state.pendingSessions
-          .where((pending) => pending.id != id)
-          .toList(),
+    if (!_c._store.state.pendingSessions.any((pending) => pending.id == id)) {
+      return;
+    }
+    _c._store.update(
+      (state) => state.copyWith(
+        pendingSessions: state.pendingSessions
+            .where((pending) => pending.id != id)
+            .toList(),
+      ),
     );
     _c._setError(message['error']! as String, connection: false);
   }
@@ -145,10 +146,12 @@ class _HubRouter {
     final capabilities = rawCapabilities is List
         ? rawCapabilities.whereType<String>().toSet()
         : <String>{};
-    _c._state = _c._state.copyWith(
-      sessions: summaries,
-      capabilities: capabilities,
-      pendingSessions: pendingSessions,
+    _c._store.update(
+      (state) => state.copyWith(
+        sessions: summaries,
+        capabilities: capabilities,
+        pendingSessions: pendingSessions,
+      ),
     );
     // The hub pushes `sessions` on authentication; its arrival is how a
     // token-authenticated connection is confirmed (there is no `paired`).
@@ -169,7 +172,7 @@ class _HubRouter {
       if (successor != null) {
         _c._requests._settleReplacementPendings(awaited);
         _c._requests._clearReplacementFollow();
-        _c._resubscribed = true;
+        _c._store.resubscribed = true;
         // Adoption puts/removes no predecessor transcript, so it must not touch
         // the predecessor derivation: the predecessor's own `session-gone`
         // classifies it (drop or keep) and the derivation follows its
@@ -188,10 +191,10 @@ class _HubRouter {
   }
 
   void _onEvent(Map<String, Object?> payload) {
-    final sessionId = _c._state.activeSessionId;
+    final sessionId = _c._store.state.activeSessionId;
     if (sessionId == null) return;
     final transcript =
-        _c._state.transcripts[sessionId] ?? const SessionTranscript();
+        _c._store.transcript(sessionId) ?? const SessionTranscript();
     switch (payload['kind']) {
       case 'stream':
         final seq = (payload['seq']! as num).toInt();
@@ -201,7 +204,7 @@ class _HubRouter {
         if (text is String && isThinking) {
           // Reasoning streams like the reply but into its own buffer, so the
           // two can never be confused on the wire or on screen.
-          _c._putTranscript(
+          _c._store.putTranscript(
             sessionId,
             transcript.copyWith(
               streamingThinking: transcript.streamingThinking + text,
@@ -210,7 +213,7 @@ class _HubRouter {
             ),
           );
         } else if (text is String) {
-          _c._putTranscript(
+          _c._store.putTranscript(
             sessionId,
             transcript.copyWith(
               streamingText: transcript.streamingText + text,
@@ -225,7 +228,7 @@ class _HubRouter {
           // A content-free phase frame (no `text`): a liveness signal, not a
           // delta. It must not reset the in-flight buffer or crash on the
           // missing text.
-          _c._putTranscript(
+          _c._store.putTranscript(
             sessionId,
             transcript.copyWith(
               thinking: payload['phase'] == 'thinking'
@@ -243,7 +246,7 @@ class _HubRouter {
         final tokens = payload['tokens'];
         final rawModel = payload['model'];
         final usableWindow = window is num && window > 0;
-        _c._putTranscript(
+        _c._store.putTranscript(
           sessionId,
           transcript.copyWith(
             contextUsage: usableWindow
@@ -269,7 +272,7 @@ class _HubRouter {
         // buffer too keeps a settle-without-message from hiding the text and
         // leaving the next stream appending to a stale buffer.
         final running = agentState == 'running';
-        _c._putTranscript(
+        _c._store.putTranscript(
           sessionId,
           transcript.copyWith(
             agentState: agentState,
@@ -290,9 +293,9 @@ class _HubRouter {
         final isTruncated = message is Map && message['truncated'] == true;
         final fromAssistant =
             message is Map && (message['role'] == 'assistant' || isTruncated);
-        _c._putTranscript(
+        _c._store.putTranscript(
           sessionId,
-          _c._withEntries(sessionId, transcript, message).copyWith(
+          _c._store.withEntries(sessionId, transcript, message).copyWith(
             streamingText: fromAssistant ? '' : transcript.streamingText,
             // Cleared in the SAME update that commits the message: the commit
             // carries the reasoning block itself, so a later clear would render
@@ -307,7 +310,7 @@ class _HubRouter {
         // it carries no message, and appending it would leave a row that renders
         // nothing and then outlives the compaction it describes.
         if (payload['event'] == 'compacting') {
-          _c._putTranscript(
+          _c._store.putTranscript(
             sessionId,
             transcript.copyWith(compacting: payload['active'] == true),
           );
@@ -317,9 +320,9 @@ class _HubRouter {
         // status ends the turn without a settle, so clear the thinking phase
         // here or `Thinking…` would stick forever.
         final isErrorStatus = payload['event'] == 'error';
-        _c._putTranscript(
+        _c._store.putTranscript(
           sessionId,
-          _c._withEntries(sessionId, transcript, payload).copyWith(
+          _c._store.withEntries(sessionId, transcript, payload).copyWith(
             thinking: isErrorStatus ? false : transcript.thinking,
             streamingThinking: isErrorStatus ? '' : transcript.streamingThinking,
           ),
@@ -328,9 +331,9 @@ class _HubRouter {
         // A bridge-normalized tool annotation: retained raw in `entries`, where
         // the transcript model pairs its view to the call/result row. Appended
         // in arrival order, like any other entry.
-        _c._putTranscript(
+        _c._store.putTranscript(
           sessionId,
-          _c._withEntries(sessionId, transcript, payload),
+          _c._store.withEntries(sessionId, transcript, payload),
         );
       case 'leaf':
         // The bridge moved the leaf (or pi did, on the PC). A signal, not a row:
@@ -348,9 +351,9 @@ class _HubRouter {
       default:
         // An unknown payload is retained rather than dropped, so a future
         // renderer can consume it; nothing in this build does.
-        _c._putTranscript(
+        _c._store.putTranscript(
           sessionId,
-          _c._withEntries(sessionId, transcript, payload),
+          _c._store.withEntries(sessionId, transcript, payload),
         );
     }
     _c._scheduleNotify();
@@ -365,7 +368,7 @@ class _HubRouter {
     final olderCursor = message['olderCursor'] as String?;
 
     if (older) {
-      final existing = _c._state.transcripts[sessionId];
+      final existing = _c._store.transcript(sessionId);
       // Apply only the page this session actually asked for. Anything else — an
       // absent token, a stale one, or no transcript — is discarded touching
       // nothing, so a stale page cannot reset the resync livelock streak (R5)
@@ -377,15 +380,15 @@ class _HubRouter {
       }
       _c._pendingHistoryCursor.remove(sessionId);
       _c._history._cancelHistoryPageTimeout(sessionId);
-      _c._resyncCounts.remove(sessionId);
-      _c._sessionGoneCounts.remove(sessionId);
+      _c._store.removeResyncCount(sessionId);
+      _c._store.removeGoneCount(sessionId);
       final entries = (message['entries']! as List).cast<Object?>();
       // Prepend through the session's own derivation. `copyWith` carries the
       // in-flight stream and every ambient field across (design D + fact 13);
       // the lists are copied so a retained snapshot is a true value.
-      final derivation = _c._derivations[sessionId]!;
+      final derivation = _c._store.derivation(sessionId)!;
       derivation.rebuild([...entries, ...existing.entries]);
-      _c._putTranscript(
+      _c._store.putTranscript(
         sessionId,
         existing.copyWith(
           entries: List<Object?>.of(derivation.entries),
@@ -406,12 +409,12 @@ class _HubRouter {
     _c._pendingHistoryCursor.remove(sessionId);
     _c._history._cancelHistoryPageTimeout(sessionId);
     // A delivered baseline breaks any resync or gone streak.
-    _c._resyncCounts.remove(sessionId);
-    _c._sessionGoneCounts.remove(sessionId);
+    _c._store.removeResyncCount(sessionId);
+    _c._store.removeGoneCount(sessionId);
     final entries = (message['entries']! as List).cast<Object?>();
     final derivation = TranscriptDerivation()..rebuild(entries);
-    _c._derivations[sessionId] = derivation;
-    _c._putTranscript(
+    _c._store.setDerivation(sessionId, derivation);
+    _c._store.putTranscript(
       sessionId,
       SessionTranscript(
         entries: List<Object?>.of(derivation.entries),
@@ -426,10 +429,10 @@ class _HubRouter {
         // from whatever is currently active. The thinking level is the same. So
         // are the current model and the compaction indicator, which the snapshot
         // says nothing about.
-        contextUsage: _c._state.transcripts[sessionId]?.contextUsage,
-        thinkingLevel: _c._state.transcripts[sessionId]?.thinkingLevel,
-        currentModel: _c._state.transcripts[sessionId]?.currentModel,
-        compacting: _c._state.transcripts[sessionId]?.compacting ?? false,
+        contextUsage: _c._store.transcript(sessionId)?.contextUsage,
+        thinkingLevel: _c._store.transcript(sessionId)?.thinkingLevel,
+        currentModel: _c._store.transcript(sessionId)?.currentModel,
+        compacting: _c._store.transcript(sessionId)?.compacting ?? false,
       ),
     );
     _c._scheduleNotify();
@@ -543,8 +546,8 @@ class _HubRouter {
   }
 
   void _onResyncRequired(String sessionId) {
-    final count = (_c._resyncCounts[sessionId] ?? 0) + 1;
-    _c._resyncCounts[sessionId] = count;
+    final count = _c._store.resyncCount(sessionId) + 1;
+    _c._store.setResyncCount(sessionId, count);
     if (count > _maxConsecutiveResyncs) {
       // Re-requesting forever is the livelock; stop and surface it instead.
       _c._setError(
@@ -557,14 +560,14 @@ class _HubRouter {
   }
 
   void _onSessionGone(String sessionId) {
-    _c._resyncCounts.remove(sessionId);
-    final count = (_c._sessionGoneCounts[sessionId] ?? 0) + 1;
-    _c._sessionGoneCounts[sessionId] = count;
+    _c._store.removeResyncCount(sessionId);
+    final count = _c._store.goneCount(sessionId) + 1;
+    _c._store.setGoneCount(sessionId, count);
     final gaveUp = count > _maxConsecutiveSessionGone;
     // The awaited session vanishing is the replacement's first witness: the
     // session is meant to be gone, so its pending is settled rather than
     // failed, and the follow stays armed until the successor names it (or the
-    // follow times out). `_c._resubscribed` is deliberately left alone — the
+    // follow times out). `_c._store.resubscribed` is deliberately left alone — the
     // successor's push must not lose to a restore of the dead id.
     final awaiting = _c._awaitingReplacementFrom == sessionId;
     if (awaiting) _c._requests._settleReplacementPendings(sessionId);
@@ -572,42 +575,44 @@ class _HubRouter {
     // racing the agent's re-registration; only once the cap is past — or when
     // the user subscribed directly and the session is simply gone — is the
     // transcript genuinely obsolete.
-    final keepTranscript = !gaveUp && _c._restoredSessions.contains(sessionId);
+    final keepTranscript = !gaveUp && _c._store.isRestored(sessionId);
     if (gaveUp) {
       // The session is genuinely gone. Re-arming again would resend
       // subscribe+history on every registry push forever, so clear the desired
       // session and say so rather than looping silently.
-      _c._restoredSessions.remove(sessionId);
-      if (_c._desiredSessionId == sessionId) _c._desiredSessionId = null;
-    } else if (!awaiting && _c._desiredSessionId == sessionId) {
+      _c._store.removeRestored(sessionId);
+      if (_c._store.desiredSessionId == sessionId) _c._store.desiredSessionId = null;
+    } else if (!awaiting && _c._store.desiredSessionId == sessionId) {
       // A gone session may come back (an agent restart, or a re-subscribe that
       // raced the agent's re-registration): drop the one-shot guard so the next
       // `sessions` push re-attaches to the session the user was viewing.
-      _c._resubscribed = false;
+      _c._store.resubscribed = false;
     }
     _c._requests._failPending('session gone', sessionId: sessionId);
-    final sessions = _c._state.sessions
+    final sessions = _c._store.state.sessions
         .where((summary) => summary.sessionId != sessionId)
         .toList();
-    final transcripts = {..._c._state.transcripts};
+    final transcripts = {..._c._store.state.transcripts};
     if (!keepTranscript) {
       transcripts.remove(sessionId);
-      _c._derivations.remove(sessionId);
+      _c._store.removeDerivation(sessionId);
       _c._pendingHistoryCursor.remove(sessionId);
       _c._history._cancelHistoryPageTimeout(sessionId);
     }
     // Only the genuinely-gone branch drops the cache: under the cap the session
     // may come back (the re-subscribe race), and a kept key avoids a flicker.
     final commands = gaveUp
-        ? ({..._c._state.commands}..remove(sessionId))
-        : _c._state.commands;
-    _c._state = _c._state.copyWith(
-      sessions: sessions,
-      transcripts: transcripts,
-      commands: commands,
-      activeSessionId: _c._state.activeSessionId == sessionId
-          ? null
-          : _c._state.activeSessionId,
+        ? ({..._c._store.state.commands}..remove(sessionId))
+        : _c._store.state.commands;
+    _c._store.update(
+      (state) => state.copyWith(
+        sessions: sessions,
+        transcripts: transcripts,
+        commands: commands,
+        activeSessionId: state.activeSessionId == sessionId
+            ? null
+            : state.activeSessionId,
+      ),
     );
     if (gaveUp) {
       _c._setError(
