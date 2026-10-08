@@ -1,8 +1,5 @@
 part of 'hub_client.dart';
 
-const int _backoffBaseMs = 500;
-const int _backoffCapMs = 30000;
-
 /// Bounded wait for `paired` or `sessions` after dialing. A wrong or stale
 /// token gets silence on an open socket — the hub charges one attempt per
 /// `hello` and this client sends exactly one — so without this the client would
@@ -540,7 +537,7 @@ class _HubConnection {
     if (fixed != null) {
       delay = fixed;
     } else {
-      delay = _computeBackoff(_c._attempt);
+      delay = computeBackoff(_c._attempt, rng: _c._rng);
       _c._attempt++;
     }
     _c._reconnectTimer = _c._scheduler.schedule(delay, () {
@@ -552,17 +549,6 @@ class _HubConnection {
   void _cancelReconnect() {
     _c._reconnectTimer?.cancel();
     _c._reconnectTimer = null;
-  }
-
-  /// Exponential backoff with full jitter, capped. `attempt` is 0-based.
-  Duration _computeBackoff(int attempt) {
-    final exponent = attempt < 0 ? 0 : attempt;
-    final ceilingMs = min(
-      _backoffCapMs,
-      (_backoffBaseMs * pow(2, exponent)).toInt(),
-    );
-    final delayMs = (_c._rng() * ceilingMs).floor();
-    return Duration(milliseconds: delayMs);
   }
 
 }
